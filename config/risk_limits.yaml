@@ -1,0 +1,128 @@
+# config/risk_limits.yaml
+# Version: v0.1.1 (2026-05-16)
+# Changelog:
+#   v0.1.1 (2026-05-16): 結構性重寫：ETF/個股分離、regime-adjusted exposure、graduated circuit breaker、ATR-drift expiry
+#   v0.1.0 (2026-05-16): Initial implementation
+# Helios v0.1 風控政策 (v0.1.1 — review 後升級)
+# 對應 architecture 第六節：6 層風控
+# 設計原則：連續光譜而非二元、regime-adjusted、graduated degradation
+
+# ─────────────────────────────────────────────────────────────
+# 基礎資金
+# ─────────────────────────────────────────────────────────────
+portfolio:
+  capital_twd: 500_000 # 初始資金，依實際填入
+  max_positions: 10 # 最大持倉檔數
+  min_position_twd: 50_000 # 低於此金額不開新倉 (手續費考量)
+  max_industry_pct: 0.30 # 同產業集中度上限
+
+# ─────────────────────────────────────────────────────────────
+# 部位上限：ETF 與個股分離 (review 採納)
+# ─────────────────────────────────────────────────────────────
+position_limits:
+  max_pct_etf: 0.15 # ETF 單檔上限 15% (reviewer 建議 10-20%，取中位偏保守)
+  max_pct_stock: 0.10 # 個股單檔上限 10%
+
+# ─────────────────────────────────────────────────────────────
+# Regime-Adjusted Exposure (review 採納：取代固定 80%)
+# 動態曝險上限，依大盤狀態調整
+# ─────────────────────────────────────────────────────────────
+exposure:
+  max_total_pct_by_regime:
+    strong_bull: 0.80
+    weak_bull: 0.50
+    neutral: 0.40
+    bear: 0.20
+    crisis: 0.00
+
+# ─────────────────────────────────────────────────────────────
+# Regime Policy Matrix (review 採納：取代二元 require_regime)
+# 每個 regime 對應一套行為，由 risk/manager.py 與 portfolio/ 消費
+# ─────────────────────────────────────────────────────────────
+regime_policy:
+  strong_bull:
+    new_entries: allowed
+    asset_types: [etf, stock]
+    position_size_multiplier: 1.0
+  weak_bull:
+    new_entries: allowed
+    asset_types: [etf, stock]
+    position_size_multiplier: 0.75
+  neutral:
+    new_entries: allowed
+    asset_types: [etf, stock]
+    position_size_multiplier: 0.5
+  bear: # risk-off mode，不是 shutdown
+    new_entries: allowed
+    asset_types: [etf] # 個股禁止，ETF 仍可進
+    position_size_multiplier: 0.5
+  crisis: # 全面停手
+    new_entries: blocked
+    asset_types: []
+    position_size_multiplier: 0.0
+
+# ─────────────────────────────────────────────────────────────
+# Regime 偵測規則 (Step 3 features/regime.py 消費)
+# ─────────────────────────────────────────────────────────────
+regime_detection:
+  index_symbol: TAIEX
+  ma_periods: [50, 200]
+  # 簡易規則版 (Step 3 實作；Step 9 HMM model 再升級)
+  rules:
+    strong_bull: "close > MA200 AND MA50 > MA200 AND drawdown_from_high < 0.10"
+    weak_bull: "close > MA200 AND (MA50 < MA200 OR drawdown_from_high >= 0.10)"
+    neutral: "abs(close - MA200) / MA200 < 0.03"
+    bear: "close < MA200 AND MA50 < MA200"
+    crisis: "close < MA200 AND drawdown_from_high > 0.25"
+  # 註：thresholds 需 backtest 校準，這是預設值
+
+# ─────────────────────────────────────────────────────────────
+# 交易層 (L4: Trade Risk)
+# ─────────────────────────────────────────────────────────────
+trade:
+  risk_per_trade_pct: 0.02 # 單筆風險 2%
+  atr_stop_multiplier: 2.0 # ATR 停損倍數
+  fixed_stop_loss_pct: 0.08 # 固定停損
+  trailing_stop_pct: 0.12 # 移動停損
+  take_profit_r_multiple: 2.0 # 停利 2R
+
+  # ATR-based signal expiry (review 採納)
+  # 訊號產生後，若價格偏離 entry_atr × multiplier 則失效
+  signal_max_drift_atr: 0.5 # 偏離 0.5 ATR → signal expired
+
+# ─────────────────────────────────────────────────────────────
+# Approval flow (review 採納：10min → 30min)
+# ─────────────────────────────────────────────────────────────
+approval:
+  timeout_minutes: 30 # 中波段日 K 策略，30 分鐘較合理
+  # 但 ATR drift > 0.5 仍會在 timeout 前提早失效 (見 trade.signal_max_drift_atr)
+
+# ─────────────────────────────────────────────────────────────
+# 系統層 (L5: Graduated Circuit Breaker — review 採納)
+# 連續光譜而非 cliff-edge
+# ─────────────────────────────────────────────────────────────
+circuit_breaker:
+  # 三級日內回撤門檻
+  daily_loss_warning_pct: 0.015 # 1.5% — 發 Telegram 警示
+  daily_loss_soft_pct: 0.02 # 2.0% — 軟降：新倉部位 × 0.5
+  daily_loss_hard_pct: 0.03 # 3.0% — 硬停：當日禁新倉
+
+  # 軟降模式行為
+  soft_reduce_position_size_mult: 0.5 # 觸發軟降時，新倉 size × 此倍率
+
+  # 中長期回撤
+  max_drawdown_pct: 0.15 # 帳戶最大回撤 15% → 全面停手
+
+  # 操作異常
+  duplicate_order_window_sec: 10 # 重複下單偵測窗口
+  api_error_threshold: 3 # 連續 API 錯誤上限
+
+# ─────────────────────────────────────────────────────────────
+# 交易成本 (台股實際費率，保守值)
+# ─────────────────────────────────────────────────────────────
+costs:
+  fee_rate: 0.001425 # 手續費 0.1425%
+  fee_discount: 1.0 # 券商折扣 (1.0=無折扣, 0.28=2.8折)
+  tax_rate_stock: 0.003 # 一般股票證交稅 0.3%
+  tax_rate_etf: 0.001 # ETF 證交稅 0.1%
+  slippage_bps: 10 # 回測滑價假設 10bps

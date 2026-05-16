@@ -1,0 +1,53 @@
+# config/universe.yaml
+# Version: v0.1.0 (2026-05-16)
+# Changelog:
+#   v0.1.0 (2026-05-16): Initial implementation
+# Universe 定義
+# 三個 bucket 對應 portfolio 中的核心 / 戰術 / 機會三層
+# Point-in-time：每日由 portfolio/ 模組依此規則重建合格名單
+
+universes:
+  blue_chip_etf: # 核心倉 (70%) - 權值股 + 廣基 ETF
+    description: 大型權值股 + 廣基 ETF
+    include_specific:
+      - "0050" # 元大台灣50
+      - "006208" # 富邦台50
+      - "0056" # 元大高股息
+      - "00878" # 國泰永續高股息
+      - "00919" # 群益台灣精選高息
+    market_cap_min_twd: 200_000_000_000 # 2000 億以上
+    liquidity:
+      min_avg_turnover_20d: 500_000_000 # 日均 5 億
+    markets: [TWSE]
+    exclude:
+      warning: true
+      disposition: true
+
+  sector_etf: # 戰術倉 (20%) - 產業 ETF 輪動
+    description: 產業 ETF 輪動
+    types: [equity_etf]
+    include_keywords:
+      - "半導體"
+      - "電動車"
+      - "5G"
+      - "金融"
+      - "AI"
+      - "高股息"
+    min_aum_twd: 5_000_000_000 # 50 億規模以上
+    liquidity:
+      min_avg_turnover_20d: 30_000_000
+
+  mid_cap_momentum: # 機會倉 (10%) - 中型動能個股
+    description: 中型動能個股
+    market_cap_min_twd: 10_000_000_000 # 100 億
+    market_cap_max_twd: 100_000_000_000 # 1000 億
+    liquidity:
+      min_avg_turnover_20d: 100_000_000 # 日均 1 億
+      min_avg_volume_20d: 2_000 # 日均 2000 張
+    exclude:
+      warning: true # 注意股
+      disposition: true # 處置股
+      altered_trading: true # 變更交易方法
+      listed_days_lt: 365 # 上市未滿一年
+      consecutive_limit_up_5d: true # 連續 5 日漲停
+    markets: [TWSE, OTC]

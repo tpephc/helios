@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+
+# Secrets
+.env
+
+# Persistent storage & logs
+data/_storage/
+data/_cache/
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_*.bak
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# DuckDB temp
+*.duckdb-wal
+*.wal
+
+# Coverage
+.coverage
+htmlcov/
+
+# Runtime
+*.log
+
+# Parquet
+*.parquet
+
