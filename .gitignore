@@ -26,18 +26,3 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
-
-# DuckDB temp
-*.duckdb-wal
-*.wal
-
-# Coverage
-.coverage
-htmlcov/
-
-# Runtime
-*.log
-
-# Parquet
-*.parquet
-

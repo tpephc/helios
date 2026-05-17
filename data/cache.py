@@ -15,8 +15,10 @@
      以「最後一個 trading day」為失效錨點：跨日且過盤後即失效，
      比 TTL 更貼合 market data 性質 (盤後 14:00 之前抓的可能不完整)
 
-Version: v0.1.1 (2026-05-16)
+Version: v0.1.2 (2026-05-16)
 Changelog:
+  v0.1.2 (2026-05-16): CACHE_SCHEMA_VERSION 1 → 2 (邏輯: daily_price 改抓還原權息，
+                       舊的 raw price cache 必須失效，避免新舊資料混雜)
   v0.1.1 (2026-05-16): 加 CACHE_SCHEMA_VERSION 避免 schema drift; 加 trading-day-aware 模式
   v0.1.0 (2026-05-16): Initial implementation
 """
@@ -39,7 +41,7 @@ logger = get_logger(__name__)
 
 # Cache schema version: 任何欄位語意/單位/型別變動時 bump 一次，舊 cache 自動失效
 # - v1: 初版 (2026-05-16)
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 
 # 台股盤後資料 typical 公佈時間 (FinMind 約於收盤後 14:30 開始有當日資料)
 _MARKET_DATA_AVAILABLE_AFTER = dtime(14, 30)

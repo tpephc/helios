@@ -6,8 +6,13 @@ Schema 設計原則：
 - Event log (signals/orders): append-only，全程留下審計軌跡
 - snapshots: 每日狀態快照，配合 event log 可重建任意時點
 
-Version: v0.1.1 (2026-05-16)
+Version: v0.1.5 (2026-05-17)
 Changelog:
+  v0.1.5 (2026-05-17): 新增 daily_features 表 + market_regime 表 (v0.1.11 indicators + regime)
+  v0.1.4 (2026-05-16): 新增 daily_price_adj 表 + adjustment_state 表 (v0.1.10 還原權息)
+  v0.1.3 (2026-05-16): 新增 company_metadata 表 (TWSE t187ap03_L 來源);
+                       新增 corporate_actions 表 (FinMind dividend_result + TWSE TWT48U)
+  v0.1.2 (2026-05-16): 新增 sector_index_daily 表 (TWSE MI_INDEX 來源)
   v0.1.1 (2026-05-16): signals 表新增 entry_atr、expired_reason 欄位；EXPIRED_DRIFT 狀態
   v0.1.0 (2026-05-16): Initial implementation
 """
@@ -168,6 +173,129 @@ CREATE TABLE IF NOT EXISTS universe_snapshot (
     passed           BOOLEAN,
     reject_reason    VARCHAR,
     PRIMARY KEY (snapshot_date, universe_name, stock_id)
+);
+
+-- v0.1.8: 產業類股 / 大盤主要指數 每日收盤 (來源 TWSE MI_INDEX)
+-- 用途：sector rotation feature、regime detection、產業相對強弱
+CREATE TABLE IF NOT EXISTS sector_index_daily (
+    date         DATE,
+    index_name   VARCHAR,  -- 例: "半導體類指數", "電子工業類指數", "金融保險類指數"
+    close        DOUBLE,
+    change_pct   DOUBLE,   -- 漲跌百分比 (含正負號)
+    source       VARCHAR DEFAULT 'TWSE_MI_INDEX',
+    PRIMARY KEY (date, index_name)
+);
+CREATE INDEX IF NOT EXISTS idx_sector_index_date ON sector_index_daily(date);
+
+-- v0.1.9: 上市公司 metadata (來源 TWSE t187ap03_L)
+-- 用途：universe management、產業分類、上市日篩選
+CREATE TABLE IF NOT EXISTS company_metadata (
+    stock_id          VARCHAR PRIMARY KEY,
+    company_name      VARCHAR,        -- 全名 (e.g. "台灣積體電路製造股份有限公司")
+    short_name        VARCHAR,        -- 簡稱 (e.g. "台積電")
+    industry_code     VARCHAR,        -- TWSE 產業代碼 (e.g. "24"=半導體)
+    listing_date      DATE,           -- 上市日
+    paid_in_capital   BIGINT,         -- 實收資本額 (NTD)
+    issued_shares     BIGINT,         -- 已發行普通股數
+    last_synced_at    TIMESTAMP,
+    source            VARCHAR DEFAULT 'TWSE_t187ap03_L'
+);
+
+-- v0.1.9: 公司行動 (除權息、拆分、現金增資...)
+-- 用途：features/dividend_adjustment.py 的原料表
+-- confirmed=true: 歷史已發生 (源自 FinMind dividend_result)
+-- confirmed=false: 未來預告 (源自 TWSE TWT48U)
+-- PRIMARY KEY (date, stock_id, kind) 允許同一檔同一天有「權」+「息」兩筆
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    date              DATE,           -- 除權息交易日
+    stock_id          VARCHAR,
+    kind              VARCHAR,        -- "權" / "息" / "權息" / "split" / "cash_increase"
+    before_price      DOUBLE,         -- 除權息前收盤 (confirmed only)
+    after_price       DOUBLE,         -- 除權息參考價 (confirmed only)
+    adjustment_factor DOUBLE,         -- after / before (用於 backwards adjustment)
+    cash_dividend     DOUBLE,         -- 現金股利 (元/股)
+    stock_div_ratio   DOUBLE,         -- 無償配股率 (配 X 股)
+    confirmed         BOOLEAN,        -- true=已發生, false=預告
+    source            VARCHAR,        -- 'finmind_dividend_result' / 'twse_twt48u' / 'twse_stock_day_note'
+    notes             VARCHAR,        -- 自由欄位 (e.g. "1拆4 split")
+    ingested_at       TIMESTAMP,
+    PRIMARY KEY (date, stock_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_corp_actions_stock ON corporate_actions(stock_id, date);
+
+-- v0.1.10: 還原權息後的日 K 表
+-- 來源：features/dividend_adjustment.py 用 daily_price (raw) + corporate_actions 計算
+-- 演算法：backward adjustment (cum_factor = product of all FUTURE event factors)
+--   - adj_close[T] = raw_close[T] * cum_factor[T]
+--   - cum_factor[T] = ∏ event_factor[E] for E.date > T
+--   - 除權息日當天的 raw close 已經是「除息後」價，所以不再乘
+--   - volume 維持 raw (cash dividend 不影響股數)
+CREATE TABLE IF NOT EXISTS daily_price_adj (
+    stock_id          VARCHAR,
+    date              DATE,
+    adj_open          DOUBLE,
+    adj_high          DOUBLE,
+    adj_low           DOUBLE,
+    adj_close         DOUBLE,
+    raw_close         DOUBLE,    -- 保留 audit 用 (跟 daily_price 對照)
+    cum_factor        DOUBLE,    -- 該日累計 factor (1.0 = 無調整)
+    volume            BIGINT,    -- 維持 raw
+    PRIMARY KEY (stock_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_price_adj_date ON daily_price_adj(date);
+
+-- v0.1.10: adjustment 建構狀態 (給 incremental rebuild 判斷用)
+CREATE TABLE IF NOT EXISTS adjustment_state (
+    stock_id              VARCHAR PRIMARY KEY,
+    last_built_at         TIMESTAMP,
+    last_event_date_used  DATE,        -- 用來偵測「新 event 進來但 adj 沒重建」
+    n_events_applied      INTEGER,
+    raw_first_date        DATE,
+    raw_last_date         DATE
+);
+
+-- v0.1.11: 每日技術指標 (per-symbol)
+-- 來源：features/technical.py 用 daily_price_adj 計算
+-- 設計：欄位明確列出 (vs JSON blob) 方便 SQL 查詢 + 策略層使用
+CREATE TABLE IF NOT EXISTS daily_features (
+    stock_id            VARCHAR,
+    date                DATE,
+    -- Trend (4)
+    sma_20              DOUBLE,
+    sma_50              DOUBLE,
+    sma_200             DOUBLE,
+    ema_20              DOUBLE,
+    -- Momentum (2)
+    rsi_14              DOUBLE,
+    roc_20              DOUBLE,   -- 20-day rate of change %
+    -- Volatility (1)
+    atr_14              DOUBLE,   -- Wilder smoothed
+    -- Breakout (2)
+    donchian_20_high    DOUBLE,
+    donchian_20_low     DOUBLE,
+    -- Volume (2)
+    volume_ma_20        DOUBLE,
+    rel_volume_20       DOUBLE,   -- today volume / 20-day avg
+    -- meta
+    computed_at         TIMESTAMP,
+    PRIMARY KEY (stock_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_features_date ON daily_features(date);
+
+-- v0.1.11: 大盤 regime (single time series, 不分 symbol)
+-- 來源：features/regime.py 用 TAIEX daily_price (raw, 指數無需 adj)
+-- 規則 (deterministic):
+--   crisis:  vol_20 > 0.020 (TAIEX 20-day return stdev > 2%)
+--   bull:    close > sma_200 AND vol_20 <= 0.020
+--   bear:    close < sma_200 AND vol_20 <= 0.020
+--   neutral: 其他 (跨越 SMA200 的過渡)
+CREATE TABLE IF NOT EXISTS market_regime (
+    date         DATE PRIMARY KEY,
+    taiex_close  DOUBLE,
+    sma_200      DOUBLE,
+    vol_20       DOUBLE,        -- 20-day stdev of daily returns
+    regime       VARCHAR,        -- 'bull' / 'bear' / 'crisis' / 'neutral'
+    computed_at  TIMESTAMP
 );
 """
 

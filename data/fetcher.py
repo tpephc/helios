@@ -8,8 +8,10 @@
 - FetchResult.success 區分「成功但空資料 (該期間無交易)」與「fetch 失敗」
 - 品質檢查內建：缺值、異常漲跌幅、低流動性
 
-Version: v0.1.1 (2026-05-16)
+Version: v0.1.2 (2026-05-16)
 Changelog:
+  v0.1.2 (2026-05-16): daily_price 後接 sanity.validate_ohlc 丟壞列 (close<=0 / high<low / 全 null);
+                       壞列 count + 原因併入 quality_issues 並 log
   v0.1.1 (2026-05-16): FetchResult 加 success/error 欄位，解決空 DataFrame 語意混淆;
                        daily_price 加 trading_day_aware cache mode
   v0.1.0 (2026-05-16): Initial implementation
@@ -101,7 +103,21 @@ class DataFetcher:
                 success=False, error=f"fetch_error: {e}",
             )
 
+        # v0.1.7: 衛生檢查 — 丟掉 close<=0 / 反轉 high<low / 全 null 等壞列
+        from data.sanity import validate_ohlc
+        sanity = validate_ohlc(df)
+        df = sanity.clean
+
         issues = self._validate_price(df, stock_id)
+        if sanity.dropped_count > 0:
+            issues.append(
+                f"sanity_dropped:{sanity.dropped_count}_rows ({','.join(sanity.dropped_reasons)})"
+            )
+            logger.warning(
+                "sanity_dropped_rows", stock_id=stock_id,
+                dropped=sanity.dropped_count, reasons=sanity.dropped_reasons,
+            )
+
         if df.height > 0:
             if cache_mode == "trading_day":
                 self.cache.set_for_trading_day(key, df)

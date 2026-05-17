@@ -1,7 +1,7 @@
 # Helios — 個人版機構級台股中長期自動投資系統
 
-> Version: v0.1.5 (2026-05-16) — 防禦性 hardening：FetchResult success/error / FinMind sort+unique / cache schema version + trading-day-aware
-> v0.1 — Step 2 of 12 (data + storage + market layers)
+> Version: v0.1.14.1.2 (2026-05-17) — ARCHITECTURE complete + ADR records + identity crystallized
+> v0.1 — Step 2.5 → 3 過渡 (data + multi-source + truth + adjustment 完成)
 > 目標環境: Ubuntu Server x86_64, Python 3.12, uv
 
 ## 系統定位

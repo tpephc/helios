@@ -1,5 +1,5 @@
 # scripts/validate_install.py
-"""Helios v0.1.3 安裝驗證腳本。
+"""Helios 安裝驗證腳本 (版號自動讀自 pyproject.toml)。
 
 驗證範圍：
 - Python 版本與必要套件
@@ -18,8 +18,10 @@
 
 Exit code: 0 = 全部 PASS, 1 = 有 FAIL
 
-Version: v0.1.0 (2026-05-16)
+Version: v0.1.2 (2026-05-16)
 Changelog:
+  v0.1.2 (2026-05-16): 加 TWSE company_info smoke + FinMind dividend_result smoke (v0.1.9)
+  v0.1.1 (2026-05-16): 修 lifecycle bug (daily_price 移入 with 區塊); 版號改為動態讀 pyproject.toml
   v0.1.0 (2026-05-16): Initial implementation
 """
 from __future__ import annotations
@@ -27,9 +29,22 @@ from __future__ import annotations
 import argparse
 import platform
 import sys
+import tomllib
 import traceback
 from datetime import date, datetime
 from pathlib import Path
+
+
+def _get_project_version() -> str:
+    """從 pyproject.toml 讀版本，避免硬編碼。"""
+    try:
+        pyproject = Path("pyproject.toml")
+        if pyproject.exists():
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+            return data.get("project", {}).get("version", "unknown")
+    except Exception:
+        pass
+    return "unknown"
 
 # ─────────────────────────────────────────────────────────────
 # 不依賴 helios 任何 import，先做 Python 與套件檢查
@@ -341,20 +356,80 @@ def check_finmind_api() -> bool:
         return False
 
 
+def check_finmind_dividends() -> bool:
+    """v0.1.9: 確認 FinMind TaiwanStockDividendResult 免費版可用。"""
+    section("12. FinMind dividend_result (v0.1.9)")
+    try:
+        from datetime import date, timedelta
+
+        from data.sources.finmind_client import FinMindClient
+
+        with FinMindClient() as fm:
+            end = date.today()
+            start = end - timedelta(days=365 * 3)
+            df = fm.dividend_result("2330", start, end)
+
+        n = df.height
+        record("FinMind dividend_result (2330, 3yr)", n > 0,
+               f"events={n} {'(免費版確認 OK)' if n > 0 else '(預期應有事件，請手動確認 token)'}")
+
+        if n > 0:
+            # adjustment_factor 不應 None
+            null_factors = df.filter(df["adjustment_factor"].is_null()).height
+            record("adjustment_factor non-null", null_factors == 0,
+                   f"{null_factors} null out of {n}")
+        return n > 0
+    except Exception as e:
+        record("FinMind dividend_result", False, f"{type(e).__name__}: {e}")
+        traceback.print_exc()
+        return False
+
+
+def check_twse_api() -> bool:
+    """v0.1.9: TWSE openapi smoke test (company_info)."""
+    section("13. TWSE OpenAPI (v0.1.9)")
+    try:
+        from data.sources.twse_client import TwseClient
+
+        with TwseClient(sleep_between_calls=0.5) as twse:
+            df = twse.company_info()
+
+        n = df.height
+        record("TWSE company_info (t187ap03_L)", n > 500,
+               f"companies={n} (預期 1000+)")
+
+        if n > 0:
+            # 2330 應存在
+            tsmc = df.filter(df["stock_id"] == "2330")
+            record("2330 in company_info", tsmc.height == 1)
+            if tsmc.height == 1:
+                row = tsmc.row(0, named=True)
+                listing_date = row.get("listing_date")
+                record("2330 listing_date 解析正確",
+                       str(listing_date) == "1994-09-05",
+                       f"got: {listing_date}")
+        return n > 500
+    except Exception as e:
+        record("TWSE API", False, f"{type(e).__name__}: {e}")
+        traceback.print_exc()
+        return False
+
+
 # ─────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Helios v0.1.3 install validation")
+    parser = argparse.ArgumentParser(description=f"Helios v{_get_project_version()} install validation")
     parser.add_argument(
         "--with-api", action="store_true",
         help="包含 FinMind API 連線測試 (需要 FINMIND_TOKEN)",
     )
     args = parser.parse_args()
 
-    print("Helios v0.1.3 Install Validation")
+    version = _get_project_version()
+    print(f"Helios v{version} Install Validation")
     print(f"Started: {datetime.now().isoformat(timespec='seconds')}")
 
     # 前 3 個檢查無依賴關係，先跑
@@ -378,8 +453,12 @@ def main() -> int:
 
     if args.with_api:
         check_finmind_api()
+        check_finmind_dividends()
+        check_twse_api()
     else:
         print("\n11. FinMind API (跳過，使用 --with-api 啟用)")
+        print("12. FinMind dividend_result (跳過)")
+        print("13. TWSE OpenAPI (跳過)")
 
     return _summary()
 
@@ -405,7 +484,7 @@ def _summary() -> int:
         print("  3. 仍卡關回貼 fail 訊息")
         return 1
 
-    print("\n✓ 全部通過。Helios v0.1.3 環境就緒。")
+    print(f"\n✓ 全部通過。Helios v{_get_project_version()} 環境就緒。")
     return 0
 
 

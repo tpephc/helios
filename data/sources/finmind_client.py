@@ -9,8 +9,14 @@
 - 數值欄位用 cast(strict=False) 容忍 API 偶發 null/錯型
 - 與 fetcher.py 解耦：本 client 只負責「呼叫 + 轉型 + 衛生」
 
-Version: v0.1.1 (2026-05-16)
+Version: v0.1.4 (2026-05-16)
 Changelog:
+  v0.1.4 (2026-05-16): 新增 dividend_result() (TaiwanStockDividendResult, 免費版可用,
+                       提供 before/after/factor — adjustment 原料)
+  v0.1.3 (2026-05-16): hotfix - revert TaiwanStockPriceAdj → TaiwanStockPrice (Sponsor 限定);
+                       adjustment ownership 移到 features layer (v0.1.10)
+  v0.1.2 (2026-05-16): daily_price 改用 TaiwanStockPriceAdj (還原權息價);
+                       TAIEX 維持 TaiwanStockPrice (指數無 split/dividend)
   v0.1.1 (2026-05-16): 所有 return path 加 sort+unique 確保時序確定性;
                        cast 改用 strict=False 容忍 API null
   v0.1.0 (2026-05-16): Initial implementation
@@ -123,6 +129,13 @@ class FinMindClient:
     ) -> pl.DataFrame:
         """日 K 資料 (open/high/low/close/volume/turnover/transactions/spread)。
 
+        【v0.1.7 hotfix】用 `TaiwanStockPrice` (raw)：
+        - TaiwanStockPriceAdj 經實測需 FinMind Sponsor 付費版 (免費 register tier 拒絕)
+        - 維持 raw 反而符合 "adjustment ownership 在 features layer" 原則
+        - 跟 TWSE raw 一致，方便 cross-source validate
+        - dividend / split adjustment 由 v0.1.9 的 features/dividend_adjustment.py 處理
+          (用 TWSE TWTB4U 已知除權息日 + STOCK_DAY 註記 拆分標記)
+
         FinMind 偶有重複日 (盤後 rerun) 或亂序，這裡統一 sort+unique 保證下游不需處理。
         """
         rows = self._get(
@@ -187,6 +200,51 @@ class FinMindClient:
             subset = [c for c in ("stock_id", "date") if c in df.columns]
             df = df.unique(subset=subset).sort("date")
         return df
+
+    def dividend_result(
+        self, stock_id: str, start: date, end: date
+    ) -> pl.DataFrame:
+        """除權除息結果表 (歷史已發生的除權息事件)。
+
+        【v0.1.3】這是免費版可用的 dataset (vs TaiwanStockPriceAdj 需 Sponsor)。
+        FinMind 直接給「除息前/後參考價」，比自己算 adjustment factor 更準。
+
+        Schema (FinMind 原生):
+          - date:                          除權息交易日 (ISO YYYY-MM-DD)
+          - stock_id:                      股票代碼
+          - before_price:                  除權息前收盤價
+          - after_price:                   除權息參考價 (=after div adjustment)
+          - stock_and_cache_dividend:      股利金額 (現金/股票/合計)
+          - stock_or_cache_dividend:       類型: "權" / "息" / "權息"
+          - max_price/min_price/open_price/reference_price: 除息當日其他價
+
+        Helios 標準化輸出：
+          stock_id, date, kind, before_price, after_price,
+          dividend_amount, adjustment_factor (= after / before)
+        """
+        rows = self._get(
+            "TaiwanStockDividendResult",
+            data_id=stock_id,
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+        )
+        if not rows:
+            return pl.DataFrame()
+
+        df = pl.from_dicts(rows)
+        df = df.select(
+            pl.col("stock_id"),
+            pl.col("date").str.to_date(),
+            pl.col("stock_or_cache_dividend").alias("kind"),
+            pl.col("before_price").cast(pl.Float64, strict=False),
+            pl.col("after_price").cast(pl.Float64, strict=False),
+            pl.col("stock_and_cache_dividend").cast(pl.Float64, strict=False)
+                .alias("dividend_amount"),
+        ).with_columns(
+            # adjustment_factor = after / before; 用來把舊資料往下調
+            adjustment_factor=(pl.col("after_price") / pl.col("before_price")),
+        )
+        return df.unique(subset=["stock_id", "date", "kind"]).sort("date")
 
     def taiex(self, start: date, end: date) -> pl.DataFrame:
         """加權指數 (regime 判斷用)。"""
