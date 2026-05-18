@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
+from datetime import date as date_type
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -37,10 +38,17 @@ ApprovalStatus = Literal[
 
 @dataclass
 class SignalRow:
-    """signals 表的列表示 (1:1 mapping 到 schema)。"""
+    """signals 表的列表示 (1:1 mapping 到 schema)。
+
+    v0.1.14.2-c3: temporal semantics split.
+      signal_date  — 市場語意日期 (the trading day this signal corresponds to)
+      created_at   — 系統建立時間 (when the row was inserted, may differ from signal_date
+                     for catch-up runs, weekend reruns, backtest replays)
+    """
 
     signal_id: str
-    timestamp: datetime
+    signal_date: date_type    # 市場語意日期
+    created_at: datetime      # 系統建立時間
     symbol: str
     strategy: str
     signal_type: str          # buy / sell / exit
@@ -72,6 +80,7 @@ def save_signal(
     price: float,
     reason: list[str],
     *,
+    signal_date: date_type,     # v0.1.14.2-c3: required; market semantic date
     entry_atr: float | None = None,
     stop_loss: float | None = None,
     take_profit: float | None = None,
@@ -79,9 +88,24 @@ def save_signal(
     approval_status: ApprovalStatus = "PENDING",
     timeout_minutes: int = 30,
     metadata: dict | None = None,
+    signal_id: str | None = None,
 ) -> str:
-    """寫入新訊號，回傳 signal_id。"""
-    signal_id = str(uuid.uuid4())
+    """寫入新訊號，回傳 signal_id。
+
+    v0.1.14.2-c3: signal_date is REQUIRED. It is the market-semantic date
+    (the as_of for the run that generated this signal), distinct from
+    created_at (system insertion time). Idempotency, audit, and any future
+    "signals for trading day X" query depend on this separation. Mixing them
+    via CAST(timestamp AS DATE) is the bug c3 closes.
+
+    v0.1.14.3.3: optional `signal_id` kwarg lets callers supply their own
+    identifier (e.g. `DEV-TEST-001` for `scripts/dev_push_signal.py` test
+    injection — visible / filterable in logs / markers / scars). Default
+    behavior unchanged (uuid4 auto-generated). The schema's PK constraint
+    enforces uniqueness regardless of source.
+    """
+    if signal_id is None:
+        signal_id = str(uuid.uuid4())
     now = datetime.now()
     timeout_at = now + timedelta(minutes=timeout_minutes) if approval_status == "PENDING" else None
 
@@ -89,13 +113,13 @@ def save_signal(
         conn.execute(
             """
             INSERT INTO signals (
-                signal_id, timestamp, symbol, strategy, signal_type,
+                signal_id, signal_date, created_at, symbol, strategy, signal_type,
                 score, price, entry_atr, stop_loss, take_profit,
                 reason, regime, approval_status, timeout_at, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                signal_id, now, symbol, strategy, signal_type,
+                signal_id, signal_date, now, symbol, strategy, signal_type,
                 score, price, entry_atr, stop_loss, take_profit,
                 json.dumps(reason, ensure_ascii=False),
                 regime, approval_status, timeout_at,
@@ -104,8 +128,8 @@ def save_signal(
         )
     logger.info(
         "signal_saved",
-        signal_id=signal_id, symbol=symbol, strategy=strategy,
-        score=score, status=approval_status,
+        signal_id=signal_id, signal_date=str(signal_date),
+        symbol=symbol, strategy=strategy, score=score, status=approval_status,
     )
     return signal_id
 
@@ -123,10 +147,11 @@ def get_signal(signal_id: str) -> SignalRow | None:
 
 
 def get_pending() -> list[SignalRow]:
-    """取得所有 PENDING 訊號 (按時間正序)。"""
+    """取得所有 PENDING 訊號 (按建立時間正序)。"""
     with connect(read_only=True) as conn:
         rows = conn.execute(
-            "SELECT * FROM signals WHERE approval_status = 'PENDING' ORDER BY timestamp ASC"
+            "SELECT * FROM signals WHERE approval_status = 'PENDING' "
+            "ORDER BY signal_date ASC, created_at ASC"
         ).fetchall()
         cols = [c[0] for c in conn.description]
     return [_row_to_dataclass(dict(zip(cols, r, strict=True))) for r in rows]
@@ -136,7 +161,7 @@ def get_recent(limit: int = 20) -> list[SignalRow]:
     """取得最近 N 筆訊號 (任何狀態)。"""
     with connect(read_only=True) as conn:
         rows = conn.execute(
-            "SELECT * FROM signals ORDER BY timestamp DESC LIMIT ?", [limit]
+            "SELECT * FROM signals ORDER BY created_at DESC LIMIT ?", [limit]
         ).fetchall()
         cols = [c[0] for c in conn.description]
     return [_row_to_dataclass(dict(zip(cols, r, strict=True))) for r in rows]
@@ -322,7 +347,8 @@ def _row_to_dataclass(d: dict) -> SignalRow:
 
     return SignalRow(
         signal_id=d["signal_id"],
-        timestamp=d["timestamp"],
+        signal_date=d["signal_date"],
+        created_at=d["created_at"],
         symbol=d["symbol"],
         strategy=d["strategy"],
         signal_type=d["signal_type"],
@@ -346,6 +372,8 @@ def _row_to_dataclass(d: dict) -> SignalRow:
 # Smoke test
 # ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    from datetime import date as _date
+
     from data.database import init_schema
     init_schema()
 
@@ -355,6 +383,7 @@ if __name__ == "__main__":
         signal_type="buy",
         score=0.81,
         price=985.0,
+        signal_date=_date.today(),
         entry_atr=18.5,
         stop_loss=948.0,
         take_profit=1058.0,

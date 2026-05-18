@@ -1,7 +1,7 @@
 # pyproject.toml
 [project]
 name = "helios"
-version = "0.1.14.1.2"
+version = "0.1.14.3.post8"
 description = "Personal-grade institutional Taiwan stock automated investment system"
 readme = "README.md"
 requires-python = ">=3.12"

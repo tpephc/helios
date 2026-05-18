@@ -23,6 +23,7 @@ Changelog:
 """
 from __future__ import annotations
 
+import re
 import time
 from datetime import date
 from typing import Any
@@ -40,6 +41,56 @@ from config.settings import get_settings
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# v0.1.14.3.4 — secret-redaction in URLs that may end up in logs.
+# Pre-v0.1.14.3.4 the FinMind ?token=... appeared verbatim in tracebacks
+# whenever httpx.HTTPStatusError propagated (helios.log.2026-05-16 incident,
+# where 400 responses from data backfill leaked every JWT to disk). The
+# redacted form must keep diagnostic context (host, status, dataset, dates)
+# while stripping the bearer credential.
+_SECRET_PARAMS = re.compile(
+    r"(?i)(token|api_key|apikey|secret|password)=[^&\s]+",
+)
+
+
+def _redact_url(url: str) -> str:
+    """Strip sensitive query parameters from a URL for safe logging.
+
+    Replaces value of `token=`, `api_key=` / `apikey=`, `secret=`, `password=`
+    (case-insensitive) with `***REDACTED***`. Other params and the URL
+    structure are preserved so logs remain useful for debugging.
+
+    Pure function — pinned by `tests/invariants/test_semantic_invariants.py`.
+    """
+    return _SECRET_PARAMS.sub(r"\1=***REDACTED***", url)
+
+
+def _raise_finmind_http_error(e: httpx.HTTPStatusError) -> None:
+    """Convert httpx HTTPStatusError into a FinMindError with redacted URL.
+
+    v0.1.14.3.4 contract: callers MUST route HTTPStatusError through this
+    helper rather than letting it propagate. The default `str(e)` includes
+    the full request URL — passing it to a logger with `exc_info=True`
+    leaks any `?token=...` query parameter into persistent log files.
+
+    Mechanism: build a new FinMindError carrying ONLY the redacted URL and
+    status code, then `raise ... from None` so the original HTTPStatusError
+    is dropped from both __cause__ and __context__ chains (otherwise the
+    full URL would still print via Python's "During handling of the above
+    exception" chained-traceback display).
+
+    FinMindError is in tenacity's `retry_if_exception_type` tuple, so retry
+    semantics are preserved across the conversion.
+    """
+    safe_url = _redact_url(str(e.response.url))
+    logger.warning(
+        "finmind_http_error",
+        status=e.response.status_code, url=safe_url,
+    )
+    raise FinMindError(
+        f"HTTP {e.response.status_code} from FinMind ({safe_url})"
+    ) from None
 
 
 class FinMindError(Exception):
@@ -102,7 +153,12 @@ class FinMindClient:
             time.sleep(self._rate_limit_sleep)
             raise FinMindError("rate_limited")
 
-        r.raise_for_status()
+        # v0.1.14.3.4 — route HTTPStatusError through redacting helper so
+        # ?token=... never reaches tracebacks. See _raise_finmind_http_error.
+        try:
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            _raise_finmind_http_error(e)
         payload = r.json()
 
         if payload.get("status") != 200:

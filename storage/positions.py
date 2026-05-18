@@ -1,182 +1,489 @@
 # storage/positions.py
-"""持倉計算。
+"""Positions storage — first-class state machine for v0.1.14.2 paper trading.
 
-ADR-001 原則：positions 不存獨立表，從 orders 即時計算。
-但為了查詢效率，snapshots.py 會把當日 EOD positions 序列化到 snapshots.positions JSON。
+ARCHITECTURE.md §6.5 State Machine: OPENING → OPEN → CLOSING → CLOSED.
 
-計算邏輯：
-- 從最新 snapshot 開始 (避免從頭重播)
-- 套用 snapshot 之後的所有 filled orders
-- 平均成本 (avg_cost) 用 weighted average 維護
+Replaces the previous event-sourced derive-from-orders approach because
+v0.1.14.2 needs stateful per-position fields (max_close_since_entry,
+regime_at_entry, MFE/MAE) that cannot cleanly come from orders alone.
 
-Version: v0.1.1 (2026-05-16)
+State transitions:
+  open_position()                  -> creates row, status=OPENING (or OPEN for instant paper fills)
+  mark_position_open(position_id)  -> OPENING → OPEN (after fill confirmed)
+  update_running_stats(...)        -> daily update of last_close, max/min_close, dates
+  start_closing(position_id)       -> OPEN → CLOSING (sell submitted)
+  mark_position_closed(...)        -> CLOSING → CLOSED (with exit fields)
+
+Per review #1 (2026-05-17): adds regime_at_entry column. max_drawdown_pct is
+computed (not stored) from last_close vs max_close_since_entry.
+
+Version: v0.2.0 (2026-05-17)
 Changelog:
-  v0.1.1 (2026-05-16): _apply_fill 過量賣出處理：clamp 到實際持有量 + log warning，避免假 realized_pnl
-  v0.1.0 (2026-05-16): Initial implementation
+  v0.2.0 (2026-05-17): Full rewrite for v0.1.14.2 paper trading state machine
+  v0.1.x (2026-05-16): Legacy event-sourced (replaced)
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
+from datetime import date as date_type
 from datetime import datetime
+from typing import Any
 
-from storage.orders import OrderRow, get_filled_orders_since
+from data.database import connect
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
+# ─────────────────────────────────────────────────────────────
+# State enum (kept as strings for DB simplicity)
+# ─────────────────────────────────────────────────────────────
+
+OPENING = "OPENING"
+OPEN = "OPEN"
+CLOSING = "CLOSING"
+CLOSED = "CLOSED"
+
+VALID_STATUSES = {OPENING, OPEN, CLOSING, CLOSED}
+
+
+# Allowed transitions (per ARCHITECTURE §6.5 state machine)
+ALLOWED_TRANSITIONS = {
+    OPENING: {OPEN},                # buy fill confirmed
+    OPEN:    {CLOSING, CLOSED},     # exit triggered (CLOSING for live broker; instant CLOSED for paper)
+    CLOSING: {CLOSED},              # sell fill confirmed
+    CLOSED:  set(),                 # terminal
+}
+
+
+# ─────────────────────────────────────────────────────────────
+# Position dataclass (read model)
+# ─────────────────────────────────────────────────────────────
+
+
 @dataclass
 class Position:
+    position_id: str
+    entry_signal_id: str | None
+    entry_order_id: str | None
+    exit_signal_id: str | None
+    exit_order_id: str | None
+
     symbol: str
-    quantity: int         # 持有數量 (張數 × 1000 股；零股以 share 為單位)
-    avg_cost: float       # 平均成本
-    realized_pnl: float = 0.0  # 已實現損益 (累計)
+    strategy: str
+
+    # Entry context
+    entry_date: date_type
+    entry_price: float
+    entry_atr: float
+    regime_at_entry: str
+    sector: str
+    is_etf: bool
+
+    # Sizing
+    shares: int
+    notional_at_entry: float
+    entry_commission: float
+    entry_slippage_cost: float
+
+    # Running stats
+    last_close: float | None
+    last_updated_date: date_type | None
+    max_close_since_entry: float | None
+    max_close_date: date_type | None
+    min_close_since_entry: float | None
+    min_close_date: date_type | None
+
+    # Exit fields
+    exit_date: date_type | None
+    exit_price: float | None
+    exit_reason: str | None
+    regime_at_exit: str | None
+    exit_commission: float
+    exit_tax: float
+    exit_slippage_cost: float
+    exit_proceeds: float | None
+
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    # ── Computed properties ──────────────────────────────────
+
+    @property
+    def mfe_pct(self) -> float | None:
+        if self.max_close_since_entry is None or self.entry_price <= 0:
+            return None
+        return (self.max_close_since_entry / self.entry_price - 1) * 100
+
+    @property
+    def mae_pct(self) -> float | None:
+        if self.min_close_since_entry is None or self.entry_price <= 0:
+            return None
+        return (self.min_close_since_entry / self.entry_price - 1) * 100
+
+    @property
+    def current_drawdown_pct(self) -> float | None:
+        """Per review #1: max drawdown from peak (for circuit breaker)."""
+        if (self.last_close is None or self.max_close_since_entry is None
+                or self.max_close_since_entry <= 0):
+            return None
+        return (self.last_close / self.max_close_since_entry - 1) * 100
+
+    @property
+    def unrealized_pnl_ntd(self) -> float | None:
+        if self.last_close is None:
+            return None
+        return self.shares * (self.last_close - self.entry_price)
+
+    @property
+    def unrealized_pnl_pct(self) -> float | None:
+        if self.last_close is None or self.entry_price <= 0:
+            return None
+        return (self.last_close / self.entry_price - 1) * 100
+
+    @property
+    def gross_return_pct(self) -> float | None:
+        """For CLOSED positions: (exit-entry)/entry, gross (no costs)."""
+        if self.exit_price is None or self.entry_price <= 0:
+            return None
+        return (self.exit_price / self.entry_price - 1) * 100
+
+    @property
+    def net_pnl_ntd(self) -> float | None:
+        """For CLOSED positions: proceeds - notional_at_entry - all costs."""
+        if self.exit_proceeds is None:
+            return None
+        gross_cost = self.notional_at_entry + self.entry_commission + self.entry_slippage_cost
+        return self.exit_proceeds - gross_cost
+
+    @property
+    def holding_days(self) -> int | None:
+        if self.exit_date is None:
+            return None
+        return (self.exit_date - self.entry_date).days
+
+    @property
+    def is_open(self) -> bool:
+        return self.status in {OPENING, OPEN, CLOSING}
 
 
 # ─────────────────────────────────────────────────────────────
-# Computation
+# Write operations
 # ─────────────────────────────────────────────────────────────
 
 
-def compute_current_positions(
-    initial: dict[str, Position] | None = None,
-    since: datetime | None = None,
-) -> dict[str, Position]:
-    """從 orders 計算當前持倉。
-
-    Args:
-        initial: 起始狀態 (通常來自最新 snapshot.positions)。None 表示從 epoch 開始。
-        since: 只考慮此時間之後的訂單。配合 initial 使用，避免從頭重播。
-
-    Returns:
-        symbol → Position 字典。quantity=0 的會被剔除。
-    """
-    positions: dict[str, Position] = dict(initial or {})
-
-    fills = get_filled_orders_since(since or datetime(1970, 1, 1))
-    for o in fills:
-        if o.status not in ("filled", "partial"):
-            continue
-        _apply_fill(positions, o)
-
-    # 清掉 quantity=0 的部位
-    return {s: p for s, p in positions.items() if p.quantity != 0}
-
-
-def compute_positions_from_latest_snapshot() -> dict[str, Position]:
-    """從最新 snapshot 出發計算當前 positions。"""
-    from storage.snapshots import load_latest
-    snap = load_latest()
-
-    if snap is None:
-        return compute_current_positions()
-
-    # snapshot.positions 是 JSON: {symbol: {quantity, avg_cost, realized_pnl}}
-    initial = {
-        sym: Position(
-            symbol=sym,
-            quantity=data["quantity"],
-            avg_cost=data["avg_cost"],
-            realized_pnl=data.get("realized_pnl", 0.0),
+def open_position(
+    *,
+    symbol: str,
+    strategy: str,
+    entry_date: date_type,
+    entry_price: float,
+    entry_atr: float,
+    regime_at_entry: str,
+    sector: str,
+    is_etf: bool,
+    shares: int,
+    notional_at_entry: float,
+    entry_commission: float = 0.0,
+    entry_slippage_cost: float = 0.0,
+    entry_signal_id: str | None = None,
+    entry_order_id: str | None = None,
+    status: str = OPEN,             # paper broker fills instantly; default OPEN
+) -> str:
+    """Insert a new position row. Returns position_id."""
+    if status not in {OPENING, OPEN}:
+        raise ValueError(
+            f"open_position must start with OPENING or OPEN, got {status}"
         )
-        for sym, data in (snap.positions or {}).items()
-    }
-    # 套用 snapshot 之後的 fills
-    return compute_current_positions(initial=initial, since=snap.created_at)
+    position_id = f"pos_{uuid.uuid4().hex[:12]}"
+
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO positions (
+                position_id, entry_signal_id, entry_order_id,
+                symbol, strategy,
+                entry_date, entry_price, entry_atr, regime_at_entry,
+                sector, is_etf,
+                shares, notional_at_entry, entry_commission, entry_slippage_cost,
+                last_close, last_updated_date,
+                max_close_since_entry, max_close_date,
+                min_close_since_entry, min_close_date,
+                status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                position_id, entry_signal_id, entry_order_id,
+                symbol, strategy,
+                entry_date, entry_price, entry_atr, regime_at_entry,
+                sector, is_etf,
+                shares, notional_at_entry, entry_commission, entry_slippage_cost,
+                # running stats initialized to entry values
+                entry_price, entry_date,
+                entry_price, entry_date,
+                entry_price, entry_date,
+                status,
+            ],
+        )
+
+    logger.info(
+        "position_opened",
+        position_id=position_id, symbol=symbol, shares=shares,
+        entry_price=entry_price, regime_at_entry=regime_at_entry, status=status,
+    )
+    return position_id
 
 
-# ─────────────────────────────────────────────────────────────
-# Internals
-# ─────────────────────────────────────────────────────────────
+def mark_position_open(position_id: str) -> None:
+    """Transition OPENING → OPEN (after fill confirmed)."""
+    _transition(position_id, expected_from=OPENING, to_status=OPEN)
 
 
-def _apply_fill(positions: dict[str, Position], o: OrderRow) -> None:
-    """把一筆成交套用到 positions 字典 (in-place)。
+def update_running_stats(
+    position_id: str, *, close: float, as_of: date_type
+) -> None:
+    """Daily update of last_close + max/min trackers.
 
-    過量賣出處理：賣的數量超過持有時，會 log warning 並 clamp 到實際持有量。
-    realized_pnl 用 clamp 後的數量計算，避免被「假裝賣超」扭曲。
-    Storage 層只做記帳，policy 由 risk 模組強制。
+    Called once per trading day for each OPEN position.
+    Updates max_close_since_entry only if new close > current max.
+    Updates min_close_since_entry only if new close < current min.
     """
-    if o.avg_price is None or o.filled_qty <= 0:
-        return
-
-    pos = positions.get(o.symbol, Position(symbol=o.symbol, quantity=0, avg_cost=0.0))
-
-    if o.side == "buy":
-        # 加倉：更新平均成本
-        total_cost = pos.avg_cost * pos.quantity + o.avg_price * o.filled_qty
-        new_qty = pos.quantity + o.filled_qty
-        pos.avg_cost = total_cost / new_qty if new_qty != 0 else 0.0
-        pos.quantity = new_qty
-    elif o.side == "sell":
-        # 減倉：實現損益 = (賣價 - 成本) × 數量
-        if o.filled_qty > pos.quantity:
+    with connect() as conn:
+        # Read current state
+        row = conn.execute(
+            """
+            SELECT max_close_since_entry, min_close_since_entry, status
+            FROM positions WHERE position_id = ?
+            """,
+            [position_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"position not found: {position_id}")
+        cur_max, cur_min, status = row
+        if status != OPEN:
             logger.warning(
-                "oversell_clamped",
-                symbol=o.symbol, order_id=o.order_id,
-                current_qty=pos.quantity, sell_qty=o.filled_qty,
-                clamped_to=pos.quantity,
-                note="storage records actual holding; risk layer should have caught this",
+                "skip_update_non_open",
+                position_id=position_id, status=status,
             )
-            sell_qty = pos.quantity
-        else:
-            sell_qty = o.filled_qty
+            return
 
-        realized = (o.avg_price - pos.avg_cost) * sell_qty
-        pos.realized_pnl += realized
-        pos.quantity -= sell_qty
-        # 全平倉後 avg_cost 重置
-        if pos.quantity == 0:
-            pos.avg_cost = 0.0
+        new_max = close if cur_max is None or close > cur_max else cur_max
+        new_max_date = as_of if cur_max is None or close > cur_max else None
+        new_min = close if cur_min is None or close < cur_min else cur_min
+        new_min_date = as_of if cur_min is None or close < cur_min else None
 
-    positions[o.symbol] = pos
+        # Conditional update — only touch max_close_date if max changed
+        conn.execute(
+            """
+            UPDATE positions SET
+                last_close = ?,
+                last_updated_date = ?,
+                max_close_since_entry = ?,
+                max_close_date = COALESCE(?, max_close_date),
+                min_close_since_entry = ?,
+                min_close_date = COALESCE(?, min_close_date),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE position_id = ?
+            """,
+            [close, as_of, new_max, new_max_date, new_min, new_min_date, position_id],
+        )
 
 
-# ─────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────
+def start_closing(position_id: str) -> None:
+    """Transition OPEN → CLOSING (sell order submitted, awaiting fill)."""
+    _transition(position_id, expected_from=OPEN, to_status=CLOSING)
 
 
-def total_exposure(positions: dict[str, Position], current_prices: dict[str, float]) -> float:
-    """以當前市價計算總曝險金額。"""
-    return sum(
-        p.quantity * current_prices.get(p.symbol, p.avg_cost)
-        for p in positions.values()
+def mark_position_closed(
+    position_id: str, *,
+    exit_date: date_type,
+    exit_price: float,
+    exit_reason: str,
+    regime_at_exit: str,
+    exit_commission: float = 0.0,
+    exit_tax: float = 0.0,
+    exit_slippage_cost: float = 0.0,
+    exit_proceeds: float = 0.0,
+    exit_signal_id: str | None = None,
+    exit_order_id: str | None = None,
+) -> None:
+    """Transition (OPEN | CLOSING) → CLOSED with exit fields populated.
+
+    Paper broker fills instantly so OPEN → CLOSED is allowed (skipping CLOSING).
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM positions WHERE position_id = ?",
+            [position_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"position not found: {position_id}")
+        current = row[0]
+        if CLOSED not in ALLOWED_TRANSITIONS.get(current, set()):
+            raise ValueError(
+                f"invalid transition {current} → CLOSED for {position_id}"
+            )
+
+        conn.execute(
+            """
+            UPDATE positions SET
+                status = ?,
+                exit_date = ?, exit_price = ?, exit_reason = ?,
+                regime_at_exit = ?,
+                exit_commission = ?, exit_tax = ?, exit_slippage_cost = ?,
+                exit_proceeds = ?,
+                exit_signal_id = COALESCE(?, exit_signal_id),
+                exit_order_id  = COALESCE(?, exit_order_id),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE position_id = ?
+            """,
+            [
+                CLOSED, exit_date, exit_price, exit_reason, regime_at_exit,
+                exit_commission, exit_tax, exit_slippage_cost, exit_proceeds,
+                exit_signal_id, exit_order_id, position_id,
+            ],
+        )
+
+    logger.info(
+        "position_closed",
+        position_id=position_id, exit_price=exit_price, exit_reason=exit_reason,
     )
 
 
-def position_summary(positions: dict[str, Position]) -> str:
-    """便利的字串摘要 (CLI / log 用)。"""
-    if not positions:
-        return "No positions"
-    lines = [f"{p.symbol:8s}  qty={p.quantity:>8d}  avg={p.avg_cost:>10.2f}"
-             f"  pnl_realized={p.realized_pnl:>+12.2f}"
-             for p in sorted(positions.values(), key=lambda x: x.symbol)]
-    return "\n".join(lines)
+def _transition(position_id: str, *, expected_from: str, to_status: str) -> None:
+    """Internal: enforce state machine transition."""
+    if to_status not in VALID_STATUSES:
+        raise ValueError(f"invalid status: {to_status}")
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM positions WHERE position_id = ?",
+            [position_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"position not found: {position_id}")
+        current = row[0]
+        if current != expected_from:
+            raise ValueError(
+                f"expected status {expected_from}, got {current} for {position_id}"
+            )
+        if to_status not in ALLOWED_TRANSITIONS[current]:
+            raise ValueError(
+                f"invalid transition {current} → {to_status} for {position_id}"
+            )
+        conn.execute(
+            "UPDATE positions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE position_id = ?",
+            [to_status, position_id],
+        )
+
+    logger.info(
+        "position_state_transition",
+        position_id=position_id, from_status=current, to_status=to_status,
+    )
 
 
 # ─────────────────────────────────────────────────────────────
-# Smoke test
+# Read operations
 # ─────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    from data.database import init_schema
-    from storage.orders import record_order, update_order_status
 
-    init_schema()
 
-    # 模擬幾筆成交
-    o1 = record_order("2330", "buy", 1000, broker="paper")
-    update_order_status(o1, "filled", filled_qty=1000, avg_price=985.0)
+def get_position(position_id: str) -> Position | None:
+    """Single lookup."""
+    with connect(read_only=True) as conn:
+        row = conn.execute(
+            "SELECT * FROM positions WHERE position_id = ?", [position_id]
+        ).fetchone()
+    if row is None:
+        return None
+    return _row_to_position(row)
 
-    o2 = record_order("0050", "buy", 5000, broker="paper")
-    update_order_status(o2, "filled", filled_qty=5000, avg_price=200.5)
 
-    o3 = record_order("2330", "sell", 500, broker="paper")
-    update_order_status(o3, "filled", filled_qty=500, avg_price=1020.0)
+def get_open_positions(symbol: str | None = None) -> list[Position]:
+    """All currently open positions (status in OPENING/OPEN/CLOSING)."""
+    with connect(read_only=True) as conn:
+        if symbol:
+            rows = conn.execute(
+                """
+                SELECT * FROM positions
+                WHERE status IN ('OPENING', 'OPEN', 'CLOSING')
+                  AND symbol = ?
+                ORDER BY entry_date, position_id
+                """,
+                [symbol],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM positions
+                WHERE status IN ('OPENING', 'OPEN', 'CLOSING')
+                ORDER BY entry_date, position_id
+                """
+            ).fetchall()
+    return [_row_to_position(r) for r in rows]
 
-    positions = compute_current_positions()
-    print(position_summary(positions))
 
-    # 用市價算曝險
-    market = {"2330": 1020.0, "0050": 205.0}
-    print(f"\nTotal exposure: {total_exposure(positions, market):,.0f}")
+def get_closed_positions(limit: int | None = None) -> list[Position]:
+    """Historical closed positions (newest first)."""
+    sql = """
+        SELECT * FROM positions WHERE status = 'CLOSED'
+        ORDER BY exit_date DESC, position_id
+    """
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    with connect(read_only=True) as conn:
+        rows = conn.execute(sql).fetchall()
+    return [_row_to_position(r) for r in rows]
+
+
+def has_open_position(symbol: str) -> bool:
+    """Quick check — used by selector to enforce symbol_already_held."""
+    with connect(read_only=True) as conn:
+        n = conn.execute(
+            """
+            SELECT COUNT(*) FROM positions
+            WHERE status IN ('OPENING', 'OPEN', 'CLOSING') AND symbol = ?
+            """,
+            [symbol],
+        ).fetchone()[0]
+    return n > 0
+
+
+def _row_to_position(row: tuple[Any, ...]) -> Position:
+    """Map a positions row (full SELECT *) to Position dataclass."""
+    return Position(
+        position_id=row[0],
+        entry_signal_id=row[1],
+        entry_order_id=row[2],
+        exit_signal_id=row[3],
+        exit_order_id=row[4],
+        symbol=row[5],
+        strategy=row[6],
+        entry_date=row[7],
+        entry_price=row[8],
+        entry_atr=row[9],
+        regime_at_entry=row[10],
+        sector=row[11],
+        is_etf=row[12],
+        shares=row[13],
+        notional_at_entry=row[14],
+        entry_commission=row[15],
+        entry_slippage_cost=row[16],
+        last_close=row[17],
+        last_updated_date=row[18],
+        max_close_since_entry=row[19],
+        max_close_date=row[20],
+        min_close_since_entry=row[21],
+        min_close_date=row[22],
+        exit_date=row[23],
+        exit_price=row[24],
+        exit_reason=row[25],
+        regime_at_exit=row[26],
+        exit_commission=row[27],
+        exit_tax=row[28],
+        exit_slippage_cost=row[29],
+        exit_proceeds=row[30],
+        status=row[31],
+        created_at=row[32],
+        updated_at=row[33],
+    )

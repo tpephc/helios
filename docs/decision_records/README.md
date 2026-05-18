@@ -53,3 +53,5 @@ Before any of these:
 | 004 | Human Telegram approval for entries | Accepted | autopilot, kill-switch ladders, real-time alerts |
 | 005 | Deterministic regime over HMM/ML | Accepted | latent-state estimation, sklearn deps, regime model overfit |
 | 006 | Cohesion over abstraction in v0.1 | Accepted | premature plugin systems, class hierarchies |
+| 007 | Regime-conditional budget profile switching | **Proposed** | premature CONCENTRATED-profile adoption |
+| 008 | Telegram polling over webhook | Accepted | webhook infra, always-on listener, sdk dep |

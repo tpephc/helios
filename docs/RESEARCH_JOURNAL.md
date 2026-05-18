@@ -13,6 +13,64 @@
 
 ---
 
+## v0.1.14.1.2.experiment — F Budget Sweep Findings  (2026-05-17)
+
+### What
+Ran `scripts/budget_sweep.py --is-end 2023-12-31 --slippage 0.001` to compare 5 risk-budget configs on the same backtest engine.
+
+### Why (and why reviewer reversed earlier "don't do F")
+Reviewer initially flagged F as premature optimization. After seeing results, reviewer reversed:
+> 「你這次不是在 curve fitting，而是在**理解 portfolio system dynamics**。這兩件事差很多。」
+
+The distinction matters: optimization tunes parameters for better metrics on the SAME hypothesis. System-dynamics analysis reveals **structural facts about the system's character**. F turned out to be the latter.
+
+### Three structural findings
+
+**1. CONCENTRATED (3×30%) dominates CURRENT (5×20%) on every OOS metric**
+
+| Metric | CURRENT | CONCENTRATED | Change |
+|---|---|---|---|
+| CAGR | +5.86% | +7.23% | +1.37pp |
+| Max DD | -11.71% | -9.57% | better |
+| PF (gross) | 4.13 | 7.08 | +71% |
+| Win rate | 54.5% | 60.7% | +6.2pp |
+
+This is **rare** — concentration normally *increases* drawdown. Helios's reverse pattern means score ranking carries genuine information content. Forcing the selector to pick fewer, higher-score signals improves quality, not just reduces diversification.
+
+**2. cash_buffer 73.5% binding in CONCENTRATED reveals regime clustering**
+
+When CONCENTRATED is the budget, 73.5% of rejected signals are rejected by `cash_buffer` (out of money) — not by sector cap or ETF cap.
+
+Translation: **Helios in a healthy regime has more good signals than capital can deploy**. Trend setups cluster (AI bull → ETF + financial + semi all break out at once). Helios's character is **cluster picker**, not **scarce signal hunter**.
+
+This reshapes the mental model. Future portfolio philosophy direction (v0.2+) might be "high-conviction, low-turnover, concentrated trend in regime-validated periods" — closer to mature discretionary PM than to broad signal aggregation.
+
+**3. WIDER didn't improve; NO-ETF-CAP didn't improve**
+
+Loosening constraints (etf cap 50%, sector cap 35% in WIDER; etf cap removed in NO-ETF-CAP) produced **no improvement** vs CURRENT. This is healthy: many false-alpha systems show large gains when constraints loosen (indicating hidden concentration illusion). Helios doesn't — alpha is real, not illusion.
+
+### Why CONCENTRATED is NOT promoted to default
+
+- Sample size 28 trades in CONCENTRATED OOS — PF 7.08 has wide standard error (true value likely 4-9)
+- CURRENT already substantively STRONG PASS — replacing validated default is high-risk / low-value
+- Adding regime-conditional logic violates ADR-001 minimalism + ADR-006 cohesion
+- Possible survivorship bias: backtest covers only ~2.4 years of mostly AI-bull regime
+
+### Captured as ADR-007 (Proposed status)
+
+ADR-007 documents the finding + the case for NOT acting now + the triggers under which it would be promoted (3+ months paper trading data confirming, OR bear regime stress test, OR n≥60 trades with PF still elevated).
+
+This is the first **Proposed** ADR — recording "we considered this idea, here's why we're not doing it now, here's what would make us reconsider". Prevents both **forgetting** and **premature adoption** failure modes.
+
+### Operator takeaway
+
+Helios's true edge framing (revised, reviewer's words):
+> 「在正確 regime 中拒絕大量 mediocre setups，只保留少數高品質趨勢」
+
+This is closer to **regime-aware sniper** than **signal farm**. The 29% avg exposure profile is not a bug — it's the structural consequence of being a regime-filtered, score-discriminating, capital-disciplined trend system.
+
+---
+
 ## v0.1.14.1 — Portfolio Layer + Constrained Backtest  (2026-05-17)
 
 ### What

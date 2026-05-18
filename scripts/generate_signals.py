@@ -119,6 +119,7 @@ def main() -> int:
                     signal_type=sig.side,
                     score=sig.score,
                     price=sig.entry_price,
+                    signal_date=target,
                     reason=sig.reason,
                     entry_atr=sig.entry_atr,
                     regime=sig.regime,

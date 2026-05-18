@@ -13,6 +13,7 @@ Changelog:
 from market.trading_calendar import (
     get_trading_days,
     is_trading_day,
+    next_fillable_day,
     next_trading_day,
     previous_trading_day,
     trading_days_between,
@@ -21,6 +22,7 @@ from market.trading_calendar import (
 __all__ = [
     "get_trading_days",
     "is_trading_day",
+    "next_fillable_day",
     "next_trading_day",
     "previous_trading_day",
     "trading_days_between",

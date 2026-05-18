@@ -6,8 +6,9 @@ Schema 設計原則：
 - Event log (signals/orders): append-only，全程留下審計軌跡
 - snapshots: 每日狀態快照，配合 event log 可重建任意時點
 
-Version: v0.1.5 (2026-05-17)
+Version: v0.1.6 (2026-05-17)
 Changelog:
+  v0.1.6 (2026-05-17): 新增 positions 表 (v0.1.14.2 paper trading state machine)
   v0.1.5 (2026-05-17): 新增 daily_features 表 + market_regime 表 (v0.1.11 indicators + regime)
   v0.1.4 (2026-05-16): 新增 daily_price_adj 表 + adjustment_state 表 (v0.1.10 還原權息)
   v0.1.3 (2026-05-16): 新增 company_metadata 表 (TWSE t187ap03_L 來源);
@@ -86,7 +87,8 @@ CREATE TABLE IF NOT EXISTS monthly_revenue (
 
 CREATE TABLE IF NOT EXISTS signals (
     signal_id        VARCHAR PRIMARY KEY,
-    timestamp        TIMESTAMP NOT NULL,
+    signal_date      DATE NOT NULL,      -- 市場語意日期 (as_of of the run that generated it)
+    created_at       TIMESTAMP NOT NULL, -- 系統建立時間 (when row was inserted)
     symbol           VARCHAR NOT NULL,
     strategy         VARCHAR NOT NULL,
     signal_type      VARCHAR NOT NULL,   -- buy / sell / exit
@@ -104,9 +106,12 @@ CREATE TABLE IF NOT EXISTS signals (
     expired_reason   VARCHAR,            -- timeout / atr_drift / manual_reject
     metadata         JSON
 );
-CREATE INDEX IF NOT EXISTS idx_signals_ts     ON signals(timestamp);
-CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(approval_status);
-CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
+CREATE INDEX IF NOT EXISTS idx_signals_signal_date ON signals(signal_date);
+CREATE INDEX IF NOT EXISTS idx_signals_created_at  ON signals(created_at);
+CREATE INDEX IF NOT EXISTS idx_signals_status      ON signals(approval_status);
+CREATE INDEX IF NOT EXISTS idx_signals_symbol      ON signals(symbol);
+CREATE INDEX IF NOT EXISTS idx_signals_idempotency
+    ON signals(symbol, strategy, signal_type, signal_date, approval_status);
 
 CREATE TABLE IF NOT EXISTS orders (
     order_id    VARCHAR PRIMARY KEY,
@@ -297,6 +302,71 @@ CREATE TABLE IF NOT EXISTS market_regime (
     regime       VARCHAR,        -- 'bull' / 'bear' / 'crisis' / 'neutral'
     computed_at  TIMESTAMP
 );
+
+-- ═══════════════════════════════════════════════════════════
+-- v0.1.14.2: positions table (paper trading state machine)
+-- ═══════════════════════════════════════════════════════════
+-- ARCHITECTURE.md §6.5 Signal Lifecycle State Machine.
+--
+-- Promotes positions from derived-from-orders to first-class entity,
+-- because v0.1.14.2 needs stateful per-position fields (max_close_since_entry,
+-- regime_at_entry, MFE/MAE) that cannot be cleanly derived from orders alone.
+-- The old event-sourced compute_current_positions() is now legacy/derived-helper.
+--
+-- States (status column): OPENING / OPEN / CLOSING / CLOSED
+--   OPENING  - buy order submitted, awaiting fill (transient; paper broker: instant)
+--   OPEN     - filled, running daily updates of MFE/MAE/max_close
+--   CLOSING  - sell order submitted, awaiting fill (transient)
+--   CLOSED   - fully realized; exit fields populated
+CREATE TABLE IF NOT EXISTS positions (
+    position_id              VARCHAR PRIMARY KEY,
+    entry_signal_id          VARCHAR,                -- FK signals.signal_id (entry)
+    entry_order_id           VARCHAR,                -- FK orders.order_id (buy)
+    exit_signal_id           VARCHAR,                -- FK signals.signal_id (exit), nullable
+    exit_order_id            VARCHAR,                -- FK orders.order_id (sell), nullable
+
+    symbol                   VARCHAR NOT NULL,
+    strategy                 VARCHAR NOT NULL,
+
+    -- Entry context
+    entry_date               DATE NOT NULL,
+    entry_price              DOUBLE NOT NULL,
+    entry_atr                DOUBLE NOT NULL,
+    regime_at_entry          VARCHAR NOT NULL,       -- per review #1
+    sector                   VARCHAR NOT NULL,
+    is_etf                   BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Sizing
+    shares                   BIGINT NOT NULL,
+    notional_at_entry        DOUBLE NOT NULL,        -- target capital deployed (NTD)
+    entry_commission         DOUBLE NOT NULL DEFAULT 0,
+    entry_slippage_cost      DOUBLE NOT NULL DEFAULT 0,
+
+    -- Running stats (updated daily while OPEN)
+    last_close               DOUBLE,
+    last_updated_date        DATE,
+    max_close_since_entry    DOUBLE,
+    max_close_date           DATE,
+    min_close_since_entry    DOUBLE,
+    min_close_date           DATE,
+
+    -- Exit (populated when CLOSED)
+    exit_date                DATE,
+    exit_price               DOUBLE,
+    exit_reason              VARCHAR,                -- regime_exit / trailing_stop / manual / end_of_paper
+    regime_at_exit           VARCHAR,
+    exit_commission          DOUBLE DEFAULT 0,
+    exit_tax                 DOUBLE DEFAULT 0,
+    exit_slippage_cost       DOUBLE DEFAULT 0,
+    exit_proceeds            DOUBLE,                 -- net NTD received from sell
+
+    status                   VARCHAR NOT NULL,       -- OPENING / OPEN / CLOSING / CLOSED
+    created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
+CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol);
+CREATE INDEX IF NOT EXISTS idx_positions_entry_date ON positions(entry_date);
 """
 
 
@@ -312,12 +382,43 @@ def connect(read_only: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
 
 
 def init_schema() -> None:
-    """初始化所有 table (idempotent)。"""
+    """初始化所有 table (idempotent)。
+
+    v0.1.14.2-c3: detects old signals schema (timestamp column, pre-c3) and
+    rebuilds it. Per c3 release notes: no backwards compat — paper trading
+    DB has no production data, so a clean rebuild is acceptable. Other
+    tables (positions, orders, etc.) are not touched; the column rename
+    is signals-only.
+    """
     s = get_settings()
     s.ensure_dirs()
     with connect() as conn:
+        _drop_pre_c3_signals_if_present(conn)
         conn.execute(SCHEMA_SQL)
     logger.info("schema_initialized", db_path=str(s.db_path))
+
+
+def _drop_pre_c3_signals_if_present(conn) -> None:
+    """If signals table exists with old timestamp column (no signal_date), drop it.
+
+    Old schema (pre-c3): signal_id, timestamp, symbol, ...
+    New schema (c3):     signal_id, signal_date, created_at, symbol, ...
+
+    Detection: column 'signal_date' missing in existing signals table.
+    """
+    existing = conn.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema='main' AND table_name='signals'"
+    ).fetchone()
+    if not existing:
+        return
+    cols = {row[0] for row in conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema='main' AND table_name='signals'"
+    ).fetchall()}
+    if "signal_date" not in cols:
+        logger.warning("pre_c3_signals_schema_detected", action="DROP_AND_REBUILD")
+        conn.execute("DROP TABLE signals")
 
 
 def list_tables() -> list[str]:

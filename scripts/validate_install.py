@@ -245,15 +245,18 @@ def check_duckdb() -> bool:
 def check_storage_e2e() -> bool:
     section("9. Storage 端到端")
     try:
+        from datetime import date as _date
+
         from storage import orders, positions, signals
 
         # 用 unique stock_id 避免污染既有資料
         test_sym = f"_TEST_{datetime.now().strftime('%H%M%S')}"
+        today = _date.today()
 
         # 1. Signal lifecycle
         sid = signals.save_signal(
             symbol=test_sym, strategy="validate", signal_type="buy",
-            score=0.7, price=100.0, entry_atr=2.0,
+            score=0.7, price=100.0, signal_date=today, entry_atr=2.0,
             reason=["install validation test"],
         )
         record("save_signal", bool(sid), f"signal_id={sid[:8]}...")
@@ -283,7 +286,7 @@ def check_storage_e2e() -> bool:
         # 7. ATR drift expiry (v0.1.1 batch fix)
         sid2 = signals.save_signal(
             symbol=test_sym, strategy="validate", signal_type="sell",
-            score=0.7, price=100.0, entry_atr=2.0,
+            score=0.7, price=100.0, signal_date=today, entry_atr=2.0,
             reason=["drift test"],
         )
         n = signals.expire_drifted({test_sym: 102.0}, max_drift_atr=0.5)

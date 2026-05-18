@@ -1,6 +1,6 @@
 # Helios — 個人版機構級台股中長期自動投資系統
 
-> Version: v0.1.14.1.2 (2026-05-17) — ARCHITECTURE complete + ADR records + identity crystallized
+> Version: v0.1.14.2-c (2026-05-17) — Hotfix: 8 P0/P1 issues + pytest suite + T+1 fill semantics
 > v0.1 — Step 2.5 → 3 過渡 (data + multi-source + truth + adjustment 完成)
 > 目標環境: Ubuntu Server x86_64, Python 3.12, uv
 

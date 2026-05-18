@@ -115,13 +115,50 @@ def previous_trading_day(d: date, max_back_days: int = 30) -> date | None:
 
 
 def next_trading_day(d: date, max_forward_days: int = 30) -> date | None:
-    """找到 d 之後最近的一個交易日（不含 d）。"""
+    """找到 d 之後最近的一個交易日（不含 d）。
+
+    Calendar truth: returns whether a date IS a trading day per the market calendar.
+    Does NOT verify whether daily_price_adj data has been ingested for that date.
+    For T+1 fill use case, use `next_fillable_day` instead.
+    """
     for i in range(1, max_forward_days + 1):
         candidate = d + timedelta(days=i)
         if is_trading_day(candidate):
             return candidate
     logger.error("no_next_trading_day_found", date=str(d), max_forward=max_forward_days)
     return None
+
+
+def next_fillable_day(d: date, max_forward_days: int = 30) -> date | None:
+    """找到 d 之後最近、且 daily_price_adj 已有資料的交易日。
+
+    v0.1.14.2-c3: explicit split from `next_trading_day` to separate two
+    concerns previously conflated in execution.shutdown.next_trading_day:
+
+      - next_trading_day(d): calendar truth ("is 5/18 a trading day?")
+      - next_fillable_day(d): calendar + data availability
+                               ("is 5/18 a trading day AND do we have data?")
+
+    For T+1 fill semantics (signal on day T, fill at T+1 close as proxy), we
+    need the FILLABLE variant: the next trading day with data ingested. If the
+    calendar says 5/18 is a trading day but data isn't there yet, return None
+    so the operator knows to wait for data ingestion before running.
+
+    Returns None if no fillable day found within max_forward_days.
+    """
+    cal_next = next_trading_day(d, max_forward_days=max_forward_days)
+    if cal_next is None:
+        return None
+    # Check data availability for the calendar's next trading day
+    try:
+        with connect(read_only=True) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM daily_price_adj WHERE date = ?", [cal_next]
+            ).fetchone()
+        return cal_next if row and row[0] > 0 else None
+    except Exception as e:
+        logger.warning("next_fillable_day_db_check_failed", date=str(cal_next), error=str(e))
+        return None
 
 
 def get_trading_days(start: date, end: date) -> list[date]:
