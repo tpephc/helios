@@ -16,6 +16,12 @@
   with structured drift / fill metadata return — deferred from v0.1.14.3.1
   because it ripples through Telegram listener, summaries, and notifications)
 
+### Planned for v0.1.16.x — Intraday scan pilot (Scheme A)
+- Feature branch `feature/intraday-scan`
+- 15-30 min bar scan, Telegram notification only (no fills)
+- Minimum 2-week signal validation window before any execution changes
+- Depends on v0.1.15 Shioaji integration
+
 ### Planned for v0.2.0 — TWT49U + corporate_actions confidence engine
 
 ---
