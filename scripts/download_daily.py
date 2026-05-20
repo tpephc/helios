@@ -64,12 +64,17 @@ def get_universe_symbols() -> list[str]:
             - "2330"
           include_keywords: [...]  ← criteria-based，這裡不解析
           market_cap_min_twd: ...  ← criteria-based
+      dynamic_top200:
+        symbols: [...]  ← v0.1.15: managed by scripts/sync_universe.py
     """
     universe = load_universe()
     symbols: set[str] = set()
     for _, u_def in universe.get("universes", {}).items():
         for sym in u_def.get("include_specific", []):
             symbols.add(str(sym))
+    # v0.1.15: dynamic universe symbols (managed by sync_universe.py)
+    for sym in universe.get("dynamic_top200", {}).get("symbols", []):
+        symbols.add(str(sym))
     symbols.add("TAIEX")  # 一律加 TAIEX (regime 偵測必須)
     return sorted(symbols)
 

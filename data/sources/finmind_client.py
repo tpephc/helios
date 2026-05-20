@@ -318,6 +318,46 @@ class FinMindClient:
             df = df.unique(subset=subset).sort("date")
         return df
 
+    def market_value_all(self, on_date: date) -> pl.DataFrame:
+        """Market cap for ALL listed stocks on a given date.
+
+        Uses TaiwanStockMarketValue without data_id — returns one row per
+        listed stock. Suitable for universe construction (rank by market_value).
+
+        v0.1.15: added for sync_universe.py dynamic top-N universe.
+
+        Note: free-tier availability not yet confirmed in production. Script
+        falls back gracefully (returns empty DataFrame) if endpoint is
+        inaccessible; caller must handle empty case.
+        """
+        rows = self._get(
+            "TaiwanStockMarketValue",
+            start_date=on_date.isoformat(),
+            end_date=on_date.isoformat(),
+        )
+        if not rows:
+            return pl.DataFrame()
+        df = pl.from_dicts(rows)
+        required = {"stock_id", "market_value"}
+        if not required.issubset(df.columns):
+            logger.warning(
+                "market_value_all_unexpected_columns",
+                got=df.columns,
+                expected=list(required),
+            )
+            return pl.DataFrame()
+        df = df.select(
+            pl.col("stock_id"),
+            pl.col("date").str.to_date() if "date" in df.columns
+                else pl.lit(on_date).alias("date"),
+            pl.col("market_value").cast(pl.Float64, strict=False),
+        )
+        return (
+            df.drop_nulls(subset=["market_value"])
+            .unique(subset=["stock_id"])
+            .sort("market_value", descending=True)
+        )
+
     # ── lifecycle ─────────────────────────────────────────────
 
     def close(self) -> None:
