@@ -71,7 +71,7 @@ def format_entry_request(
         f"訊號 ID: `{sig.signal_id}`",
         f"分數: {sig.score:.2f} / 價: {sig.price:.2f} / ATR: {sig.entry_atr:.2f}"
             if sig.entry_atr else f"分數: {sig.score:.2f} / 價: {sig.price:.2f}",
-        f"策略: {sig.strategy} / 市況: {sig.regime or '?'}",
+        f"策略: `{sig.strategy}` / 市況: `{sig.regime or '?'}`",
         "",
         "理由:",
     ]
@@ -130,7 +130,7 @@ def push_entry_request(
         sector_value=sector_value, etf_value=etf_value, pos_value=pos_value,
         budget=budget,
     )
-    return bot.send_message(text, parse_mode="Markdown")
+    return bot.send_message(text)
 
 
 def push_exit_notification(
@@ -147,7 +147,7 @@ def push_exit_notification(
         f"毛報酬: {gross_return_pct:+.2f}%\n"
         f"實收金額: NTD {proceeds_ntd:,.0f}"
     )
-    return bot.send_message(text, parse_mode="Markdown")
+    return bot.send_message(text)
 
 
 def push_simple(bot: TelegramBot, text: str) -> int | None:
