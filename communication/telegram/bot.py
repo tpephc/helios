@@ -102,7 +102,7 @@ class TelegramBot:
             logger.warning("telegram_send_not_ok", response=data)
             return None
         except (requests.RequestException, ValueError, KeyError) as e:
-            logger.warning("telegram_send_failed", error=str(e))
+            logger.warning("telegram_send_failed", error=type(e).__name__)
             return None
 
     # ── Receive ────────────────────────────────────────────
