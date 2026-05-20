@@ -67,3 +67,37 @@ Runs in parallel to Phase 1–2; not blocked by intraday work.
 - Real-money live trading before v0.3.0
 - Intraday strategy parameter reuse from EOD models without validation
 - Full-auto approval before intraday signal quality is verified
+
+---
+
+## v0.1.15 Addendum — Dynamic Universe (2026-05-20)
+
+### Design Decision
+Data source: TWSE via FinMind `TaiwanStockMarketValue` (authoritative,
+existing token, free). MSCI Taiwan excluded — licensing restrictions
+prevent programmatic access. MSCI is a subset of TWSE top-cap anyway.
+
+### Update Policy
+- Frequency: monthly, first trading day of each month
+- Rebalance: top 200 by market cap (TWSE-listed only; exclude OTC, TDR, KY)
+- Position protection: stocks removed from universe with open positions
+  stay in `protected_symbols` list — no new buy signals generated, but
+  existing positions held until natural exit (trailing stop / strategy exit)
+
+### New Component: `scripts/sync_universe.py`
+sync_universe.py
+├── Fetch TaiwanStockMarketValue from FinMind
+├── Filter: TWSE listed, exclude TDR/DR/KY
+├── Rank top 200 by market cap
+├── Diff against current universe.yaml
+├── Added symbols  → download_daily --symbols [new] → build_adj → compute_features
+└── Removed symbols → check positions:
+OPEN position → add to protected_symbols (scan exits, no new entries)
+no position   → remove from universe.yaml
+### New DB Table: `universe_log`
+Records each monthly rebalance diff for audit:
+- `rebalance_date`, `symbol`, `action` (added/removed/protected), `market_cap_rank`
+
+### Cron Addition (after sync_universe.py is built)
+0 9 1-7 * 1   # First Monday of each month, 09:00 TST
+cd ~/projects/helios && uv run python scripts/sync_universe.py >> logs/universe_sync.log 2>&1
