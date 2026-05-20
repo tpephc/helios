@@ -78,7 +78,7 @@ class TelegramBot:
 
     # ── Send ───────────────────────────────────────────────
 
-    def send_message(self, text: str, *, parse_mode: str | None = "Markdown") -> int | None:
+    def send_message(self, text: str, *, parse_mode: str | None = None) -> int | None:
         """Send a message. Returns Telegram message_id on success, None on failure.
 
         Splits long messages (Telegram limit 4096 chars) into multiple sends.

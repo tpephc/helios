@@ -130,7 +130,7 @@ def push_entry_request(
         sector_value=sector_value, etf_value=etf_value, pos_value=pos_value,
         budget=budget,
     )
-    return bot.send_message(text)
+    return bot.send_message(text, parse_mode="Markdown")
 
 
 def push_exit_notification(
@@ -147,7 +147,7 @@ def push_exit_notification(
         f"毛報酬: {gross_return_pct:+.2f}%\n"
         f"實收金額: NTD {proceeds_ntd:,.0f}"
     )
-    return bot.send_message(text)
+    return bot.send_message(text, parse_mode="Markdown")
 
 
 def push_simple(bot: TelegramBot, text: str) -> int | None:
