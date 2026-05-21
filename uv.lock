@@ -784,7 +784,7 @@ wheels = [
 
 [[package]]
 name = "helios"
-version = "0.1.14.3.post8"
+version = "0.1.14.3.post9"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
