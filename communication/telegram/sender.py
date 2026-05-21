@@ -67,7 +67,7 @@ def format_entry_request(
     sec_new = ((sector_value + target_notional) / equity * 100) if equity > 0 else 0.0
 
     lines: list[str] = [
-        f"🟢 *進場訊號 — {sym}* ({sector})",
+        f"🟢 進場訊號 — {sym} ({sector})",
         f"訊號 ID: `{sig.signal_id}`",
         f"分數: {sig.score:.2f} / 價: {sig.price:.2f} / ATR: {sig.entry_atr:.2f}"
             if sig.entry_atr else f"分數: {sig.score:.2f} / 價: {sig.price:.2f}",
@@ -141,7 +141,7 @@ def push_exit_notification(
     """Push a notification when an auto-exit fires."""
     emoji = "🟢" if gross_return_pct > 0 else "🔴"
     text = (
-        f"{emoji} *已出場 — {symbol}*\n"
+        f"{emoji} 已出場 — {symbol}\n"
         f"原因: `{exit_reason}`\n"
         f"出場價: {exit_price:.2f}\n"
         f"毛報酬: {gross_return_pct:+.2f}%\n"
