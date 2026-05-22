@@ -7,6 +7,9 @@ Does NOT use the intraday state machine (that is for intraday_monitor.py).
 BREACH positions will be auto-exited by run_exit_scan at T+1 open.
 This alert is informational: operator awareness only, no override semantics.
 
+Two public message builders: build_breach_message() and build_approach_message().
+The digest sends each as a separate Telegram message.
+
 Usage:
     uv run python scripts/run_eod_position_alert.py
     uv run python scripts/run_eod_position_alert.py --include-synthetic
@@ -29,6 +32,10 @@ from utils.trading_dates import resolve_as_of
 
 logger = get_logger(__name__)
 
+TELEGRAM_MESSAGE_LIMIT: int = 4096
+DIGEST_SOFT_LIMIT: int = 3800
+MAX_POSITION_ALERT_ROWS: int = 20
+
 
 @dataclass
 class _PositionAlert:
@@ -42,31 +49,23 @@ class _PositionAlert:
     zone: PriceZone
 
 
-def build_position_alert_message(
+def _load_alerts(
     as_of: date_type,
     include_synthetic: bool = False,
-) -> str | None:
-    """Classify OPEN positions and return a risk alert message.
-
-    stale_count tracks positions IN WARNING ZONES whose last_updated_date
-    differs from as_of.  It does not count all stale positions, only those
-    that appear in the alert.  The wording reflects this scope.
-
-    Args:
-        as_of: Reference date for message header and staleness check.
-        include_synthetic: If False (default), exclude is_synthetic positions.
+) -> tuple[list[_PositionAlert], int]:
+    """Load and classify all OPEN positions.
 
     Returns:
-        Formatted Telegram message, or None if no positions in warning zones.
+        (alerts_in_warning_zones, total_open_count)
     """
-    synthetic_filter = (
-        ""
-        if include_synthetic
-        else "AND (is_synthetic = FALSE OR is_synthetic IS NULL)"
-    )
+    if include_synthetic:
+        synthetic_filter = ""
+    else:
+        synthetic_filter = "AND (is_synthetic = FALSE OR is_synthetic IS NULL)"
 
     with connect(read_only=True) as conn:
-        rows = conn.execute(f"""
+        rows = conn.execute(
+            f"""
             SELECT p.symbol,
                    COALESCE(cm.short_name, p.symbol) AS display_name,
                    p.shares, p.last_close, p.last_updated_date,
@@ -80,21 +79,17 @@ def build_position_alert_message(
               AND  p.last_close            > 0
               {synthetic_filter}
             ORDER  BY p.symbol
-        """).fetchall()
+            """
+        ).fetchall()
 
-    if not rows:
-        return None
-
+    total = len(rows)
     alerts: list[_PositionAlert] = []
-
     for sym, display_name, shares, last_close, last_upd, entry_atr, max_close in rows:
         last_close = float(last_close)
         levels = compute_stop_levels(float(max_close), float(entry_atr))
         zone = classify_zone(last_close, levels, PriceZone.NORMAL)
-
         if zone == PriceZone.NORMAL:
             continue
-
         distance_pct = (last_close - levels.trailing_stop) / levels.trailing_stop * 100
         alerts.append(_PositionAlert(
             symbol=sym,
@@ -106,51 +101,83 @@ def build_position_alert_message(
             distance_pct=distance_pct,
             zone=zone,
         ))
+    return alerts, total
 
-    if not alerts:
-        return None
 
-    # stale_count: warning-zone positions only (not all open positions)
-    stale_count = sum(
-        1 for a in alerts
-        if a.last_updated_date is not None and a.last_updated_date != as_of
+def _fmt_row(a: _PositionAlert, as_of: date_type) -> str:
+    flag = "†" if (a.last_updated_date and a.last_updated_date != as_of) else ""
+    return (
+        f"  {a.symbol} {a.display_name}{flag}  {a.shares}股"
+        f"  收盤{a.last_close:.2f}"
+        f"  停損{a.trailing_stop:.2f}"
+        f"  ({a.distance_pct:+.1f}%)"
     )
 
+
+def build_breach_message(
+    as_of: date_type,
+    include_synthetic: bool = False,
+) -> str | None:
+    """Return BREACH-only message, or None if no breach positions."""
+    alerts, total = _load_alerts(as_of, include_synthetic)
     breach = [a for a in alerts if a.zone == PriceZone.BREACH]
-    approach = [a for a in alerts if a.zone == PriceZone.APPROACH]
+    if not breach:
+        return None
 
-    lines = [f"⚠️ 持倉風險警示 ({as_of})"]
-
-    if stale_count > 0:
-        lines.append(f"⚠️ {stale_count} 檔警示部位價格非當日資料")
-
-    if breach:
-        lines.append(f"\n🔴 觸及停損 ({len(breach)} 檔) — 明日自動出場")
-        for a in breach:
-            flag = "†" if (a.last_updated_date and a.last_updated_date != as_of) else ""
-            lines.append(
-                f"  {a.symbol} {a.display_name}{flag}  {a.shares}股"
-                f"  收盤{a.last_close:.2f}"
-                f"  停損{a.trailing_stop:.2f}"
-                f"  ({a.distance_pct:+.1f}%)"
-            )
-
-    if approach:
-        lines.append(f"\n⚠️ 接近停損 ({len(approach)} 檔)")
-        for a in approach:
-            flag = "†" if (a.last_updated_date and a.last_updated_date != as_of) else ""
-            lines.append(
-                f"  {a.symbol} {a.display_name}{flag}  {a.shares}股"
-                f"  收盤{a.last_close:.2f}"
-                f"  停損{a.trailing_stop:.2f}"
-                f"  ({a.distance_pct:+.1f}%)"
-            )
-
-    lines.append(f"\n共 {len(alerts)} 檔需關注 / 總持倉 {len(rows)} 檔")
-    if stale_count > 0:
-        lines.append("† 警示部位價格非當日")
-
+    stale = sum(
+        1 for a in breach
+        if a.last_updated_date and a.last_updated_date != as_of
+    )
+    lines = [f"🔴 觸及停損 ({len(breach)} 檔) — 明日自動出場 ({as_of})"]
+    if stale:
+        lines.append(f"⚠️ {stale} 檔價格非當日資料")
+    lines.append("")
+    for a in breach:
+        lines.append(_fmt_row(a, as_of))
+    lines.append(f"\n共 {len(alerts)} 檔需關注 / 總持倉 {total} 檔")
+    if stale:
+        lines.append("† 價格非當日")
     return "\n".join(lines)
+
+
+def build_approach_message(
+    as_of: date_type,
+    include_synthetic: bool = False,
+) -> str | None:
+    """Return APPROACH-only message, or None if no approach positions."""
+    alerts, total = _load_alerts(as_of, include_synthetic)
+    approach = [a for a in alerts if a.zone == PriceZone.APPROACH]
+    if not approach:
+        return None
+
+    stale = sum(
+        1 for a in approach
+        if a.last_updated_date and a.last_updated_date != as_of
+    )
+    lines = [f"⚠️ 接近停損 ({len(approach)} 檔) ({as_of})"]
+    if stale:
+        lines.append(f"⚠️ {stale} 檔價格非當日資料")
+    lines.append("")
+    for a in approach:
+        lines.append(_fmt_row(a, as_of))
+    lines.append(f"\n共 {len(alerts)} 檔需關注 / 總持倉 {total} 檔")
+    if stale:
+        lines.append("† 價格非當日")
+    return "\n".join(lines)
+
+
+def build_position_alert_message(
+    as_of: date_type,
+    include_synthetic: bool = False,
+    max_rows: int = MAX_POSITION_ALERT_ROWS,
+) -> str | None:
+    """Legacy single-message builder for standalone --dry-run."""
+    breach_msg = build_breach_message(as_of, include_synthetic)
+    approach_msg = build_approach_message(as_of, include_synthetic)
+    parts = [p for p in (breach_msg, approach_msg) if p]
+    if not parts:
+        return None
+    return ("\n" + "─" * 28 + "\n").join(parts)
 
 
 def main() -> int:

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 # scripts/run_evening_digest.py
-"""Evening digest orchestrator — v0.1.15. Combines signal preview and position alert.
+"""Evening digest orchestrator — v0.1.15. Multi-message send by zone.
 
-Runs run_signal_preview and run_eod_position_alert independently.
-Failure isolation: if one section fails, the other still sends.
-Empty sections (no signals / no warnings) are silently omitted.
+Sends up to 3 separate Telegram messages:
+    1. Signal preview (明日進場候選)
+    2. BREACH positions (觸及停損) — if any
+    3. APPROACH positions (接近停損) — if any
+
+Separating by zone ensures each message is complete and not truncated.
+Each section is failure-isolated: one failing does not suppress the others.
 
 Cron:
     30 19 * * 1-5  cd ~/projects/helios && \\
@@ -25,54 +29,56 @@ from datetime import date as date_type
 from communication.telegram import TelegramBot, TelegramConfig
 from communication.telegram.sender import push_simple
 from scripts.run_signal_preview import build_preview_message
-from scripts.run_eod_position_alert import build_position_alert_message
+from scripts.run_eod_position_alert import (
+    build_breach_message,
+    build_approach_message,
+    TELEGRAM_MESSAGE_LIMIT,
+)
 from utils.logger import get_logger
 from utils.trading_dates import resolve_as_of
 
 logger = get_logger(__name__)
 
-_DIVIDER = "─" * 28
 
-
-def build_digest(
+def _build_sections(
     as_of: date_type,
     include_synthetic: bool = False,
-) -> str | None:
-    """Build the combined evening digest message.
-
-    Each section is built independently; exceptions include full traceback
-    so production failures are debuggable.
+) -> list[str]:
+    """Build all message sections, each failure-isolated.
 
     Returns:
-        Combined message string, or None if both sections are empty/failed.
+        List of non-empty message strings, at most 3 items.
     """
     sections: list[str] = []
 
+    # 1. Signal preview
     try:
-        preview = build_preview_message(as_of=as_of)
-        if preview:
-            sections.append(preview)
+        msg = build_preview_message(as_of=as_of)
+        if msg:
+            sections.append(msg)
     except Exception:  # noqa: BLE001
         logger.exception("digest_signal_preview_failed", as_of=str(as_of))
         sections.append("📋 明日進場候選\n⚠️ 取得失敗，請查閱 logs/evening_digest.log")
 
+    # 2. BREACH positions
     try:
-        alert = build_position_alert_message(
-            as_of=as_of,
-            include_synthetic=include_synthetic,
-        )
-        if alert:
-            sections.append(alert)
+        msg = build_breach_message(as_of=as_of, include_synthetic=include_synthetic)
+        if msg:
+            sections.append(msg)
     except Exception:  # noqa: BLE001
-        logger.exception("digest_position_alert_failed", as_of=str(as_of))
-        sections.append("⚠️ 持倉風險警示\n⚠️ 取得失敗，請查閱 logs/evening_digest.log")
+        logger.exception("digest_breach_message_failed", as_of=str(as_of))
+        sections.append("🔴 觸及停損\n⚠️ 取得失敗，請查閱 logs/evening_digest.log")
 
-    if not sections:
-        return None
+    # 3. APPROACH positions
+    try:
+        msg = build_approach_message(as_of=as_of, include_synthetic=include_synthetic)
+        if msg:
+            sections.append(msg)
+    except Exception:  # noqa: BLE001
+        logger.exception("digest_approach_message_failed", as_of=str(as_of))
+        sections.append("⚠️ 接近停損\n⚠️ 取得失敗，請查閱 logs/evening_digest.log")
 
-    header = f"📊 Helios Evening Digest ({as_of})"
-    body = f"\n{_DIVIDER}\n".join(sections)
-    return f"{header}\n\n{body}"
+    return sections
 
 
 def main() -> int:
@@ -85,24 +91,38 @@ def main() -> int:
     as_of = resolve_as_of(args.as_of)
     logger.info("evening_digest_start", as_of=str(as_of))
 
-    message = build_digest(as_of=as_of, include_synthetic=args.include_synthetic)
-    if message is None:
+    sections = _build_sections(as_of=as_of, include_synthetic=args.include_synthetic)
+
+    if not sections:
         print(f"[evening_digest] {as_of}: 無內容")
         return 0
 
     if args.dry_run:
-        print(message)
+        for i, msg in enumerate(sections, 1):
+            print(f"\n{'='*40}")
+            print(f"Message {i}/{len(sections)}  ({len(msg)} chars)")
+            print('='*40)
+            print(msg)
+        print(f"\n[total: {len(sections)} messages]")
         return 0
 
     tg_cfg = TelegramConfig.from_env()
     if tg_cfg is None:
         logger.warning("evening_digest_no_telegram_config")
-        print(message)
+        for msg in sections:
+            print(msg)
         return 0
 
     bot = TelegramBot(tg_cfg)
-    push_simple(bot, message)
-    logger.info("evening_digest_sent", as_of=str(as_of))
+    sent = 0
+    for msg in sections:
+        if len(msg) > TELEGRAM_MESSAGE_LIMIT:
+            msg = msg[:TELEGRAM_MESSAGE_LIMIT - 20] + "\n...(訊息已截斷)"
+            logger.error("digest_section_hard_truncated", as_of=str(as_of))
+        push_simple(bot, msg)
+        sent += 1
+
+    logger.info("evening_digest_sent", as_of=str(as_of), messages=sent)
     return 0
 
 
