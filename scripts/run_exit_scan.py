@@ -131,6 +131,11 @@ def scan_and_exit(
     fees = fees if fees is not None else DEFAULT_TW_FEES
     broker = PaperBroker(fees=fees)
     open_positions = get_open_positions()
+    # Exclude synthetic bootstrap positions from execution workflow.
+    # Synthetic positions are for monitoring/alert testing only.
+    open_positions = [p for p in open_positions
+                      if getattr(p, 'is_synthetic', None) is not True
+                      and p.strategy != 'dev_bootstrap']
     fill_date = fill_date or as_of
     summary = {
         "as_of": str(as_of),
