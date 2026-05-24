@@ -178,8 +178,7 @@ class ShioajiQuoteSource:
             api.login(
                 api_key=cfg.shioaji_api_key.get_secret_value(),
                 secret_key=cfg.shioaji_secret_key.get_secret_value(),
-                fetch_contract=True,
-                contracts_timeout=30_000,
+                fetch_contract=False,   # contracts not needed for snapshots
                 subscribe_trade=False,
             )
             return self._fetch(api, symbols)
@@ -202,11 +201,12 @@ class ShioajiQuoteSource:
 
     def _fetch(self, api: object, symbols: list[str]) -> dict[str, QuoteResult]:
         """Resolve contracts, batch-snapshot, convert to QuoteResult."""
-        contracts = []
-        for sid in symbols:
-            c = api.Contracts.Stocks.get(sid)
-            if c:
-                contracts.append(c)
+        from shioaji.contracts import Stock
+        from shioaji.constant import Exchange
+        contracts = [
+            Stock(exchange=Exchange.TSE, code=sid, symbol=f"TSE{sid}")
+            for sid in symbols
+        ]
 
         # Batch snapshots
         snaps: list = []
