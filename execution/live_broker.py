@@ -1,78 +1,188 @@
 # execution/live_broker.py
-"""Shioaji live broker — v0.1.1.
+"""Shioaji live broker — v0.1.2 (post-review v2).
 
-Replaces PaperBroker + listen_for_approvals with auto-execution via
-Shioaji API. No operator approval gate; Telegram is notification-only.
+Changes from v0.1.1 (v0.1.16):
+  - Returns OrderSubmissionResult (not FillResult).
+  - Persists every state transition to orders journal (crash-safe).
+  - Applies PreTradeGuard before placing orders.
+  - simulation=False + IntradayOdd path is intentionally disabled.
+  - Classifies failures as transport vs broker_reject.
+  - Implements BrokerAdapter protocol (for reconcile).
 
-Modes (controlled by settings.shioaji_simulation):
-  simulation=True  → StockOrderLot.Common (整股), lots=1
-  simulation=False → StockOrderLot.IntradayOdd (零股), shares=1
-                     max MAX_SHARES_PER_STOCK per position
-                     REQUIRES live_trading_enabled=True in settings
+Changes from v2-draft (post-advisor-review v2):
+  - K-P0-1 fix: fill comparison uses share-equivalent units consistently.
+    requested_lots (lot count) and total_deal_shares (share count from
+    deals) are NEVER compared directly. Conversion via SHARES_PER_LOT
+    is explicit at the comparison point.
+  - C-P0-3 fix: notional is computed once after contract lookup and
+    written to journal via update_order_spec; PreTradeGuard receives
+    pre-computed notional.
+  - C-P0-2 fix: PreTradeGuard receives exclude_order_id so the
+    just-recorded INTENT doesn't count against itself.
+  - C-P1-6 fix: contract lookup tries TSE and OTC explicitly via
+    resolve_stock_contract; previously assumed unqualified access path.
+  - K-P1-3 fix (reconcile-side, but adapter shares helpers): side
+    normalized via Action enum identity, not string compare.
+  - K-P1-5 fix: broker_order_id empty string normalized to None at
+    the journal boundary (in order_journal.mark_submitted).
+  - D-P0-2 / decision 3a: implements BrokerAdapter protocol via public
+    login_session, fetch_trades, fetch_holdings methods. reconcile no
+    longer calls _login directly.
+  - D-P2-e: _STATUS_POLL_SLEEP configurable (default raised to 5.0s).
 
-Semantics:
-  submit_buy() returns FillResult(success=True) when the order is
-  *placed* (委託送出), not necessarily *filled* (成交).
-  execution_reason="placed"   → order submitted, awaiting fill
-  execution_reason="filled"   → confirmed fill within poll window
+UNIT CONVENTION:
+  requested_lots: int, Common lot count (1 lot = SHARES_PER_LOT shares)
+  total_deal_shares: int, sum of deal.quantity from Shioaji (SHARES)
+  Conversion: requested_shares = requested_lots * SHARES_PER_LOT
+  Comparisons MUST use share-equivalents.
 
-  Callers must interpret execution_reason to determine position status.
-  For EOD batch (16:00), orders placed for next-day open; fill is
-  expected but not confirmed until morning reconciliation.
-
-Version: v0.1.1 (2026-05-24 — fix notional, VWAP, lots/shares semantics,
-                  broker_order_id, live kill-switch)
+Version: v0.1.2 (2026-05-24, v2)
 """
 from __future__ import annotations
 
 import time
-import uuid
-from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import date as date_type
 from datetime import datetime
+from typing import Any, Iterator
+from zoneinfo import ZoneInfo
 
 from config.settings import get_settings
-from execution.paper_broker import DEFAULT_TW_FEES, FillResult, TransactionFees
+from execution.broker_adapter import BrokerAdapter, BrokerAdapterError
+from execution.order_types import (
+    SHARES_PER_LOT,
+    FailureType,
+    OrderSide,
+    OrderStatus,
+    OrderSubmissionResult,
+)
+from execution.paper_broker import DEFAULT_TW_FEES, TransactionFees
+from execution.pre_trade_guard import (
+    GuardViolation,
+    PreTradeGuard,
+    check_order as run_pre_trade_checks,
+    format_violation_alert,
+)
+from storage import order_journal
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-MAX_SHARES_PER_STOCK: int = 5    # odd-lot live mode cap per position
-_STATUS_POLL_SLEEP: float = 2.0  # seconds before polling fill status
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 
 class LiveBrokerError(Exception):
     """Live broker configuration or runtime error."""
 
 
-class LiveBroker:
-    """Shioaji-backed broker.  submit_buy/submit_sell auto-execute and notify.
+def _resolve_stock_contract(api: Any, symbol: str) -> Any:
+    """Resolve a Shioaji contract for a TWSE/OTC symbol.
 
-    Simulation mode (整股):
-        broker = LiveBroker(bot=telegram_bot)
-        result = broker.submit_buy(symbol="5434", lots=1, fill_date=...)
-        # result.execution_reason == "placed" or "filled"
+    v2 (C-P1-6): explicitly tries TSE first then OTC. Previously used
+    bare `api.Contracts.Stocks[symbol]` which works for some symbols
+    but is unreliable for OTC (上櫃) and certain ETFs.
 
-    Live mode (零股):
-        # Requires SHIOAJI_SIMULATION=false AND live_trading_enabled=true in .env
-        result = broker.submit_buy(symbol="5434", shares=1, fill_date=...)
+    Returns the contract or None if not found in either market.
     """
+    try:
+        tse = api.Contracts.Stocks.TSE
+        contract = tse[symbol] if symbol in tse else None
+        if contract is not None:
+            return contract
+    except Exception as exc:  # noqa: BLE001 - SDK-level call surface unknown
+        logger.warning(
+            "contract_lookup_tse_failed", symbol=symbol, error=str(exc),
+        )
+    try:
+        otc = api.Contracts.Stocks.OTC
+        contract = otc[symbol] if symbol in otc else None
+        if contract is not None:
+            return contract
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "contract_lookup_otc_failed", symbol=symbol, error=str(exc),
+        )
+    return None
+
+
+def _normalize_action_to_side(action: Any) -> str:
+    """Normalize Shioaji Action enum (or string) to canonical 'BUY'/'SELL'.
+
+    v2 (K-P1-3): Shioaji's action field can be the Action enum
+    (Action.Buy / Action.Sell) or its string representation depending on
+    SDK version. Using `is Action.Buy` is most robust when Action is
+    importable; fall back to string compare on the enum's value.
+    """
+    try:
+        from shioaji.constant import Action
+        if action is Action.Buy:
+            return "BUY"
+        if action is Action.Sell:
+            return "SELL"
+    except ImportError:
+        pass
+
+    # Fallback: string representation comparison
+    text = str(action)
+    if "Buy" in text:
+        return "BUY"
+    if "Sell" in text:
+        return "SELL"
+    # Unknown action — log and default to BUY (caller should detect
+    # via reconcile axis)
+    logger.error("unknown_broker_action", action=repr(action))
+    return "BUY"
+
+
+class LiveBroker:
+    """Shioaji-backed broker. submit_buy/sell auto-execute and notify.
+
+    Implements BrokerAdapter protocol (login_session / fetch_trades /
+    fetch_holdings) for reconcile use.
+
+    v0.1.16: Common lot only. IntradayOdd path is explicitly disabled.
+    """
+
+    BROKER_PAPER = "paper"
+    BROKER_SIM = "shioaji_sim"
+    BROKER_LIVE = "shioaji_live"
+
+    # v2 (D-P2-e): status poll sleep is configurable; default 5s
+    # (was 2s in v1, which is too short — Shioaji sometimes takes 3-4s
+    # to populate deals after place_order).
+    DEFAULT_POLL_SLEEP_SEC: float = 5.0
 
     def __init__(
         self,
-        bot=None,
+        bot: Any = None,
         fees: TransactionFees | None = None,
+        guard: PreTradeGuard | None = None,
+        whitelist: frozenset[str] | None = None,
+        poll_sleep_sec: float | None = None,
     ) -> None:
         cfg = get_settings()
         self._simulation = cfg.shioaji_simulation
-        self._api_key = cfg.shioaji_api_key.get_secret_value() if cfg.shioaji_api_key else ""
-        self._secret_key = cfg.shioaji_secret_key.get_secret_value() if cfg.shioaji_secret_key else ""
+        self._api_key = (
+            cfg.shioaji_api_key.get_secret_value() if cfg.shioaji_api_key else ""
+        )
+        self._secret_key = (
+            cfg.shioaji_secret_key.get_secret_value()
+            if cfg.shioaji_secret_key else ""
+        )
         self._ca_path = cfg.ca_cert_path or ""
-        self._ca_passwd = cfg.ca_password.get_secret_value() if cfg.ca_password else ""
+        self._ca_passwd = (
+            cfg.ca_password.get_secret_value() if cfg.ca_password else ""
+        )
         self.fees = fees or DEFAULT_TW_FEES
         self.bot = bot
+        self.guard = guard or PreTradeGuard()
+        self.whitelist = whitelist
+        self.poll_sleep_sec = (
+            poll_sleep_sec if poll_sleep_sec is not None
+            else self.DEFAULT_POLL_SLEEP_SEC
+        )
 
-        # Live trading kill-switch: must be explicitly enabled in .env
+        # Live trading kill-switch
         self._live_enabled: bool = getattr(cfg, "live_trading_enabled", False)
         if not self._simulation and not self._live_enabled:
             raise LiveBrokerError(
@@ -80,7 +190,9 @@ class LiveBroker:
                 "Set SHIOAJI_SIMULATION=true for simulation mode."
             )
 
-    # ── Public API ─────────────────────────────────────────────────────────────
+        self._broker_tag = self.BROKER_SIM if self._simulation else self.BROKER_LIVE
+
+    # ── Public Submit API ──────────────────────────────────────────────────
 
     def submit_buy(
         self,
@@ -88,328 +200,575 @@ class LiveBroker:
         symbol: str,
         fill_date: date_type,
         signal_id: str | None = None,
-        lots: int | None = None,    # simulation=True: number of 整股 lots
-        shares: int | None = None,  # simulation=False: number of 零股 shares
-    ) -> FillResult:
-        """Place a buy order.
-
-        Exactly one of `lots` or `shares` must be provided, matching the
-        current simulation mode.
-
-        Args:
-            symbol:    TWSE stock code, e.g. "5434".
-            fill_date: Expected fill date (T+1 open for EOD signals).
-            signal_id: Upstream signal ID for audit trail.
-            lots:      Lots to buy (simulation=True only). 1 lot = 1000 shares.
-            shares:    Shares to buy (simulation=False only). Capped at MAX_SHARES_PER_STOCK.
-        """
-        import shioaji as sj
-        from shioaji.constant import (
-            Action,
-            OrderType,
-            StockOrderCond,
-            StockOrderLot,
-            StockPriceType,
+        lots: int = 1,
+    ) -> OrderSubmissionResult:
+        """Place a Common-lot buy order. lots is in 整股 units (1 lot = 1000 shares)."""
+        return self._submit(
+            side=OrderSide.BUY, symbol=symbol, fill_date=fill_date,
+            signal_id=signal_id, lots=lots,
         )
-
-        if self._simulation:
-            if lots is None:
-                raise ValueError("simulation mode requires lots=N (整股)")
-            quantity = lots
-            order_lot = StockOrderLot.Common
-            unit_label = "張（整股）"
-            shares_per_unit = 1000
-        else:
-            if shares is None:
-                raise ValueError("live mode requires shares=N (零股)")
-            quantity = min(shares, MAX_SHARES_PER_STOCK)
-            order_lot = StockOrderLot.IntradayOdd
-            unit_label = "股（零股）"
-            shares_per_unit = 1
-
-        api = self._login(sj)
-        if api is None:
-            return self._fail(symbol, fill_date, "login_failed", "buy", signal_id)
-
-        try:
-            contract = api.Contracts.Stocks[symbol]
-            if contract is None:
-                return self._fail(symbol, fill_date, "contract_not_found", "buy", signal_id)
-
-            ref_price = contract.reference
-            order = sj.order.StockOrder(
-                action=Action.Buy,
-                price=ref_price,
-                quantity=quantity,
-                price_type=StockPriceType.LMT,
-                order_type=OrderType.ROD,
-                order_lot=order_lot,
-                order_cond=StockOrderCond.Cash,
-                account=api.stock_account,
-            )
-
-            trade = api.place_order(contract, order)
-            broker_order_id = trade.order.id if trade else ""
-
-            logger.info(
-                "live_buy_placed",
-                symbol=symbol, quantity=quantity, price=ref_price,
-                simulation=self._simulation, broker_order_id=broker_order_id,
-            )
-
-            self._notify(
-                f"📤 委託通知\n"
-                f"{symbol}｜買入 {quantity}{unit_label}\n"
-                f"委託價：{ref_price:.2f}\n"
-                f"{'模擬' if self._simulation else '實單'}｜ROD 限價\n"
-                f"委託時間：{datetime.now().strftime('%H:%M:%S')}"
-            )
-
-            # Poll fill status (synchronous: acceptable for batch architecture)
-            time.sleep(_STATUS_POLL_SLEEP)
-            api.update_status(api.stock_account)
-
-            deals = list(trade.status.deals) if trade and trade.status.deals else []
-            total_deal_qty = sum(d.quantity for d in deals)
-            avg_fill_price = (
-                sum(d.price * d.quantity for d in deals) / total_deal_qty
-                if total_deal_qty > 0 else ref_price
-            )
-
-            if total_deal_qty >= quantity:
-                exec_reason = "filled"
-                fill_status = "filled"
-                self._notify(
-                    f"✅ 成交回報\n"
-                    f"{symbol}｜買入 {total_deal_qty}{unit_label}\n"
-                    f"成交均價：{avg_fill_price:.2f}\n"
-                    f"成交時間：{datetime.now().strftime('%H:%M:%S')}"
-                )
-            elif total_deal_qty > 0:
-                exec_reason = "partial_filled"
-                fill_status = "partial_filled"
-                self._notify(
-                    f"⚠️ 部分成交\n"
-                    f"{symbol}｜成交 {total_deal_qty}/{quantity}{unit_label}\n"
-                    f"均價：{avg_fill_price:.2f}"
-                )
-            else:
-                exec_reason = "placed"
-                fill_status = "submitted"
-                avg_fill_price = ref_price
-                total_deal_qty = 0
-                self._notify(
-                    f"⏳ 委託中\n"
-                    f"{symbol}｜{quantity}{unit_label}｜待撮合\n"
-                    f"將於下一交易日盤中成交"
-                )
-
-            # Notional in TWD (整股: lots × 1000 shares × price)
-            actual_qty = total_deal_qty if exec_reason == "filled" else quantity
-            notional = actual_qty * shares_per_unit * avg_fill_price
-            commission = notional * self.fees.commission_rate
-
-            db_order_id = self._record_order(
-                signal_id=signal_id, symbol=symbol, side="buy",
-                quantity=quantity, price=ref_price,
-                filled_qty=total_deal_qty, avg_price=avg_fill_price,
-                status=fill_status,
-                commission=commission, tax=0.0,
-                broker_order_id=broker_order_id,
-            )
-
-            return FillResult(
-                success=True,
-                order_id=db_order_id,
-                fill_date=fill_date,
-                fill_price=avg_fill_price,
-                ref_price=ref_price,
-                shares=actual_qty * shares_per_unit,
-                notional=notional,
-                commission=commission,
-                tax=0.0,
-                slippage_cost=0.0,
-                total_cost=commission,
-                cash_delta=-(notional + commission),
-                execution_reason=exec_reason,
-                participation_rate=None,
-            )
-
-        except Exception as exc:
-            logger.error("live_buy_error", symbol=symbol, error=str(exc))
-            self._notify(f"❌ 下單失敗\n{symbol} 買入\n{type(exc).__name__}: {exc}")
-            return self._fail(symbol, fill_date, type(exc).__name__, "buy", signal_id)
-        finally:
-            self._logout(api)
 
     def submit_sell(
         self,
         *,
         symbol: str,
-        shares: int,
         fill_date: date_type,
         signal_id: str | None = None,
-        lots: int | None = None,
-    ) -> FillResult:
-        """Place a sell order.
-
-        Args:
-            symbol: TWSE stock code.
-            shares: For live (零股): shares to sell.
-            lots:   For simulation (整股): lots to sell (overrides shares).
-            fill_date: Expected fill date.
-        """
-        import shioaji as sj
-        from shioaji.constant import (
-            Action,
-            OrderType,
-            StockOrderCond,
-            StockOrderLot,
-            StockPriceType,
+        lots: int = 1,
+    ) -> OrderSubmissionResult:
+        """Place a Common-lot sell order."""
+        return self._submit(
+            side=OrderSide.SELL, symbol=symbol, fill_date=fill_date,
+            signal_id=signal_id, lots=lots,
         )
 
-        if self._simulation:
-            quantity = lots if lots is not None else (shares // 1000 or 1)
-            order_lot = StockOrderLot.Common
-            unit_label = "張（整股）"
-            shares_per_unit = 1000
-        else:
-            if shares <= 0:
-                return self._fail(symbol, fill_date, "non_positive_shares", "sell", signal_id)
-            quantity = shares
-            order_lot = StockOrderLot.IntradayOdd
-            unit_label = "股（零股）"
-            shares_per_unit = 1
+    # ── Core submission flow ───────────────────────────────────────────────
 
+    def _submit(
+        self,
+        *,
+        side: OrderSide,
+        symbol: str,
+        fill_date: date_type,
+        signal_id: str | None,
+        lots: int,
+    ) -> OrderSubmissionResult:
+        """Unified submission flow (shared between buy and sell).
+
+        v0.1.16 invariant: simulation=False + IntradayOdd is rejected.
+
+        Unit handling (v2 K-P0-1 fix):
+          - lots (requested_lots) stays in lot units throughout
+          - notional computed once as limit_price * lots * SHARES_PER_LOT
+          - filled comparison uses requested_lots * SHARES_PER_LOT vs
+            total_deal_shares
+        """
+        # ── Step 0: kill-switch check ─────────────────────────────────────
+        if not self._simulation:
+            raise NotImplementedError(
+                "Real broker execution is disabled in v0.1.16. "
+                "IntradayOdd live execution path is intentionally rejected. "
+                "v0.1.17 target: Common lot + ROD after backtest alignment "
+                "(see docs/decision_records/v0_1_16_backtest_audit_report.md)."
+            )
+
+        requested_lots = lots
+        intent_at = datetime.now(tz=TAIPEI_TZ)
+
+        # ── Step 1: record INTENT (notional=0; updated after contract lookup) ──
+        order_id = order_journal.record_intent(
+            symbol=symbol,
+            side=side,
+            requested_lots=requested_lots,
+            intent_at=intent_at,
+            fill_date=fill_date,
+            notional=0.0,
+            signal_id=signal_id,
+            limit_price=None,
+            broker=self._broker_tag,
+            metadata={"lots": requested_lots, "shares_per_lot": SHARES_PER_LOT},
+        )
+
+        # ── Step 2: shioaji import ────────────────────────────────────────
+        try:
+            import shioaji as sj
+            from shioaji.constant import (
+                Action, OrderType, StockOrderCond, StockOrderLot, StockPriceType,
+            )
+        except ImportError as exc:
+            order_journal.mark_failed(
+                order_id=order_id,
+                failure_type=FailureType.BROKER_REJECT,
+                error_code="shioaji_import_failed",
+                error_message=str(exc),
+            )
+            return self._build_failed_result(
+                order_id=order_id, symbol=symbol, side=side,
+                requested_lots=requested_lots, fill_date=fill_date,
+                signal_id=signal_id,
+                failure_type=FailureType.BROKER_REJECT,
+                error_code="shioaji_import_failed",
+                error_message=str(exc),
+            )
+
+        # ── Step 3: login (broker call) ───────────────────────────────────
         api = self._login(sj)
         if api is None:
-            return self._fail(symbol, fill_date, "login_failed", "sell", signal_id)
+            order_journal.mark_failed(
+                order_id=order_id,
+                failure_type=FailureType.TRANSPORT,
+                error_code="login_failed",
+                error_message="Shioaji login returned None",
+            )
+            return self._build_failed_result(
+                order_id=order_id, symbol=symbol, side=side,
+                requested_lots=requested_lots, fill_date=fill_date,
+                signal_id=signal_id,
+                failure_type=FailureType.TRANSPORT,
+                error_code="login_failed",
+                error_message="Shioaji login returned None",
+            )
 
         try:
-            contract = api.Contracts.Stocks[symbol]
+            # ── Step 4: resolve contract (broker call) ────────────────────
+            contract = _resolve_stock_contract(api, symbol)
             if contract is None:
-                return self._fail(symbol, fill_date, "contract_not_found", "sell", signal_id)
+                order_journal.mark_failed(
+                    order_id=order_id,
+                    failure_type=FailureType.BROKER_REJECT,
+                    error_code="contract_not_found",
+                    error_message=(
+                        f"no contract for symbol {symbol!r} in TSE or OTC"
+                    ),
+                )
+                return self._build_failed_result(
+                    order_id=order_id, symbol=symbol, side=side,
+                    requested_lots=requested_lots, fill_date=fill_date,
+                    signal_id=signal_id,
+                    failure_type=FailureType.BROKER_REJECT,
+                    error_code="contract_not_found",
+                    error_message=f"no contract for symbol {symbol!r}",
+                )
 
             ref_price = contract.reference
+
+            # ── Step 5: compute notional and write spec to journal ────────
+            notional = ref_price * requested_lots * SHARES_PER_LOT
+            order_journal.update_order_spec(
+                order_id=order_id,
+                limit_price=ref_price,
+                notional=notional,
+            )
+
+            # ── Step 6: pre-trade guard (with self-exclusion) ─────────────
+            try:
+                run_pre_trade_checks(
+                    symbol=symbol, side=side,
+                    limit_price=ref_price,
+                    notional=notional,
+                    reference_price=ref_price,
+                    guard=self.guard,
+                    whitelist=self.whitelist,
+                    exclude_order_id=order_id,
+                )
+            except GuardViolation as violation:
+                self._notify(format_violation_alert(
+                    violation,
+                    symbol=symbol, side=side,
+                    limit_price=ref_price,
+                    requested_lots=requested_lots,
+                ))
+                order_journal.mark_failed(
+                    order_id=order_id,
+                    failure_type=FailureType.BROKER_REJECT,
+                    error_code=violation.error_code,
+                    error_message=violation.message,
+                )
+                return self._build_failed_result(
+                    order_id=order_id, symbol=symbol, side=side,
+                    requested_lots=requested_lots, fill_date=fill_date,
+                    signal_id=signal_id, limit_price=ref_price,
+                    notional=notional,
+                    failure_type=FailureType.BROKER_REJECT,
+                    error_code=violation.error_code,
+                    error_message=violation.message,
+                )
+
+            # ── Step 7: place_order (broker call) ─────────────────────────
+            action = Action.Buy if side is OrderSide.BUY else Action.Sell
             order = sj.order.StockOrder(
-                action=Action.Sell,
+                action=action,
                 price=ref_price,
-                quantity=quantity,
+                quantity=requested_lots,           # Common lot: quantity = lot count
                 price_type=StockPriceType.LMT,
                 order_type=OrderType.ROD,
-                order_lot=order_lot,
+                order_lot=StockOrderLot.Common,
                 order_cond=StockOrderCond.Cash,
                 account=api.stock_account,
             )
 
-            trade = api.place_order(contract, order)
-            broker_order_id = trade.order.id if trade else ""
+            try:
+                trade = api.place_order(contract, order)
+            except Exception as exc:
+                order_journal.mark_failed(
+                    order_id=order_id,
+                    failure_type=FailureType.TRANSPORT,
+                    error_code="place_order_raised",
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
+                self._notify(
+                    f"❌ 委託送出失敗 (TRANSPORT)\n{symbol} {side.value}\n"
+                    f"{type(exc).__name__}: {exc}\n"
+                    f"⚠️ 需 reconcile 確認券商端是否收單"
+                )
+                return self._build_failed_result(
+                    order_id=order_id, symbol=symbol, side=side,
+                    requested_lots=requested_lots, fill_date=fill_date,
+                    signal_id=signal_id, limit_price=ref_price,
+                    notional=notional,
+                    failure_type=FailureType.TRANSPORT,
+                    error_code="place_order_raised",
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
 
-            logger.info(
-                "live_sell_placed",
-                symbol=symbol, quantity=quantity, price=ref_price,
-                simulation=self._simulation, broker_order_id=broker_order_id,
+            # Normalize broker_order_id (empty string → None handled by journal)
+            broker_order_id = (
+                trade.order.id if trade and trade.order and trade.order.id
+                else None
+            )
+            submitted_at = datetime.now(tz=TAIPEI_TZ)
+            order_journal.mark_submitted(
+                order_id=order_id,
+                broker_order_id=broker_order_id,
+                submitted_at=submitted_at,
             )
 
             self._notify(
-                f"📤 委託通知\n"
-                f"{symbol}｜賣出 {quantity}{unit_label}\n"
+                f"📤 委託送出\n"
+                f"{symbol}｜{side.value} {requested_lots} 張（整股）\n"
                 f"委託價：{ref_price:.2f}\n"
                 f"{'模擬' if self._simulation else '實單'}｜ROD 限價\n"
-                f"委託時間：{datetime.now().strftime('%H:%M:%S')}"
+                f"委託時間：{submitted_at.strftime('%H:%M:%S')}"
             )
 
-            time.sleep(_STATUS_POLL_SLEEP)
-            api.update_status(api.stock_account)
+            # ── Step 8: poll for fill ─────────────────────────────────────
+            time.sleep(self.poll_sleep_sec)
+            try:
+                api.update_status(api.stock_account)
+                polled_at = datetime.now(tz=TAIPEI_TZ)
+            except Exception as exc:
+                # update_status failed: order is in flight, status unknown.
+                # Leave as SUBMITTED for reconcile (do NOT mark FAILED).
+                logger.warning(
+                    "live_update_status_failed",
+                    order_id=order_id, error=str(exc),
+                )
+                return self._build_submitted_unpolled_result(
+                    order_id=order_id, symbol=symbol, side=side,
+                    requested_lots=requested_lots, fill_date=fill_date,
+                    signal_id=signal_id, limit_price=ref_price,
+                    notional=notional,
+                    broker_order_id=broker_order_id,
+                    submitted_at=submitted_at,
+                )
 
-            deals = list(trade.status.deals) if trade and trade.status.deals else []
-            total_deal_qty = sum(d.quantity for d in deals)
+            deals = (
+                list(trade.status.deals)
+                if trade and trade.status and trade.status.deals else []
+            )
+            # CRITICAL UNIT NOTE (K-P0-1):
+            #   deal.quantity is in SHARES (not lots).
+            #   total_deal_shares accumulates in SHARES.
+            #   To compare with requested_lots, convert via SHARES_PER_LOT.
+            total_deal_shares = sum(d.quantity for d in deals)
             avg_fill_price = (
-                sum(d.price * d.quantity for d in deals) / total_deal_qty
-                if total_deal_qty > 0 else ref_price
+                sum(d.price * d.quantity for d in deals) / total_deal_shares
+                if total_deal_shares > 0 else None
             )
 
-            if total_deal_qty >= quantity:
-                exec_reason = "filled"
-                fill_status = "filled"
+            requested_shares = requested_lots * SHARES_PER_LOT
+
+            # ── Step 9: classify and persist fill state ───────────────────
+            if total_deal_shares >= requested_shares:
+                # Fully filled (or over-filled; latter shouldn't happen but
+                # we treat == as the fully-filled case; >= is defensive).
+                # If broker over-fills, we still mark FILLED — surplus is
+                # a reconcile anomaly handled out-of-band.
+                fill_shares_to_record = requested_shares  # cap at requested
+                fill_notional = fill_shares_to_record * avg_fill_price
+                commission = fill_notional * self.fees.commission_rate
+                tax = (
+                    fill_notional * self.fees.sell_tax_rate
+                    if side is OrderSide.SELL else 0.0
+                )
+                order_journal.mark_filled(
+                    order_id=order_id,
+                    filled_shares=fill_shares_to_record,
+                    avg_fill_price=avg_fill_price,
+                    commission=commission,
+                    tax=tax,
+                    finalized_at=polled_at,
+                )
                 self._notify(
                     f"✅ 成交回報\n"
-                    f"{symbol}｜賣出 {total_deal_qty}{unit_label}\n"
+                    f"{symbol}｜{side.value} {requested_lots} 張（{fill_shares_to_record} 股）\n"
                     f"成交均價：{avg_fill_price:.2f}\n"
-                    f"成交時間：{datetime.now().strftime('%H:%M:%S')}"
+                    f"成交時間：{polled_at.strftime('%H:%M:%S')}"
                 )
-            elif total_deal_qty > 0:
-                exec_reason = "partial_filled"
-                fill_status = "partial_filled"
-                self._notify(
-                    f"⚠️ 部分成交\n"
-                    f"{symbol}｜成交 {total_deal_qty}/{quantity}{unit_label}\n"
-                    f"均價：{avg_fill_price:.2f}"
-                )
-            else:
-                exec_reason = "placed"
-                fill_status = "submitted"
-                avg_fill_price = ref_price
-                total_deal_qty = 0
-                self._notify(
-                    f"⏳ 委託中\n"
-                    f"{symbol}｜{quantity}{unit_label}｜待撮合"
+                return OrderSubmissionResult(
+                    success=True, order_id=order_id, status=OrderStatus.FILLED,
+                    side=side, symbol=symbol, requested_lots=requested_lots,
+                    filled_shares=fill_shares_to_record,
+                    avg_fill_price=avg_fill_price,
+                    limit_price=ref_price, notional=fill_notional,
+                    commission=commission, tax=tax,
+                    fill_date=fill_date, signal_id=signal_id,
+                    broker=self._broker_tag, broker_order_id=broker_order_id,
+                    submitted_at=submitted_at, polled_at=polled_at,
                 )
 
-            actual_qty = total_deal_qty if exec_reason == "filled" else quantity
-            notional = actual_qty * shares_per_unit * avg_fill_price
-            commission = notional * self.fees.commission_rate
-            tax = notional * self.fees.sell_tax_rate
+            if total_deal_shares > 0:
+                # Partial fill (between 1 share and requested_shares-1)
+                fill_notional = total_deal_shares * avg_fill_price
+                commission = fill_notional * self.fees.commission_rate
+                tax = (
+                    fill_notional * self.fees.sell_tax_rate
+                    if side is OrderSide.SELL else 0.0
+                )
+                order_journal.mark_partial(
+                    order_id=order_id,
+                    filled_shares=total_deal_shares,
+                    avg_fill_price=avg_fill_price,
+                    commission=commission,
+                    tax=tax,
+                    finalized_at=polled_at,
+                )
+                self._notify(
+                    f"🚨 部分成交（需人工確認）\n"
+                    f"{symbol}｜{side.value} {total_deal_shares}/{requested_shares} 股\n"
+                    f"均價：{avg_fill_price:.2f}\n"
+                    f"⚠️ v0.1.16 不自動處理部分成交，請至券商 app 確認"
+                )
+                return OrderSubmissionResult(
+                    success=True, order_id=order_id, status=OrderStatus.PARTIAL,
+                    side=side, symbol=symbol, requested_lots=requested_lots,
+                    filled_shares=total_deal_shares,
+                    avg_fill_price=avg_fill_price,
+                    limit_price=ref_price, notional=fill_notional,
+                    commission=commission, tax=tax,
+                    fill_date=fill_date, signal_id=signal_id,
+                    broker=self._broker_tag, broker_order_id=broker_order_id,
+                    submitted_at=submitted_at, polled_at=polled_at,
+                )
 
-            db_order_id = self._record_order(
-                signal_id=signal_id, symbol=symbol, side="sell",
-                quantity=quantity, price=ref_price,
-                filled_qty=total_deal_qty, avg_price=avg_fill_price,
-                status=fill_status,
-                commission=commission, tax=tax,
-                broker_order_id=broker_order_id,
+            # No deals: submitted-but-unfilled
+            order_journal.mark_polled(
+                order_id=order_id,
+                polled_at=polled_at,
+                filled_shares=0,
+                avg_fill_price=None,
+            )
+            self._notify(
+                f"⏳ 委託中\n"
+                f"{symbol}｜{side.value} {requested_lots} 張｜待撮合\n"
+                f"將於下一交易日盤中成交（reconcile 對帳）"
+            )
+            return OrderSubmissionResult(
+                success=True, order_id=order_id, status=OrderStatus.SUBMITTED,
+                side=side, symbol=symbol, requested_lots=requested_lots,
+                filled_shares=0, avg_fill_price=None,
+                limit_price=ref_price, notional=notional,
+                commission=0.0, tax=0.0,
+                fill_date=fill_date, signal_id=signal_id,
+                broker=self._broker_tag, broker_order_id=broker_order_id,
+                submitted_at=submitted_at, polled_at=polled_at,
             )
 
-            return FillResult(
-                success=True,
-                order_id=db_order_id,
-                fill_date=fill_date,
-                fill_price=avg_fill_price,
-                ref_price=ref_price,
-                shares=actual_qty * shares_per_unit,
-                notional=notional,
-                commission=commission,
-                tax=tax,
-                slippage_cost=0.0,
-                total_cost=commission + tax,
-                cash_delta=+(notional - commission - tax),
-                execution_reason=exec_reason,
-                participation_rate=None,
-            )
-
-        except Exception as exc:
-            logger.error("live_sell_error", symbol=symbol, error=str(exc))
-            self._notify(f"❌ 下單失敗\n{symbol} 賣出\n{type(exc).__name__}: {exc}")
-            return self._fail(symbol, fill_date, type(exc).__name__, "sell", signal_id)
         finally:
             self._logout(api)
 
-    # ── Private ────────────────────────────────────────────────────────────────
+    # ── Failure helpers ────────────────────────────────────────────────────
 
-    def _login(self, sj):
-        """Login + activate CA.  Returns api or None on failure."""
+    def _build_failed_result(
+        self,
+        *,
+        order_id: str,
+        symbol: str,
+        side: OrderSide,
+        requested_lots: int,
+        fill_date: date_type,
+        signal_id: str | None,
+        failure_type: FailureType,
+        error_code: str,
+        error_message: str,
+        limit_price: float | None = None,
+        notional: float = 0.0,
+    ) -> OrderSubmissionResult:
+        """Build FAILED result. success=False."""
+        return OrderSubmissionResult(
+            success=False, order_id=order_id, status=OrderStatus.FAILED,
+            side=side, symbol=symbol, requested_lots=requested_lots,
+            filled_shares=0, avg_fill_price=None,
+            limit_price=limit_price, notional=notional,
+            commission=0.0, tax=0.0,
+            fill_date=fill_date, signal_id=signal_id,
+            broker=self._broker_tag, broker_order_id=None,
+            failure_type=failure_type,
+            error_code=error_code, error_message=error_message,
+        )
+
+    def _build_submitted_unpolled_result(
+        self,
+        *,
+        order_id: str,
+        symbol: str,
+        side: OrderSide,
+        requested_lots: int,
+        fill_date: date_type,
+        signal_id: str | None,
+        limit_price: float,
+        notional: float,
+        broker_order_id: str | None,
+        submitted_at: datetime,
+    ) -> OrderSubmissionResult:
+        """Build SUBMITTED-but-poll-failed result. success=True (place_order
+        succeeded; we just don't know fill state yet)."""
+        return OrderSubmissionResult(
+            success=True, order_id=order_id, status=OrderStatus.SUBMITTED,
+            side=side, symbol=symbol, requested_lots=requested_lots,
+            filled_shares=0, avg_fill_price=None,
+            limit_price=limit_price, notional=notional,
+            commission=0.0, tax=0.0,
+            fill_date=fill_date, signal_id=signal_id,
+            broker=self._broker_tag, broker_order_id=broker_order_id,
+            submitted_at=submitted_at, polled_at=None,
+        )
+
+    # ── BrokerAdapter protocol implementation ──────────────────────────────
+
+    @contextmanager
+    def login_session(self) -> Iterator[Any]:
+        """Context manager for broker session. Yields Shioaji api handle.
+
+        v2 (D-P0-2, decision 3a): public API replacing direct reconcile
+        calls into _login/_logout.
+
+        Usage:
+            broker = LiveBroker()
+            with broker.login_session() as api:
+                trades = broker.fetch_trades(api, as_of)
+                holdings = broker.fetch_holdings(api)
+        """
+        import shioaji as sj
+        api = self._login(sj)
+        if api is None:
+            raise BrokerAdapterError("Shioaji login failed")
+        try:
+            yield api
+        finally:
+            self._logout(api)
+
+    def fetch_trades(
+        self, session: Any, as_of: date_type,
+    ) -> list[dict]:
+        """Fetch broker-confirmed trades for as_of date.
+
+        Returns normalized dicts (see BrokerAdapter protocol docstring).
+        Empty list if no trades or fetch failed.
+
+        v2 (K-P1-3): action enum normalized via _normalize_action_to_side.
+        """
+        api = session
+        try:
+            raw = api.list_trades()
+        except Exception as exc:
+            logger.warning("broker_list_trades_failed", error=str(exc))
+            return []
+
+        if not raw:
+            return []
+
+        out: list[dict] = []
+        for trade in raw:
+            try:
+                # Determine trade date — prefer status.modified_time
+                trade_dt = (
+                    getattr(trade.status, "modified_time", None)
+                    if trade.status else None
+                )
+                if trade_dt is None:
+                    trade_dt = getattr(trade, "ts", None)
+                if trade_dt is None:
+                    continue
+                trade_date = (
+                    trade_dt.date() if hasattr(trade_dt, "date") else None
+                )
+                if trade_date != as_of:
+                    continue
+
+                # Sum deals (each deal is in SHARES)
+                deals = (
+                    list(trade.status.deals)
+                    if trade.status and trade.status.deals else []
+                )
+                filled_shares = sum(d.quantity for d in deals)
+                avg_price = (
+                    sum(d.price * d.quantity for d in deals) / filled_shares
+                    if filled_shares > 0 else None
+                )
+
+                broker_order_id = (
+                    trade.order.id
+                    if trade.order and trade.order.id else None
+                )
+                # Normalize empty string → None
+                if broker_order_id == "":
+                    broker_order_id = None
+
+                symbol = (
+                    trade.contract.code if trade.contract else None
+                )
+                side = _normalize_action_to_side(
+                    trade.order.action if trade.order else None
+                )
+
+                out.append({
+                    "broker_order_id": broker_order_id,
+                    "symbol": symbol,
+                    "side": side,
+                    "filled_shares": filled_shares,
+                    "avg_price": avg_price,
+                    "trade_date": trade_date,
+                    "raw_status": (
+                        str(trade.status.status) if trade.status else "unknown"
+                    ),
+                })
+            except Exception as exc:
+                logger.warning("broker_trade_normalize_failed", error=str(exc))
+        return out
+
+    def fetch_holdings(self, session: Any) -> list[dict]:
+        """Fetch broker-held positions snapshot.
+
+        Returns normalized dicts (see BrokerAdapter protocol docstring).
+        """
+        api = session
+        try:
+            raw = api.list_positions(api.stock_account)
+        except Exception as exc:
+            logger.warning("broker_list_positions_failed", error=str(exc))
+            return []
+        if not raw:
+            return []
+
+        out: list[dict] = []
+        for pos in raw:
+            try:
+                out.append({
+                    "symbol": pos.code,
+                    "shares": pos.quantity,
+                    "avg_cost": pos.price,
+                })
+            except Exception as exc:
+                logger.warning("broker_holding_normalize_failed", error=str(exc))
+        return out
+
+    # ── Login / logout / notify (internals, unchanged from v1) ─────────────
+
+    def _login(self, sj: Any) -> Any:
+        """Login + activate CA. Returns api or None on failure.
+
+        Kept as private; external consumers use login_session() instead.
+        """
         try:
             api = sj.Shioaji(simulation=self._simulation)
             api.login(
-                api_key=self._api_key,
-                secret_key=self._secret_key,
-                fetch_contract=True,
-                contracts_timeout=30_000,
+                api_key=self._api_key, secret_key=self._secret_key,
+                fetch_contract=True, contracts_timeout=30_000,
                 subscribe_trade=True,
             )
             api.activate_ca(
-                ca_path=self._ca_path,
-                ca_passwd=self._ca_passwd,
+                ca_path=self._ca_path, ca_passwd=self._ca_passwd,
                 person_id=api.stock_account.person_id,
             )
             api.set_default_account(api.stock_account)
@@ -418,7 +777,7 @@ class LiveBroker:
             logger.error("live_broker_login_failed", error=str(exc))
             return None
 
-    def _logout(self, api) -> None:
+    def _logout(self, api: Any) -> None:
         if api is None:
             return
         try:
@@ -436,59 +795,7 @@ class LiveBroker:
         except Exception as exc:
             logger.warning("live_broker_notify_failed", error=str(exc))
 
-    def _record_order(
-        self,
-        *,
-        signal_id: str | None,
-        symbol: str,
-        side: str,
-        quantity: int,
-        price: float,
-        filled_qty: int,
-        avg_price: float,
-        status: str,
-        commission: float,
-        tax: float,
-        broker_order_id: str = "",
-    ) -> str:
-        from data.database import connect
-        order_id = f"live_{uuid.uuid4().hex[:12]}"
-        broker_tag = f"shioaji_{'sim' if self._simulation else 'live'}:{broker_order_id}"
-        with connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO orders (
-                    order_id, signal_id, timestamp, symbol, side, order_type,
-                    quantity, price, status, filled_qty, avg_price,
-                    commission, tax, broker
-                ) VALUES (?, ?, ?, ?, ?, 'limit', ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    order_id, signal_id, datetime.now(), symbol, side,
-                    quantity, price, status,
-                    filled_qty, avg_price if filled_qty > 0 else None,
-                    commission, tax, broker_tag,
-                ],
-            )
-        return order_id
 
-    def _fail(
-        self,
-        symbol: str,
-        fill_date: date_type,
-        reason: str,
-        side: str,
-        signal_id: str | None,
-    ) -> FillResult:
-        logger.warning(
-            "live_fill_failed", symbol=symbol, side=side,
-            fill_date=str(fill_date), reason=reason, signal_id=signal_id,
-        )
-        return FillResult(
-            success=False, order_id=None,
-            fill_date=fill_date, fill_price=None, ref_price=None,
-            shares=0, notional=0.0,
-            commission=0.0, tax=0.0, slippage_cost=0.0, total_cost=0.0,
-            cash_delta=0.0, error=reason,
-            execution_reason=reason, participation_rate=None,
-        )
+# Confirm LiveBroker satisfies BrokerAdapter protocol structurally.
+# isinstance check would happen at runtime; this is a static reminder.
+_: type[BrokerAdapter] = LiveBroker  # type: ignore[type-abstract]

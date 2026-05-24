@@ -113,25 +113,111 @@ CREATE INDEX IF NOT EXISTS idx_signals_symbol      ON signals(symbol);
 CREATE INDEX IF NOT EXISTS idx_signals_idempotency
     ON signals(symbol, strategy, signal_type, signal_date, approval_status);
 
+-- ─────────────────────────────────────────────────────────────────────────
+-- orders journal — v0.1.16 (v2)
+-- Canonical migration: migrations/0002_orders_journal_v0_1_16.sql
+-- KEEP THIS BLOCK IN SYNC WITH MIGRATION 0002. A semantic-equivalence
+-- smoke test in tests/test_schema_consistency.py verifies the two.
+--
+-- UNIT CONVENTION (read before touching this table):
+--   requested_lots: Common lot count (1 lot = 1000 shares)
+--   filled_shares:  broker-native share count from Shioaji deals
+--   Comparing the two without × 1000 conversion is a banned anti-pattern
+--   (see docs/design/execution_model.md §UNIT CONVENTION).
+-- ─────────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS orders (
-    order_id    VARCHAR PRIMARY KEY,
-    signal_id   VARCHAR,                -- 關聯訊號
-    timestamp   TIMESTAMP NOT NULL,
-    symbol      VARCHAR NOT NULL,
-    side        VARCHAR NOT NULL,       -- buy / sell
-    order_type  VARCHAR NOT NULL,       -- market / limit
-    quantity    INTEGER NOT NULL,
-    price       DOUBLE,
-    status      VARCHAR NOT NULL,       -- submitted / filled / partial / rejected / cancelled
-    filled_qty  INTEGER DEFAULT 0,
-    avg_price   DOUBLE,
-    commission  DOUBLE DEFAULT 0,
-    tax         DOUBLE DEFAULT 0,
-    broker      VARCHAR,                -- paper / shioaji
-    metadata    JSON
+    -- Identity
+    order_id        TEXT    PRIMARY KEY,
+    signal_id       TEXT,
+
+    -- Trade specification
+    symbol          TEXT    NOT NULL,
+    side            TEXT    NOT NULL
+                            CHECK (side IN ('BUY', 'SELL')),
+
+    -- Quantities (unit-bearing names; see UNIT CONVENTION above)
+    requested_lots  INTEGER NOT NULL
+                            CHECK (requested_lots > 0),
+    filled_shares   INTEGER NOT NULL DEFAULT 0
+                            CHECK (filled_shares >= 0),
+    avg_fill_price  DOUBLE,
+    limit_price     DOUBLE,
+
+    -- Lifecycle state (7 states; no PLACED)
+    status          TEXT    NOT NULL
+                            CHECK (status IN (
+                                'INTENT',
+                                'SUBMITTED',
+                                'FILLED',
+                                'PARTIAL',
+                                'FAILED',
+                                'CANCELLED',
+                                'EXPIRED'
+                            )),
+
+    -- Failure classification (only set when status='FAILED')
+    failure_type    TEXT    CHECK (failure_type IS NULL
+                                   OR failure_type IN ('transport', 'broker_reject')),
+    error_code      TEXT,
+    error_message   TEXT,
+    requires_broker_verification BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Broker integration
+    broker          TEXT,
+    broker_order_id TEXT,
+
+    -- Timestamps
+    intent_at       TIMESTAMP NOT NULL,
+    fill_date       DATE    NOT NULL,
+    submitted_at    TIMESTAMP,
+    last_polled_at  TIMESTAMP,
+    finalized_at    TIMESTAMP,
+
+    -- Financial (TWD)
+    notional        DOUBLE DEFAULT 0,
+    commission      DOUBLE DEFAULT 0,
+    tax             DOUBLE DEFAULT 0,
+
+    -- Debug context
+    metadata        TEXT,
+
+    -- Audit
+    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    -- Invariant 1: status/fill consistency (unit-aware; share-equivalent)
+    CHECK (
+        (status = 'FILLED'  AND filled_shares = requested_lots * 1000)
+        OR
+        (status = 'PARTIAL' AND filled_shares > 0
+                            AND filled_shares < requested_lots * 1000)
+        OR
+        (status IN ('INTENT', 'SUBMITTED', 'FAILED', 'CANCELLED', 'EXPIRED'))
+    ),
+
+    -- Invariant 2: FAILED <=> failure_type set
+    CHECK (
+        (status = 'FAILED' AND failure_type IS NOT NULL)
+        OR
+        (status <> 'FAILED' AND failure_type IS NULL)
+    ),
+
+    -- Invariant 3: metadata must be valid JSON if present
+    CHECK (metadata IS NULL OR json_valid(metadata))
 );
-CREATE INDEX IF NOT EXISTS idx_orders_ts     ON orders(timestamp);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+
+CREATE INDEX IF NOT EXISTS idx_orders_intent_date
+    ON orders (CAST(intent_at AS DATE));
+CREATE INDEX IF NOT EXISTS idx_orders_fill_date
+    ON orders (fill_date);
+CREATE INDEX IF NOT EXISTS idx_orders_status
+    ON orders (status);
+CREATE INDEX IF NOT EXISTS idx_orders_broker_order_id
+    ON orders (broker_order_id);
+CREATE INDEX IF NOT EXISTS idx_orders_signal_id
+    ON orders (signal_id);
+CREATE INDEX IF NOT EXISTS idx_orders_signal_intent
+    ON orders (signal_id, intent_at);
 
 CREATE TABLE IF NOT EXISTS snapshots (
     snapshot_date     DATE PRIMARY KEY,
