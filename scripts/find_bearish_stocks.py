@@ -42,6 +42,8 @@ from pathlib import Path
 import yaml
 
 from data.database import connect
+from communication.telegram import TelegramBot, TelegramConfig
+from communication.telegram.sender import push_simple
 from utils.logger import get_logger
 from utils.trading_dates import resolve_as_of
 
@@ -260,6 +262,56 @@ def find_bearish_stocks(
 
 # ── display ────────────────────────────────────────────────────────────────────
 
+
+_MAX_TELEGRAM_ROWS_PER_LABEL = 10
+_TELEGRAM_LIMIT = 4096
+
+
+def build_bearish_message(results: list[dict], as_of: date_type) -> str | None:
+    """Build a concise Telegram message from bearish screener results.
+
+    Shows STRONG_BEAR fully; BEAR capped at _MAX_TELEGRAM_ROWS_PER_LABEL;
+    WEAK_BEAR shown as symbol list only.  Returns None if no results.
+    """
+    if not results:
+        return None
+
+    _e = {"STRONG_BEAR": "🔴", "BEAR": "🟠", "WEAK_BEAR": "🟡", "WATCH": "⚪"}
+
+    by_label: dict[str, list] = {}
+    for r in results:
+        by_label.setdefault(r["label"], []).append(r)
+
+    total = len(results)
+    lines = [f"📉 空頭篩選 ({as_of})  共 {total} 檔"]
+
+    for label in ("STRONG_BEAR", "BEAR", "WEAK_BEAR"):
+        group = by_label.get(label, [])
+        if not group:
+            continue
+        e = _e.get(label, "")
+        label_names = {"STRONG_BEAR": "強空頭", "BEAR": "空頭", "WEAK_BEAR": "弱空頭"}
+        cap = _MAX_TELEGRAM_ROWS_PER_LABEL
+        shown = group[:cap]
+        omitted = len(group) - len(shown)
+        lines.append(f"\n{e} {label_names[label]} ({len(group)})")
+        for r in shown:
+            lines.append(
+                f"  {r['stock_id']} {r['name']}"
+                f"  {r['close']:.2f}"
+                f"  ★{r['score']}"
+                f"  {(r['dist_sma200_pct'] or 0):+.1f}%"
+                f"  RSI{r['rsi_14'] or 0:.0f}"
+            )
+        if omitted > 0:
+            lines.append(f"  ...其餘 {omitted} 檔")
+
+    msg = "\n".join(lines)
+    if len(msg) > _TELEGRAM_LIMIT:
+        msg = msg[:_TELEGRAM_LIMIT - 20] + "\n...(截斷)"
+    return msg
+
+
 def _print_table(results: list[dict], as_of: date_type) -> None:
     if not results:
         print("無符合條件的個股")
@@ -332,6 +384,8 @@ def main() -> int:
                         help=f"Minimum score (default {_DEFAULT_MIN_SCORE})")
     parser.add_argument("--all", action="store_true",
                         help="Show all tiers including WATCH")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print only, do not send Telegram")
     args = parser.parse_args()
 
     as_of = resolve_as_of(args.as_of)
@@ -340,6 +394,15 @@ def main() -> int:
 
     results = find_bearish_stocks(as_of=as_of, min_score=min_score)
     _print_table(results, as_of)
+
+    if not args.dry_run:
+        message = build_bearish_message(results, as_of)
+        if message:
+            tg_cfg = TelegramConfig.from_env()
+            if tg_cfg:
+                bot = TelegramBot(tg_cfg)
+                push_simple(bot, message)
+                logger.info("bearish_screen_sent", as_of=str(as_of))
 
     logger.info("bearish_screen_done", count=len(results), as_of=str(as_of))
     return 0

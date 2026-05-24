@@ -48,6 +48,8 @@ import sys
 from datetime import date as date_type
 from datetime import timedelta
 
+from communication.telegram import TelegramBot, TelegramConfig
+from communication.telegram.sender import push_simple
 from data.database import connect
 from find_bearish_stocks import find_bearish_stocks
 from utils.logger import get_logger
@@ -392,6 +394,71 @@ def score_short_candidates(
 
 # ── display ────────────────────────────────────────────────────────────────────
 
+
+_TELEGRAM_LIMIT = 4096
+
+
+def build_short_message(results: list[dict], as_of: date_type) -> str | None:
+    """Build concise Telegram message from Phase 2 short candidate results.
+
+    CRASH_PRONE_SHORT and SHORT_CANDIDATE shown with full detail.
+    LOW_CONVEXITY_BEAR and AVOID_SHORT shown as symbol lists only.
+    Returns None if no results.
+    """
+    if not results:
+        return None
+
+    _e = {
+        "CRASH_PRONE_SHORT":   "🔴",
+        "SHORT_CANDIDATE":     "🟠",
+        "LOW_CONVEXITY_BEAR":  "🟡",
+        "AVOID_SHORT":         "⚫",
+        "NOT_BEARISH_ALIGNED": "⚪",
+    }
+
+    by_label: dict[str, list] = {}
+    for r in results:
+        by_label.setdefault(r["short_label"], []).append(r)
+
+    lines = [f"🎯 空頭候選評分 ({as_of})"]
+
+    # Full detail for actionable labels
+    for label in ("CRASH_PRONE_SHORT", "SHORT_CANDIDATE"):
+        group = by_label.get(label, [])
+        e = _e.get(label, "")
+        label_names = {"CRASH_PRONE_SHORT": "強空候選", "SHORT_CANDIDATE": "空頭候選"}
+        if not group:
+            lines.append(f"\n{e} {label_names[label]}: 無")
+            continue
+        lines.append(f"\n{e} {label_names[label]} ({len(group)})")
+        for r in group:
+            rw = r.get("relative_weakness")
+            gaps = int(r.get("down_gaps_30d") or 0)
+            rw_s = f"vs產業{rw:+.1f}%" if rw is not None else "vs產業N/A"
+            lines.append(
+                f"  {r['stock_id']} {r['name']}"
+                f"  {r['close']:.2f}"
+                f"  趨勢{r['score']} 空頭{r['shortability_score']}"
+                f"  {rw_s}  {gaps}缺"
+            )
+
+    # Symbol list only for lower tiers
+    for label in ("LOW_CONVEXITY_BEAR", "AVOID_SHORT"):
+        group = by_label.get(label, [])
+        if not group:
+            continue
+        e = _e.get(label, "")
+        label_names = {"LOW_CONVEXITY_BEAR": "低凸性空頭", "AVOID_SHORT": "避免做空"}
+        syms = " ".join(r["stock_id"] for r in group[:8])
+        extra = f" +{len(group)-8}" if len(group) > 8 else ""
+        lines.append(f"\n{e} {label_names[label]} ({len(group)}): {syms}{extra}")
+
+    msg = "\n".join(lines)
+    if len(msg) > _TELEGRAM_LIMIT:
+        msg = msg[:_TELEGRAM_LIMIT - 20] + "\n...(截斷)"
+    return msg
+
+
 def _print_table(results: list[dict], as_of: date_type) -> None:
     if not results:
         print("無符合條件的個股")
@@ -474,6 +541,8 @@ def main() -> int:
                         help=f"Min Phase 1 bearish score (default {_DEFAULT_MIN_BEARISH})")
     parser.add_argument("--min-short", type=int, default=_DEFAULT_MIN_SHORT,
                         help=f"Min Phase 2 shortability score (default {_DEFAULT_MIN_SHORT})")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print only, do not send Telegram")
     args = parser.parse_args()
 
     as_of = resolve_as_of(args.as_of)
@@ -485,6 +554,15 @@ def main() -> int:
         min_short_score=args.min_short,
     )
     _print_table(results, as_of)
+
+    if not args.dry_run:
+        message = build_short_message(results, as_of)
+        if message:
+            tg_cfg = TelegramConfig.from_env()
+            if tg_cfg:
+                bot = TelegramBot(tg_cfg)
+                push_simple(bot, message)
+                logger.info("short_score_sent", as_of=str(as_of))
 
     logger.info("short_score_done", count=len(results), as_of=str(as_of))
     return 0

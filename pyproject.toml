@@ -30,6 +30,7 @@ dependencies = [
     #     原因：兩者透過 numba 帶入 llvmlite，在 Python 3.13+ 上 wheel 落後
     #     Step 3 開始用：uv sync --group features
     #     Step 6 開始用：uv sync --group backtest
+    "shioaji>=1.3.3",
 ]
 
 [dependency-groups]
