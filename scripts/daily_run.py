@@ -18,11 +18,9 @@ from datetime import datetime
 from functools import partial
 
 from communication.telegram import TelegramBot, TelegramConfig
-from communication.telegram.listener import listen_for_approvals
 from communication.telegram.sender import push_simple
 from data.database import init_schema
 from execution import (
-    PaperBroker,
     PreflightDecline,
     TransactionFees,
     check_data_freshness,
@@ -102,19 +100,41 @@ def main() -> int:
         )
         print(f"[6] entry pipeline: {len(pending)} pending signals pushed")
 
-        # ── Step 7: Telegram approval window ──────────────
-        listener_summary = {"approved": [], "rejected": [], "polls": 0}
-        if pending and bot and not args.no_listener:
-            print(f"[7] listener starting ({args.listener_minutes} min, fill_date={fill_date})...")
-            listener_summary = listen_for_approvals(
-                bot=bot, broker=PaperBroker(fees=fees), fill_date=fill_date,
-                target_notional_for=lambda s: notional_map.get(_resolve_short(s, notional_map), 0.0),
-                duration_seconds=args.listener_minutes * 60,
-            )
-            print(f"[7] approved={len(listener_summary['approved'])} "
-                  f"rejected={len(listener_summary['rejected'])}")
+        # ── Step 7: auto-execute entry signals via LiveBroker ────────────
+        from execution.live_broker import LiveBroker
+        exec_summary = {"executed": [], "failed": []}
+        if pending:
+            broker = LiveBroker(bot=bot)
+            for sig in pending:
+                symbol = sig.get("stock_id") or sig.get("symbol", "")
+                signal_id = sig.get("signal_id") or sig.get("id", "")
+                if not symbol:
+                    logger.warning("daily_run_skip_no_symbol", sig=str(sig))
+                    exec_summary["failed"].append(symbol)
+                    continue
+                result = broker.submit_buy(
+                    symbol=symbol,
+                    lots=1,        # simulation=整股1張; live=零股改shares=
+                    fill_date=fill_date,
+                    signal_id=signal_id,
+                )
+                if result.success:
+                    exec_summary["executed"].append(symbol)
+                    logger.info(
+                        "daily_run_entry_executed",
+                        symbol=symbol, reason=result.execution_reason,
+                        price=result.fill_price,
+                    )
+                else:
+                    exec_summary["failed"].append(symbol)
+                    logger.warning(
+                        "daily_run_entry_failed",
+                        symbol=symbol, error=result.error,
+                    )
+            print(f"[7] executed={len(exec_summary['executed'])} "
+                  f"failed={len(exec_summary['failed'])}")
         else:
-            print(f"[7] listener skipped ({'no_telegram' if not bot else 'no_pending_or_disabled'})")
+            print("[7] no pending signals, skip execution")
 
         # ── Step 8: reconciliation (stub) ─────────────────
         recon = reconciliation.reconcile(as_of)
@@ -124,8 +144,8 @@ def main() -> int:
         # ── Summary (v0.1.14.3: + stability fields from exit_summary) ──
         guard.set_summary({
             "exits": exit_summary["exits_fired"], "pending_pushed": len(pending),
-            "approved": len(listener_summary["approved"]),
-            "rejected": len(listener_summary["rejected"]),
+            "executed": len(exec_summary["executed"]),
+            "failed_entries": len(exec_summary["failed"]),
             "reconciliation": "skipped" if recon.skipped else "ran",
             **{k: exit_summary[k] for k in ("exits_failed", "exits_failed_symbols",
                 "skipped_no_data", "skipped_no_data_symbols", "open_position_days",
@@ -134,15 +154,6 @@ def main() -> int:
         print("✓ daily_run complete")
         return 0
 
-
-def _resolve_short(s: str, notional_map: dict) -> str:
-    """Telegram users type prefixes — find full signal_id in our map."""
-    if s in notional_map:
-        return s
-    for full_id in notional_map:
-        if full_id.startswith(s):
-            return full_id
-    return ""
 
 
 if __name__ == "__main__":

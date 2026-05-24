@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     shioaji_api_key: SecretStr | None = None
     shioaji_secret_key: SecretStr | None = None
     shioaji_simulation: bool = True
+    ca_cert_path: str | None = None
+    ca_password: SecretStr | None = None
+    live_trading_enabled: bool = False
 
     def ensure_dirs(self) -> None:
         for d in (self.data_dir, self.cache_dir, self.log_dir):
