@@ -31,7 +31,7 @@ import structlog
 
 from data.database import connect
 from monitoring.intraday_monitor import run_monitor
-from monitoring.quote_source import YFinanceQuoteSource
+from monitoring.quote_source import ShioajiQuoteSource
 
 logger = structlog.get_logger(__name__)
 
@@ -107,7 +107,7 @@ def main() -> int:
         logger.info("intraday_monitor_start", run_at=run_at.isoformat())
 
         bot = _build_bot()
-        quote_source = YFinanceQuoteSource()
+        quote_source = ShioajiQuoteSource()
 
         with connect() as conn:
             summary = run_monitor(conn, quote_source, bot, run_at=run_at)

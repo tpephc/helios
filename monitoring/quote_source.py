@@ -151,3 +151,97 @@ class YFinanceQuoteSource:
                 return raw_ts.to_pydatetime().astimezone(timezone.utc)
             return raw_ts.to_pydatetime().replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc)
+
+
+class ShioajiQuoteSource:
+    """Shioaji real-time quote source for TWSE-listed symbols.
+
+    Replaces YFinanceQuoteSource with real-time last-trade prices
+    (no 15-min delay). Requires production Shioaji API key in .env.
+    Contract download adds ~5-10s startup per invocation; acceptable
+    for a 15-min cron cadence.
+
+    Falls back to QuoteResult(error=...) per symbol on any failure so
+    the monitoring loop is never blocked by a data source error.
+    """
+
+    _BATCH = 50  # Shioaji snapshots limit per call
+
+    def get_quotes(self, symbols: list[str]) -> dict[str, QuoteResult]:
+        """Fetch real-time snapshots; errors isolated per symbol."""
+        import shioaji as sj  # deferred: fail fast if package missing
+        from config.settings import get_settings
+
+        cfg = get_settings()
+        api = sj.Shioaji()
+        try:
+            api.login(
+                api_key=cfg.shioaji_api_key.get_secret_value(),
+                secret_key=cfg.shioaji_secret_key.get_secret_value(),
+                fetch_contract=True,
+                contracts_timeout=30_000,
+                subscribe_trade=False,
+            )
+            return self._fetch(api, symbols)
+        except Exception as exc:
+            logger.warning(
+                "shioaji_quote_source_login_failed error=%s", type(exc).__name__
+            )
+            return {
+                sym: QuoteResult(
+                    symbol=sym, price=None, price_ts=None,
+                    is_stale=True, error=type(exc).__name__,
+                )
+                for sym in symbols
+            }
+        finally:
+            try:
+                api.logout()
+            except Exception:
+                pass
+
+    def _fetch(self, api: object, symbols: list[str]) -> dict[str, QuoteResult]:
+        """Resolve contracts, batch-snapshot, convert to QuoteResult."""
+        contracts = []
+        for sid in symbols:
+            c = api.Contracts.Stocks.get(sid)
+            if c:
+                contracts.append(c)
+
+        # Batch snapshots
+        snaps: list = []
+        for i in range(0, len(contracts), self._BATCH):
+            snaps.extend(api.snapshots(contracts[i : i + self._BATCH]))
+
+        now_utc = datetime.now(timezone.utc)
+        results: dict[str, QuoteResult] = {}
+
+        for snap in snaps:
+            try:
+                price = snap.close
+                ts_dt = datetime.fromtimestamp(snap.ts / 1_000_000_000.0,
+                                               tz=timezone.utc)
+                age_min = (now_utc - ts_dt).total_seconds() / 60.0
+                results[snap.code] = QuoteResult(
+                    symbol=snap.code,
+                    price=float(price) if price else None,
+                    price_ts=ts_dt,
+                    is_stale=age_min > _STALE_THRESHOLD_MINUTES,
+                    error=None,
+                )
+            except Exception as exc:
+                results[snap.code] = QuoteResult(
+                    symbol=snap.code, price=None, price_ts=None,
+                    is_stale=True, error=type(exc).__name__,
+                )
+
+        # Fill symbols that got no snapshot
+        for sym in symbols:
+            if sym not in results:
+                results[sym] = QuoteResult(
+                    symbol=sym, price=None, price_ts=None,
+                    is_stale=True, error="snapshot_missing",
+                )
+
+        return results
+
