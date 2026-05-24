@@ -32,9 +32,10 @@ APPROACH_ENTER_BUFFER: float = 0.5
 APPROACH_EXIT_BUFFER: float = 0.8
 """Exit APPROACH (back to NORMAL) when price > trailing_stop + 0.8 × entry_atr."""
 
-assert APPROACH_EXIT_BUFFER > APPROACH_ENTER_BUFFER, (
-    "APPROACH_EXIT_BUFFER must exceed APPROACH_ENTER_BUFFER to form a dead-band."
-)
+if APPROACH_EXIT_BUFFER <= APPROACH_ENTER_BUFFER:
+    raise RuntimeError(
+        "APPROACH_EXIT_BUFFER must exceed APPROACH_ENTER_BUFFER to form a dead-band."
+    )
 
 
 class PriceZone(str, Enum):
@@ -122,6 +123,12 @@ def classify_zone(
     Returns:
         New :class:`PriceZone`.
     """
+    import math
+    if not math.isfinite(price):
+        raise ValueError(f"price must be finite, got {price!r}")
+    if current_zone not in (PriceZone.NORMAL, PriceZone.APPROACH, PriceZone.BREACH):
+        raise ValueError(f"Unknown zone: {current_zone!r}")
+
     if price <= levels.trailing_stop:
         return PriceZone.BREACH
 
@@ -135,7 +142,7 @@ def classify_zone(
             return PriceZone.NORMAL
         return PriceZone.APPROACH
 
-    # current_zone == NORMAL (or unknown default)
+    # current_zone == NORMAL
     if price <= levels.approach_enter:
         return PriceZone.APPROACH
     return PriceZone.NORMAL
