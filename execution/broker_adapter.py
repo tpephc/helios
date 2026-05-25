@@ -32,7 +32,25 @@ from typing import Any, Iterator, Protocol, runtime_checkable
 
 # Normalized broker data returned by adapter methods.
 #
-# All quantities in SHARES (broker-native unit from Shioaji deals).
+# Quantity unit convention (v0.1.16 v2.1, 2026-05-25):
+#   All quantities returned by BrokerAdapter methods are in CANONICAL
+#   SHARES (share-equivalent). Adapters MUST normalize broker-native
+#   units to shares at their boundary before returning data through
+#   this Protocol.
+#
+#   For Shioaji-backed adapters (LiveBroker):
+#     - Common path: deal.quantity and pos.quantity are in LOTS at the
+#       SDK boundary. LiveBroker × SHARES_PER_LOT before returning.
+#     - IntradayOdd path: deal.quantity and pos.quantity are in SHARES
+#       natively. NOT IMPLEMENTED in v0.1.16 v2.1; reserved for v0.1.17.
+#
+#   Design invariant (FROZEN):
+#     "Broker adapters may expose broker-native quantity semantics, but
+#      all persisted execution accounting inside Helios must use
+#      canonical share-equivalent units."
+#
+#   Consumers (reconcile_fills, etc.) operate on canonical shares only.
+#
 # All prices in TWD per share.
 # Date fields are date_type, not str.
 #

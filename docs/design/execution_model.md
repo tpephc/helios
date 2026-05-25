@@ -641,3 +641,98 @@ exact failure mode.
 |---|---|---|
 | v0.1.16 (v1) | 2026-05-24 (initial) | Initial post-audit design |
 | v0.1.16 (v2) | 2026-05-24 (post-review) | Advisor C/D/K review integration: K-P0-1 unit fix, C-P0-1/3/5 / D-P0-1/2 / K-P0-2 fixes, BrokerAdapter protocol, ReconcileCandidate, reviewer checklist |
+| v0.1.16 (v2.1) | 2026-05-25 (hotfix) | Shioaji boundary normalization: LiveBroker `_submit` / `fetch_trades` / `fetch_holdings` × SHARES_PER_LOT for Common lot; `_resolve_stock_contract` `.get()` lookup; OrderLot enum + assertion guard. See `CHANGELOG_v0_1_16_v2_1.md`. |
+---
+
+## §13 Boundary normalization (v2.1, 2026-05-25)
+
+### Motivation
+
+During post-deploy sim verification (2026-05-25), four independent
+Shioaji semantic mismatches were discovered in `LiveBroker`:
+
+1. `_submit` fill classification assumed `deal.quantity` is in SHARES;
+   Shioaji Common path actually returns LOTS.
+2. `_resolve_stock_contract` used `symbol in tse` membership check;
+   Shioaji `StreamMultiContract` does not implement `__contains__`,
+   so this expression is permanently False, causing every order to
+   fail with `contract_not_found`.
+3. `fetch_trades` same lot-vs-share assumption as `_submit`.
+4. `fetch_holdings` same lot-vs-share assumption.
+
+(1), (3), (4) are unit semantics. (2) is a separate SDK lookup-path
+bug uncovered while diagnosing (1). All four were resolved in v2.1
+(see `CHANGELOG_v0_1_16_v2_1.md`).
+
+### Design invariant (FROZEN)
+
+> Broker adapters may expose broker-native quantity semantics, but
+> all persisted execution accounting inside Helios must use canonical
+> share-equivalent units.
+
+This means:
+
+- **At the LiveBroker boundary** (where SDK objects cross into Helios
+  domain types): conversion happens once, explicitly.
+- **Everywhere else** (storage, journal, reconcile, accounting): code
+  may assume canonical share-equivalent without further conversion.
+
+The K-P0-1 share-equivalent invariant in `OrderSubmissionResult` and
+the DB CHECK constraints in `migrations/0002` are correct *given* this
+invariant is upheld at boundary. v2.1 added boundary normalization
+without changing any downstream code, so all share-equivalent
+comparisons (filled_shares vs requested_shares, CHECK constraints,
+reconcile fuzzy match) continue to operate correctly.
+
+### Common path normalization
+
+```
+Shioaji SDK boundary             Helios canonical (internal)
+─────────────────────            ────────────────────────────
+deal.quantity   (LOT)            filled_shares      (SHARE)
+  × SHARES_PER_LOT  ────────→
+pos.quantity    (LOT)            holdings.shares    (SHARE)
+  × SHARES_PER_LOT  ────────→
+```
+
+VWAP computations stay correct under either unit because
+`sum(price × qty) / sum(qty)` is unit-agnostic — numerator and
+denominator both scale by SHARES_PER_LOT, ratio unchanged. The
+boundary normalization happens after VWAP for clarity.
+
+### IntradayOdd path (NOT IMPLEMENTED, v0.1.17)
+
+For IntradayOdd (盤中零股), Shioaji returns `deal.quantity` and
+`pos.quantity` directly in SHARES (1–999, < 1 lot). There is no
+conversion at the boundary; pass-through.
+
+v2.1 does not implement IntradayOdd. `OrderLot.IntradayOdd` is
+explicitly commented out in `execution/order_types.py`, and
+`LiveBroker._submit` asserts `order_lot is OrderLot.Common` at the
+boundary normalization step, preventing accidental SHARES_PER_LOT
+over-multiplication if a future commit enables IntradayOdd without
+implementing the corresponding path.
+
+### LiveBroker boundary points (v2.1 exhaustive list)
+
+| Method | Type | Action |
+|---|---|---|
+| `_submit` (fill classification) | unit | `× SHARES_PER_LOT` on `deal.quantity` |
+| `fetch_trades` | unit | `× SHARES_PER_LOT` on `deal.quantity` |
+| `fetch_holdings` | unit | `× SHARES_PER_LOT` on `pos.quantity` |
+| `_resolve_stock_contract` | lookup | use `.get()` not `in` (orthogonal to unit, same v2.1 fix wave) |
+
+Any future LiveBroker method that consumes Shioaji `deal` or `pos`
+objects MUST follow the same convention. The `OrderLot` enum guard
+in `_submit` is the closest thing to a compile-time check; reviewers
+should treat it as the canonical pattern.
+
+### Cross-references
+
+- `BrokerAdapter` Protocol docstring (`execution/broker_adapter.py`)
+  documents the canonical unit guarantee from the consumer side.
+- `CHANGELOG_v0_1_16_v2_1.md` records the patch chronology and
+  per-patch verification evidence.
+- Backlog `#8` (SUPERSEDED), `#12` (RESOLVED), `#13` (RESOLVED),
+  `#14` (OPEN) in `CHANGELOG_v0_1_16_v1_to_v2.md`.
+

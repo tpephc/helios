@@ -225,6 +225,29 @@ v1's catastrophic bug.
    universe is narrower than production — verify against live broker
    before deploying production thresholds.
 
+   **Status: SUPERSEDED 2026-05-25 by item #13.**
+
+   *Root cause re-analysis (2026-05-25, v2.1 hotfix diagnosis):*
+   The original assumption that 6139 might be an ETF / index / warrant
+   in a non-stock namespace was **incorrect**. Direct Shioaji SDK
+   verification 2026-05-25 confirmed 6139 (`亞翔`) is a regular TSE
+   stock, found via `api.Contracts.Stocks.TSE.get('6139')`. The same
+   verification against 4919, 2890, 2330, 2412 — all returned correct
+   `Contract` objects via `.get()`.
+
+   *Actual root cause (see #13):* `_resolve_stock_contract` used
+   `symbol in tse` membership check. Shioaji's `StreamMultiContract`
+   namespace does NOT implement `__contains__`; Python falls back to
+   `__iter__` linear scan which iterates `Stock` objects (not keys),
+   so `"6139" in tse` is permanently False regardless of whether 6139
+   exists. All `submit_buy`/`submit_sell` calls produced
+   `FAILED.broker_reject(contract_not_found)`.
+
+   *Lesson for future archaeology:* this item is preserved as evidence
+   of a hand-wavy causal explanation made without SDK-level verification.
+   The fix in #13 was identified by direct `dir()` + `__contains__`
+   protocol inspection. Always validate before assuming SDK semantics.
+
 
 
 9. **`daily_run` cron `--as-of yesterday` vs last-trading-day**:
@@ -321,6 +344,137 @@ v1's catastrophic bug.
       spot. v0.1.17 should add a smoke test that asserts each cron job
       writes an expected log entry within N seconds of trigger.
 
+12. **Shioaji Common-path quantity unit mismatch (v0.1.16 v2 bug).**
+    **Status: RESOLVED 2026-05-25 by v2.1 hotfix (P-δ-2 / 2c / 2d).**
+
+    *Discovery (2026-05-25):* During sim post-deploy verification,
+    raw Shioaji SDK calls confirmed that `deal.quantity` for Common
+    `order_lot` is in LOTS, not SHARES. Two independent repros:
+    1-lot order returned `deal.quantity=1`; 2-lot order returned two
+    `Deal` objects of `quantity=1` each. Sinotrade docs sample
+    (`api.place_order` example) corroborates lot-unit convention.
+
+    *Impact in v0.1.16 v2 (pre-fix):* `LiveBroker._submit` line ~463
+    computed `total_deal_shares = sum(d.quantity for d in deals)`
+    assuming SHARES, then compared against
+    `requested_shares = requested_lots * SHARES_PER_LOT`. For a fully
+    filled 1-lot Common order, the comparison was `1 >= 1000` → False
+    → entered PARTIAL branch → DB row written with status=PARTIAL,
+    filled_shares=1. K-P0-1 DB CHECK permitted this (0 < 1 < 1000),
+    but the semantic was wrong: broker had FILLED, helios marked
+    PARTIAL (terminal per backlog #3). All Common entries would have
+    failed to open positions.
+
+    Same bug class affected `fetch_trades` (P-δ-2c) and `fetch_holdings`
+    (P-δ-2d) at the BrokerAdapter Protocol boundary.
+
+    *Root cause:* the `live_broker.py` module docstring and code
+    comments claimed `deal.quantity` was SHARES (broker-native). This
+    was an assumption made during v2 advisor review without SDK-level
+    verification.
+
+    *Fix (v2.1 hotfix):*
+    - P-δ-2: `_submit` boundary normalization — `× SHARES_PER_LOT`
+      after summing `deal.quantity`, with `assert order_lot is
+      OrderLot.Common` guard.
+    - P-δ-2c: `fetch_trades` same normalization.
+    - P-δ-2d: `fetch_holdings` same normalization on `pos.quantity`.
+    - P-δ-1: `OrderLot` enum added with Common only (IntradayOdd
+      commented out); reserved for v0.1.17.
+
+    *Design invariant (FROZEN, post-fix):*
+    "Broker adapters may expose broker-native quantity semantics, but
+    all persisted execution accounting inside Helios must use canonical
+    share-equivalent units." K-P0-1 share-equivalent comparison and DB
+    CHECK invariant remain intact; v2.1 only changes the boundary.
+
+    *Verification (2026-05-25):*
+    - Arithmetic unit-level test: 4 scenarios (1-lot full, 2-lot split,
+      empty deals, IntradayOdd assertion) all pass.
+    - `mark_filled(filled_shares=1000, requested_lots=1)` against DB
+      CHECK: passed.
+    - `fetch_holdings` post-patch: 4919 returns shares=3000 (3 lots ×
+      1000), 2890 returns shares=1000 (1 lot × 1000). Both match
+      expected canonical values.
+
+    End-to-end LiveBroker → real-broker → DB FILLED row writing has
+    not been verified yet (sim env defaults to ref_price LMT which
+    rarely auto-fills within poll window). First real opportunity is
+    5/26 16:00 cron if a marketable entry signal lands.
+
+    See `CHANGELOG_v0_1_16_v2_1.md` for full patch chronology.
+
+13. **`_resolve_stock_contract` symbol-in-namespace lookup bug.**
+    **Status: RESOLVED 2026-05-25 by v2.1 hotfix (P-δ-2b).**
+
+    Supersedes item #8.
+
+    *Discovery (2026-05-25):* During P-δ-2 verification, LiveBroker
+    `submit_buy` against 4919 returned `FAILED.broker_reject` with
+    error_code=`contract_not_found` — same error pattern as the
+    5/24 smoke test 6139 case. Raw Shioaji SDK calls 2026-05-25 against
+    4919, 6139, 2890, 2330, 2412 all returned valid TSE contracts via
+    `tse.get(symbol)`, contradicting the original #8 hypothesis that
+    6139 was in a non-stock namespace.
+
+    *Root cause:* `_resolve_stock_contract` used `symbol in tse`
+    membership check. Diagnostic 2026-05-25:
+    `Has __contains__: False` — Shioaji's `StreamMultiContract`
+    namespace does not implement `__contains__`, so Python falls
+    back to `__iter__` linear scan which iterates `Stock` objects
+    (not keys). The string `"4919"` is compared against `Stock`
+    instances and never matches → `'4919' in tse` returns False
+    permanently. The bug was masked because `tse[symbol]` and
+    `tse.get(symbol)` both work — only the `in` short-circuit
+    returned None.
+
+    *Fix (P-δ-2b):* changed `_resolve_stock_contract` from
+    `tse[symbol] if symbol in tse else None` to `tse.get(symbol)`.
+    Same for OTC namespace. Docstring updated with diagnostic
+    evidence and verified symbol list.
+
+    *Verification (2026-05-25 11:24):* LiveBroker driver against
+    4919 1-lot returned `broker_order_id=103BCC, status=SUBMITTED`
+    instead of `FAILED.broker_reject`. Contract resolution path
+    confirmed functional.
+
+    *Implication for v0.1.16 v2 main deployment:* the
+    `helios_20260524_d5f22d6e` row recorded during 5/24 smoke test
+    (6139 FAILED.broker_reject) was misdiagnosed at the time as a
+    namespace issue and attributed to backlog #8. Actual cause was
+    this `in` operator bug. #8 is preserved as evidence of
+    hand-wavy causal reasoning; this entry corrects the record.
+
+14. **`LiveBroker.fetch_trades` timestamp semantics (v0.1.17).**
+    **Status: OPEN — known issue, deferred.**
+
+    LiveBroker.fetch_trades() skips sim trades because
+    `trade.status.modified_time` is None and `trade.ts` is absent.
+    Sim trades expose `status.order_datetime` and `deal.ts` instead.
+    Reconcile read path needs explicit timestamp semantics:
+    `order_ts` for submitted orders, `fill_ts` from `deal.ts` for
+    filled/partial orders, and `broker_status_ts` only if verified
+    in production. Do not patch by blindly substituting one field
+    for another.
+
+    Why this is deferred to v0.1.17 (not v2.1 hotfix):
+    - v2.1 scope is Shioaji unit boundary canonicalization for the
+      entry path; reconcile read path has no production cron and
+      is not 5/26 critical.
+    - Production Shioaji `modified_time` behavior is unverified
+      (sim returns None; production may set it). Patching by
+      substitution without production evidence risks introducing
+      the wrong fallback order.
+    - Correct fix likely splits the single `trade_dt` extraction
+      into dual `order_ts` / `fill_ts` semantics, which is a
+      reconcile-interface design change, not a hotfix.
+
+    v0.1.17 must: (1) verify production timestamp behavior with
+    real Shioaji session, (2) redesign `fetch_trades` to return
+    explicit `order_ts` and `fill_ts`, (3) update `BrokerAdapter`
+    Protocol contract accordingly, (4) update `reconcile_fills`
+    consumers.
+
 ---
 
 ## Sign-off
@@ -331,3 +485,7 @@ v1's catastrophic bug.
 | Reviewer | Tick reviewer checklist §11 for execution PR. |
 | Operator | Verify Telegram surfaces sim_relaxed and recovery summary correctly. |
 | Pre-live | Verify Step 7 uses production guard; trading_calendar replaced. |
+
+---
+
+**v2.1 hotfix (2026-05-25)**: See [`CHANGELOG_v0_1_16_v2_1.md`](CHANGELOG_v0_1_16_v2_1.md) for Shioaji boundary normalization patches addressing backlog items #12, #13, and #14.

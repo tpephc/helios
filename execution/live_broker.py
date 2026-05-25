@@ -25,6 +25,20 @@ Changes from v2-draft (post-advisor-review v2):
     normalized via Action enum identity, not string compare.
   - K-P1-5 fix: broker_order_id empty string normalized to None at
     the journal boundary (in order_journal.mark_submitted).
+
+Changes in v0.1.16 v2.1 (2026-05-25 hotfix):
+  - Boundary normalization: Shioaji Common-path deal.quantity is LOTS
+    (confirmed via Sinotrade docs + live sim repro), not SHARES.
+    LiveBroker._submit now × SHARES_PER_LOT at the fill classification
+    boundary to convert broker-native lot count into the canonical
+    share-equivalent unit used by storage / reconcile / accounting.
+  - submit_buy / submit_sell signatures gain `order_lot: OrderLot`
+    parameter (default Common). _submit asserts order_lot is Common at
+    the boundary, preventing v0.1.17 IntradayOdd path from silently
+    over-counting fills by SHARES_PER_LOT.
+  - K-P0-1 share-equivalent invariant (filled_shares vs requested_shares)
+    remains intact — boundary normalization preserves the share-equivalent
+    comparison semantics throughout the function.
   - D-P0-2 / decision 3a: implements BrokerAdapter protocol via public
     login_session, fetch_trades, fetch_holdings methods. reconcile no
     longer calls _login directly.
@@ -50,6 +64,7 @@ from zoneinfo import ZoneInfo
 from config.settings import get_settings
 from execution.broker_adapter import BrokerAdapter, BrokerAdapterError
 from execution.order_types import (
+    OrderLot,
     SHARES_PER_LOT,
     FailureType,
     OrderSide,
@@ -82,11 +97,21 @@ def _resolve_stock_contract(api: Any, symbol: str) -> Any:
     bare `api.Contracts.Stocks[symbol]` which works for some symbols
     but is unreliable for OTC (上櫃) and certain ETFs.
 
+    v2.1 (2026-05-25, hotfix): switched from ``symbol in tse`` membership
+    check to ``tse.get(symbol)`` lookup. Shioaji's StreamMultiContract
+    namespace does NOT implement ``__contains__``; Python falls back to
+    ``__iter__`` linear scan which iterates ``Stock`` objects (not keys),
+    so ``"4919" in tse`` is permanently False regardless of whether 4919
+    exists. ``tse.get(symbol)`` uses the SDK's intended key-lookup path
+    (returns None on miss, no KeyError). Verified via repro 2026-05-25
+    against 5 symbols (6139, 4919, 2890, 2330, 2412): all return correct
+    Contract via ``.get()`` but ``in`` returns False for all.
+
     Returns the contract or None if not found in either market.
     """
     try:
         tse = api.Contracts.Stocks.TSE
-        contract = tse[symbol] if symbol in tse else None
+        contract = tse.get(symbol)
         if contract is not None:
             return contract
     except Exception as exc:  # noqa: BLE001 - SDK-level call surface unknown
@@ -95,7 +120,7 @@ def _resolve_stock_contract(api: Any, symbol: str) -> Any:
         )
     try:
         otc = api.Contracts.Stocks.OTC
-        contract = otc[symbol] if symbol in otc else None
+        contract = otc.get(symbol)
         if contract is not None:
             return contract
     except Exception as exc:  # noqa: BLE001
@@ -201,11 +226,17 @@ class LiveBroker:
         fill_date: date_type,
         signal_id: str | None = None,
         lots: int = 1,
+        order_lot: OrderLot = OrderLot.Common,
     ) -> OrderSubmissionResult:
-        """Place a Common-lot buy order. lots is in 整股 units (1 lot = 1000 shares)."""
+        """Place a Common-lot buy order. lots is in 整股 units (1 lot = 1000 shares).
+
+        v0.1.16 v2.1: order_lot is reserved for v0.1.17 IntradayOdd expansion.
+        Only OrderLot.Common is currently supported; other values trigger
+        the boundary-normalization assertion inside _submit.
+        """
         return self._submit(
             side=OrderSide.BUY, symbol=symbol, fill_date=fill_date,
-            signal_id=signal_id, lots=lots,
+            signal_id=signal_id, lots=lots, order_lot=order_lot,
         )
 
     def submit_sell(
@@ -215,11 +246,15 @@ class LiveBroker:
         fill_date: date_type,
         signal_id: str | None = None,
         lots: int = 1,
+        order_lot: OrderLot = OrderLot.Common,
     ) -> OrderSubmissionResult:
-        """Place a Common-lot sell order."""
+        """Place a Common-lot sell order.
+
+        See submit_buy docstring for order_lot semantics.
+        """
         return self._submit(
             side=OrderSide.SELL, symbol=symbol, fill_date=fill_date,
-            signal_id=signal_id, lots=lots,
+            signal_id=signal_id, lots=lots, order_lot=order_lot,
         )
 
     # ── Core submission flow ───────────────────────────────────────────────
@@ -232,6 +267,7 @@ class LiveBroker:
         fill_date: date_type,
         signal_id: str | None,
         lots: int,
+        order_lot: OrderLot,
     ) -> OrderSubmissionResult:
         """Unified submission flow (shared between buy and sell).
 
@@ -266,7 +302,11 @@ class LiveBroker:
             signal_id=signal_id,
             limit_price=None,
             broker=self._broker_tag,
-            metadata={"lots": requested_lots, "shares_per_lot": SHARES_PER_LOT},
+            metadata={
+                "lots": requested_lots,
+                "shares_per_lot": SHARES_PER_LOT,
+                "order_lot": order_lot.value,
+            },
         )
 
         # ── Step 2: shioaji import ────────────────────────────────────────
@@ -456,14 +496,34 @@ class LiveBroker:
                 list(trade.status.deals)
                 if trade and trade.status and trade.status.deals else []
             )
-            # CRITICAL UNIT NOTE (K-P0-1):
-            #   deal.quantity is in SHARES (not lots).
-            #   total_deal_shares accumulates in SHARES.
-            #   To compare with requested_lots, convert via SHARES_PER_LOT.
-            total_deal_shares = sum(d.quantity for d in deals)
+            # ── Boundary normalization (v0.1.16 v2.1) ────────────────────
+            # Shioaji StockOrderLot semantics (confirmed via Sinotrade docs
+            # 2026-05-25 and live sim repro):
+            #   Common:      deal.quantity is in LOTS — × SHARES_PER_LOT here
+            #   IntradayOdd: deal.quantity is in SHARES — pass-through (v0.1.17)
+            #
+            # Design invariant (FROZEN):
+            #   "Broker adapters may expose broker-native quantity semantics,
+            #    but all persisted execution accounting inside Helios must
+            #    use canonical share-equivalent units."
+            #
+            # The assertion below is the contractual boundary preventing
+            # future IntradayOdd expansion from silently × SHARES_PER_LOT.
+            # K-P0-1 share-equivalent invariant remains intact: post-normalization
+            # total_deal_shares is compared against requested_shares throughout.
+            assert order_lot is OrderLot.Common, (
+                f"v0.1.16 v2.1 supports only OrderLot.Common at the boundary "
+                f"normalization step; got {order_lot}. IntradayOdd path is "
+                "reserved for v0.1.17 and requires path-specific handling."
+            )
+            total_deal_lots_native = sum(d.quantity for d in deals)
+            # × SHARES_PER_LOT: broker-native (lot) → canonical (share)
+            total_deal_shares = total_deal_lots_native * SHARES_PER_LOT
+            # VWAP is unit-agnostic: sum(price × q) / sum(q) using native
+            # unit on both numerator and denominator yields correct mean.
             avg_fill_price = (
-                sum(d.price * d.quantity for d in deals) / total_deal_shares
-                if total_deal_shares > 0 else None
+                sum(d.price * d.quantity for d in deals) / total_deal_lots_native
+                if total_deal_lots_native > 0 else None
             )
 
             requested_shares = requested_lots * SHARES_PER_LOT
@@ -686,15 +746,27 @@ class LiveBroker:
                 if trade_date != as_of:
                     continue
 
-                # Sum deals (each deal is in SHARES)
+                # Sum deals — boundary normalization (v0.1.16 v2.1).
+                # Shioaji Common-path deal.quantity is in LOTS (confirmed via
+                # Sinotrade docs + live sim repro 2026-05-25). Convert to
+                # canonical share count here so downstream reconcile compares
+                # broker filled_shares against helios DB filled_shares on the
+                # same share-equivalent scale. IntradayOdd would be SHARES
+                # natively (v0.1.17); for v2.1, only Common is supported and
+                # this branch silently assumes all trades are Common — safe
+                # given LiveBroker.submit_buy / submit_sell only place Common.
                 deals = (
                     list(trade.status.deals)
                     if trade.status and trade.status.deals else []
                 )
-                filled_shares = sum(d.quantity for d in deals)
+                total_deal_lots_native = sum(d.quantity for d in deals)
+                # × SHARES_PER_LOT: broker-native (lot) → canonical (share)
+                filled_shares = total_deal_lots_native * SHARES_PER_LOT
+                # VWAP unit-agnostic: sum(price × q) / sum(q) using native
+                # unit on both sides yields correct mean price.
                 avg_price = (
-                    sum(d.price * d.quantity for d in deals) / filled_shares
-                    if filled_shares > 0 else None
+                    sum(d.price * d.quantity for d in deals) / total_deal_lots_native
+                    if total_deal_lots_native > 0 else None
                 )
 
                 broker_order_id = (
@@ -744,9 +816,22 @@ class LiveBroker:
         out: list[dict] = []
         for pos in raw:
             try:
+                # Boundary normalization (v0.1.16 v2.1):
+                # Shioaji list_positions.quantity is in LOTS for Common stock
+                # holdings (verified 2026-05-25: 4919 cumulative 3 lots returned
+                # pos.quantity=3, not 3000). Convert to canonical share count
+                # for downstream reconcile vs helios positions.shares (which
+                # stores share-equivalent BIGINT).
+                #
+                # v0.1.17 caveat: if IntradayOdd holdings appear in
+                # list_positions, this × SHARES_PER_LOT will over-count by
+                # 1000x. fetch_holdings will need to inspect a per-position
+                # order_lot attribute (if Shioaji exposes one) before
+                # converting. Not a concern in v2.1 — LiveBroker only places
+                # Common orders.
                 out.append({
                     "symbol": pos.code,
-                    "shares": pos.quantity,
+                    "shares": pos.quantity * SHARES_PER_LOT,
                     "avg_cost": pos.price,
                 })
             except Exception as exc:

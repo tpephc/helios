@@ -134,6 +134,32 @@ class FailureType(str, Enum):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class OrderLot(str, Enum):
+    """Stock order lot type (Shioaji StockOrderLot proxy).
+
+    Common: 整股 (1 lot = SHARES_PER_LOT shares).
+        Broker deal.quantity unit: LOTS.
+        LiveBroker boundary normalization: × SHARES_PER_LOT to convert
+        to canonical share-equivalent for internal accounting.
+    IntradayOdd: 盤中零股 (1-999 shares, < 1 lot).
+        Broker deal.quantity unit: SHARES.
+        LiveBroker boundary normalization: pass-through.
+        Reserved for v0.1.17; NOT IMPLEMENTED in v0.1.16 v2.1.
+
+    Design invariant (FROZEN, v0.1.16 v2.1):
+        "Broker adapters may expose broker-native quantity semantics,
+         but all persisted execution accounting inside Helios must use
+         canonical share-equivalent units."
+
+    LiveBroker._submit asserts order_lot is Common at the boundary
+    normalization step. Adding IntradayOdd here without implementing
+    the corresponding path will trigger the assertion at runtime.
+    """
+
+    Common = "Common"
+    # IntradayOdd = "IntradayOdd"  # v0.1.17 — DO NOT uncomment until path is implemented.
+
+
 @dataclass
 class OrderSubmissionResult:
     """Outcome of a single submit_buy / submit_sell call.
