@@ -225,6 +225,17 @@ v1's catastrophic bug.
    universe is narrower than production — verify against live broker
    before deploying production thresholds.
 
+
+
+9. **`daily_run` cron `--as-of yesterday` vs last-trading-day**:
+   Cron uses `$(date --date=yesterday +%Y-%m-%d)`, which on Monday
+   produces Sunday. v2 Step 1 (`is_trading_day`) correctly declines,
+   writing `last_run.json status=declined_preflight`. Acceptable safety
+   behavior but creates one declined_preflight run per week (Monday).
+   v0.1.17 could replace with a `--as-of last_trading_day` helper
+   that consults `utils.trading_calendar`. Low priority; not on
+   critical path.
+
 ---
 
 ## Sign-off
