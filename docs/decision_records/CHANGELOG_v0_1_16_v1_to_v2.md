@@ -279,6 +279,48 @@ v1's catastrophic bug.
       `trade_date == fill_date`, so this trade is permanently invisible
       to v2 reconcile pipeline.
 
+11. **`intraday_monitor` cron `PATH` bug (pre-existing).**
+    **Status: RESOLVED 2026-05-25 09:34.**
+
+    *Discovery:* during 2026-05-25 follow-up after v2 deploy, found
+    `logs/intraday_monitor.log` Birth date was 2026-05-25 09:05 (today)
+    with content `/bin/sh: 1: uv: not found`. Compared with other cron
+    lines that use absolute path `/home/tradeagent/.local/bin/uv`, the
+    intraday_monitor cron line used bare `uv` which is not on cron's
+    default `$PATH` (`/usr/bin:/bin`).
+
+    *Root cause:* the cron line `5,20,35,50 9-13 * * 1-5 cd
+    ~/projects/helios && uv run python scripts/intraday_monitor.py ...`
+    was authored without absolute-path awareness. Bug pre-dates v0.1.16
+    deployment — v2 restore preserved the original (broken) form
+    verbatim. Implication: intraday_monitor has likely never executed
+    successfully in production cron environment; trailing stop monitoring
+    has been silently inactive since the cron was first installed.
+
+    *Fix (2026-05-25 09:34):* updated cron line to use absolute paths,
+    matching other cron entries:
+    `5,20,35,50 9-13 * * 1-5 cd /home/tradeagent/projects/helios &&
+    /home/tradeagent/.local/bin/uv run python scripts/intraday_monitor.py
+    >> logs/intraday_monitor.log 2>&1`.
+
+    *Verification (2026-05-25 09:35):* first post-fix cron triggered
+    correctly. `logs/intraday_monitor.log` recorded 3 structlog events
+    (start / no_open_positions / complete). `intraday_monitor_runs` DB
+    row written. Duration 2ms. Lock file created at `.lock/intraday_monitor.lock`
+    and released.
+
+    *Pre-existing log artifact:* `logs/intraday_monitor.log.pre_path_fix_*`
+    preserved as 52-byte evidence of the failure mode.
+
+    *Lessons:*
+    - All cron jobs invoking project tools must use absolute paths
+      (`/home/tradeagent/.local/bin/uv`, etc.). Relative names rely on
+      shell `$PATH` which cron does not populate.
+    - Lack of `OPEN` positions during the bug's lifetime masked the
+      failure — silent dependency on rare states is a monitoring blind
+      spot. v0.1.17 should add a smoke test that asserts each cron job
+      writes an expected log entry within N seconds of trigger.
+
 ---
 
 ## Sign-off
