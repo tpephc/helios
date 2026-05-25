@@ -270,3 +270,17 @@ archaeology from mistaking this hotfix for a complete remediation:
 - Design: [`../design/execution_model.md`](../design/execution_model.md), §13 Boundary normalization.
 - Protocol contract: `execution/broker_adapter.py` module docstring.
 - Backlog items: #8 (SUPERSEDED), #12 (RESOLVED), #13 (RESOLVED), #14 (OPEN) in parent doc.
+
+## Backlog #9 RESOLVED (2026-05-25)
+
+**Problem:** cron uses `$(date --date=yesterday)` for `--as-of`, which
+on Mondays (and after holidays) resolves to a non-trading day (weekend),
+causing `daily_run.py` to decline with `non_trading_day`.
+
+**Fix:** replaced with `$(uv run python -c "from market.trading_calendar
+import previous_trading_day; from datetime import date;
+print(previous_trading_day(date.today()))")` in crontab. No code change
+needed — `previous_trading_day()` already existed.
+
+**Verification:** dry run on 2026-05-25 (Monday) correctly returns
+2026-05-22 (Friday).
