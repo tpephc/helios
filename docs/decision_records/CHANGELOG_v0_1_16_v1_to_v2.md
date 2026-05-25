@@ -236,6 +236,49 @@ v1's catastrophic bug.
    that consults `utils.trading_calendar`. Low priority; not on
    critical path.
 
+10. **Shioaji sim API key lacked `place_order` permission.**
+    **Status: RESOLVED 2026-05-25 (same-day rollover).**
+
+    *Symptom (2026-05-25 08:32, simulation_test.sh + 08:35 minimal repro):*
+    `api.login` succeeded (`Session up`), `api.stock_account.signed`
+    returned `False` (sim env does not implement CA signing, expected
+    sim limitation), `api.place_order` raised
+    `TokenError: StatusCode 401, Detail: Token doesn't have permission`.
+    Reproducible with raw SDK call without helios involvement; confirmed
+    that `signed: False` itself is NOT the cause — skipping `activate_ca`
+    still produced 401.
+
+    *Root cause:* the API key in `.env` at that time had been issued
+    without sim trading scope. Re-issued key (`.env` updated
+    2026-05-25 08:43) included the required scope.
+
+    *Verification (2026-05-25 08:48):* minimal repro with new key
+    returned `OrderState.StockOrder ordno='00014D' status=Status.Submitted`,
+    confirming sim trading path is functional end-to-end (login → contract
+    lookup → place_order → status poll). `signed: False` persists (sim
+    limitation; orthogonal to trading authorization).
+
+    *Original concern:* without trading scope, v0.1.16 v2 LiveBroker
+    would route every entry signal through Step 7 to FAILED.broker_reject
+    (token_error) and block production validation, despite v2 schema /
+    journal / state machine / K-P0-1 defense / sim_relaxed guard being
+    structurally correct. Concern dismissed by verification above.
+
+    *Lessons for future archaeology:*
+    - `signed: False` in sim mode is normal and should NOT be treated as
+      a blocker. LiveBroker should not gate behavior on
+      `stock_account.signed` in sim mode (current code does not, by
+      design; preserve this).
+    - Shioaji `TokenError 401` on `place_order` is a permission-scope
+      issue, not a CA/activation issue. When the symptom appears, first
+      confirm the API key has the required trading scope (check Shioaji
+      dashboard or re-issue key) before debugging CA flow.
+    - The test order placed during verification (Shioaji sim ordno
+      00014D, 2890 永豐金 1 lot LMT @29.1, trade_date 2026-05-25) lives
+      only on the Shioaji sim platform; helios reconcile filters by
+      `trade_date == fill_date`, so this trade is permanently invisible
+      to v2 reconcile pipeline.
+
 ---
 
 ## Sign-off
