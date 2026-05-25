@@ -129,7 +129,7 @@ def _safe_repr(obj: object) -> str:
     """repr() that never raises. Returns sentinel on failure."""
     try:
         return repr(obj)
-    except Exception as exc:  # noqa: BLE001 — defensive logging only
+    except Exception as exc:  # defensive logging only
         return f"<repr_failed:{type(exc).__name__}>"
 
 
@@ -137,7 +137,7 @@ def _safe_type(obj: object) -> str:
     """type(obj).__name__ that never raises."""
     try:
         return type(obj).__name__
-    except Exception:  # noqa: BLE001
+    except Exception:  # defensive logging only
         return "<unknown>"
 
 
@@ -146,7 +146,7 @@ def _safe_getattr(obj: object, attr: str, default: object = None) -> object:
     that can raise on missing fields)."""
     try:
         return getattr(obj, attr, default)
-    except Exception:  # noqa: BLE001
+    except Exception:  # defensive logging only
         return default
 
 
