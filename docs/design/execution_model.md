@@ -736,3 +736,101 @@ should treat it as the canonical pattern.
 - Backlog `#8` (SUPERSEDED), `#12` (RESOLVED), `#13` (RESOLVED),
   `#14` (OPEN) in `CHANGELOG_v0_1_16_v1_to_v2.md`.
 
+
+---
+
+## §14 Internal book vs broker truth — operational model (2026-05-25)
+
+### Framing
+
+The phrase "Helios DB is SSOT" is **incorrect and must not be used**.
+
+The correct model is:
+
+    Broker fills       = external execution truth
+    Orders journal     = internal operational book (projection of known fills)
+    Positions table    = derived projection from orders journal
+    Reconcile          = truth synchronization boundary
+
+The internal book is authoritative for *operational decisions* (signal
+gating, exit sizing, notional limits). It is NOT authoritative for
+*fill truth*. Fill truth lives only at the broker.
+
+Corollary: the system is correct only if reconcile continuously proves
+that the internal book matches broker truth. A clean internal book
+without a passing reconcile is an unverified claim, not a guarantee.
+
+This distinction matters because v0.1.16 v2 shipped with an incorrect
+assumption about Shioaji `deal.quantity` units. The internal book
+recorded wrong `filled_shares` values. Because reconcile was skipped,
+no automated check caught the divergence. v2.1 fixed the boundary
+normalization; the lesson is that reconcile is a load-bearing
+architectural component, not an optional audit step.
+
+### Live unlock gating (G1-G6)
+
+The following gates MUST all be green before any live (non-paper,
+non-sim) trading is permitted. They are not aspirational -- they are
+hard prerequisites.
+
+| Gate | Requirement | Status |
+|------|-------------|--------|
+| G1 | reconcile_fills.py can query broker trades and holdings | OPEN |
+| G2 | Reconcile handles SUBMITTED non-terminal orders (confirm fill / expire / flag) | OPEN |
+| G3 | daily_run does not treat SUBMITTED as executed; startup_recovery covers stale SUBMITTED | OPEN |
+| G4 | Immediate post-submit poll is documented as best-effort snapshot only; final state determined by reconcile | OPEN |
+| G5 | PARTIAL fill policy locked: one of (a) prohibit paths that can produce PARTIAL, (b) manual review gate, (c) full partial position accounting implemented | OPEN |
+| G6 | Reconcile detects and flags manual broker-side activity (broker holding without Helios position; broker trade without Helios order; Helios position without broker holding) | OPEN |
+
+Gates G1-G4 must be satisfied before the *first real fill* occurs,
+not after. Once a real fill happens without reconcile, audit trail
+reconstruction is lossy.
+
+Gate G5 note: 1-lot Common orders on liquid names are unlikely to
+produce PARTIAL fills in practice, but "unlikely" is not a production
+gate. A policy decision must be made and recorded explicitly.
+
+### Reconcile skip policy
+
+reconciliation_skipped with reason paper_broker_no_external_state_*
+is acceptable ONLY when broker == paper. For any Shioaji sim or live
+deployment, this reason code MUST NOT appear in production logs.
+
+The correct gate in daily_run / reconcile_fills.py:
+
+    if broker_mode == "paper":
+        # skip is acceptable
+        pass
+    else:
+        # reconcile MUST run; skip is a hard error
+        raise ReconcileRequiredError(...)
+
+### SUBMITTED state policy
+
+SUBMITTED is NOT a terminal state. It means:
+
+    order was accepted by broker API
+    fill status is unknown
+
+Every SUBMITTED order requires a deterministic follow-up path:
+
+1. Next cron: startup_recovery scans stale SUBMITTED orders
+2. For each stale SUBMITTED: call fetch_trades / fetch_holdings
+3. Outcome must be one of:
+   - Confirmed fill -> mark_filled
+   - Confirmed no fill + order expired -> mark_expired
+   - Cannot confirm -> mark_failed(requires_broker_verification=True)
+
+There must be no path where a SUBMITTED order remains SUBMITTED
+indefinitely without human notification.
+
+### Cross-references
+
+- CHANGELOG_v0_1_16_v2_1.md §6: out-of-scope items feeding G1-G6
+- shioaji_semantic_observation_2026_05_26.md: empirical basis for
+  broker semantic assumptions; must be consulted before any reconcile
+  implementation
+- §8 Reconcile: existing reconcile design (to be updated when G1-G6
+  are implemented)
+- §13 Boundary normalization: broker unit semantics at LiveBroker
+  boundary
