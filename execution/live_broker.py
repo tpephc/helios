@@ -44,13 +44,36 @@ Changes in v0.1.16 v2.1 (2026-05-25 hotfix):
     longer calls _login directly.
   - D-P2-e: _STATUS_POLL_SLEEP configurable (default raised to 5.0s).
 
+Changes in v0.1.16 v2.1 + P-obs-1 (2026-05-26):
+  - Adds info-level raw payload observation logging at 3 Shioaji SDK
+    boundary sites (_submit, fetch_trades, fetch_holdings) to
+    discharge [ASSUMED] semantic invariants documented in
+    docs/decision_records/shioaji_semantic_observation_2026_05_26.md.
+  - Dual-logging strategy on semantic-critical fields (price /
+    quantity / ts): raw value + _safe_repr + _safe_type. Raw exposes
+    structlog's runtime serialization behavior (Decimal? numpy
+    scalar? SDK wrapper?); repr+type are evidence fallback if raw
+    serialization surprises.
+  - Non-critical fields (trade.status, trade.order, full deal repr)
+    use _safe_repr only — these are container objects whose internal
+    structure is observed via the critical fields they contain.
+  - Local instrumentation helpers (_safe_repr / _safe_getattr /
+    _safe_type) are deliberately NOT promoted to utils/ — single-use,
+    underscore-prefixed, scope-bounded to the 5/26 observation window.
+  - Lifecycle: TEMPORARY. Target horizon 5–10 trading days. Removal
+    or env-var gating once §5 invariant table in the SSOT doc closes
+    the relevant assumed invariants.
+  - _resolve_stock_contract NOT instrumented — its [ASSUMED] →
+    [OBSERVED] transition completed by v2.1 sim repro across 5
+    symbols (§5 SSOT row 2).
+
 UNIT CONVENTION:
   requested_lots: int, Common lot count (1 lot = SHARES_PER_LOT shares)
   total_deal_shares: int, sum of deal.quantity from Shioaji (SHARES)
   Conversion: requested_shares = requested_lots * SHARES_PER_LOT
   Comparisons MUST use share-equivalents.
 
-Version: v0.1.2 (2026-05-24, v2)
+Version: v0.1.2 (2026-05-26, v2 + P-obs-1)
 """
 from __future__ import annotations
 
@@ -84,6 +107,47 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+# ─── P-obs-1 local instrumentation helpers ─────────────────────────────
+# Lifecycle: TEMPORARY. Tied to the 5/26 observation window. See
+# docs/decision_records/shioaji_semantic_observation_2026_05_26.md.
+#
+# Underscore prefix is deliberate — these are NOT reusable infra; do
+# not import out of this module. If a second observation site appears
+# elsewhere, copy-paste rather than promote to utils/, until v0.1.17
+# logging pipeline refactor decides the right home.
+#
+# Discipline: observation logging is being added to a live execution
+# path that already had two semantic bugs (v2 → v2.1). Any exception
+# escaping these helpers and killing _submit / fetch_trades /
+# fetch_holdings would be strictly worse than no logging. Hence the
+# bare-except defensive layer.
+
+
+def _safe_repr(obj: object) -> str:
+    """repr() that never raises. Returns sentinel on failure."""
+    try:
+        return repr(obj)
+    except Exception as exc:  # noqa: BLE001 — defensive logging only
+        return f"<repr_failed:{type(exc).__name__}>"
+
+
+def _safe_type(obj: object) -> str:
+    """type(obj).__name__ that never raises."""
+    try:
+        return type(obj).__name__
+    except Exception:  # noqa: BLE001
+        return "<unknown>"
+
+
+def _safe_getattr(obj: object, attr: str, default: object = None) -> object:
+    """getattr that never raises (some SDK objects have __getattr__
+    that can raise on missing fields)."""
+    try:
+        return getattr(obj, attr, default)
+    except Exception:  # noqa: BLE001
+        return default
 
 
 class LiveBrokerError(Exception):
@@ -492,6 +556,70 @@ class LiveBroker:
                     submitted_at=submitted_at,
                 )
 
+            # ─── P-obs-1: raw payload observation ────────────────────────
+            # Dump BOTH trade.status.deals (current code path) AND
+            # trade.deals (alternate SDK path that may exist) so we can
+            # observe whether they agree. v2.1 only reads status.deals;
+            # if SDK populates trade.deals differently we want to know
+            # before relying on either invariant.
+            #
+            # Dual-logging on semantic-critical fields (price / quantity
+            # / ts): raw + _safe_repr + _safe_type. Raw exposes
+            # structlog's runtime serialization behavior; repr+type are
+            # evidence fallback if raw serialization fails or surprises.
+            _obs_status = _safe_getattr(trade, "status", None)
+            _obs_status_deals = _safe_getattr(_obs_status, "deals", None) or []
+            _obs_trade_deals = _safe_getattr(trade, "deals", None) or []
+            logger.info(
+                "shioaji_raw_submit_observation",
+                order_id=order_id,
+                broker_order_id=_safe_getattr(
+                    _safe_getattr(trade, "order", None), "id", None,
+                ),
+                trade_repr=_safe_repr(trade),
+                trade_type=_safe_type(trade),
+                status_repr=_safe_repr(_obs_status),
+                status_type=_safe_type(_obs_status),
+                status_status_repr=_safe_repr(
+                    _safe_getattr(_obs_status, "status", None),
+                ),
+                status_status_type=_safe_type(
+                    _safe_getattr(_obs_status, "status", None),
+                ),
+                status_deals_count=len(_obs_status_deals),
+                trade_deals_count=len(_obs_trade_deals),
+                deals_paths_agree=(
+                    len(_obs_status_deals) == len(_obs_trade_deals)
+                ),
+                status_deals_raw=[
+                    {
+                        "repr": _safe_repr(d),
+                        # price: dual-log (raw + repr + type)
+                        "price_raw": _safe_getattr(d, "price", None),
+                        "price_repr": _safe_repr(
+                            _safe_getattr(d, "price", None),
+                        ),
+                        "price_type": _safe_type(
+                            _safe_getattr(d, "price", None),
+                        ),
+                        # quantity: dual-log (raw + repr + type)
+                        "quantity_raw": _safe_getattr(d, "quantity", None),
+                        "quantity_repr": _safe_repr(
+                            _safe_getattr(d, "quantity", None),
+                        ),
+                        "quantity_type": _safe_type(
+                            _safe_getattr(d, "quantity", None),
+                        ),
+                        # ts: dual-log (raw + repr + type)
+                        "ts_raw": _safe_getattr(d, "ts", None),
+                        "ts_repr": _safe_repr(_safe_getattr(d, "ts", None)),
+                        "ts_type": _safe_type(_safe_getattr(d, "ts", None)),
+                    }
+                    for d in _obs_status_deals
+                ],
+            )
+            # ─── end P-obs-1 ─────────────────────────────────────────────
+
             deals = (
                 list(trade.status.deals)
                 if trade and trade.status and trade.status.deals else []
@@ -728,6 +856,56 @@ class LiveBroker:
         if not raw:
             return []
 
+        # ─── P-obs-1: raw payload observation ────────────────────────────
+        # Cap sample at 5 — fetch_trades may be called once per cron but
+        # the trade list grows linearly over the trading day. Full dump
+        # would be O(N) per call. The deal_qty_types field per-trade is
+        # the single highest-value observation: directly discharges the
+        # Common-path LOTS-vs-SHARES assumption across the full trade
+        # population without dumping every deal.
+        #
+        # Dual-logging is NOT applied here for per-deal price/qty —
+        # _submit already captures full deal-level dual-log on the
+        # submission path. This site's purpose is poll-path coverage:
+        # confirm that list_trades returns the same shape as
+        # place_order's trade.status.deals across the trading day.
+        logger.info(
+            "shioaji_raw_fetch_trades_observation",
+            as_of=as_of.isoformat(),
+            trades_count=len(raw),
+            trades_truncated=len(raw) > 5,
+            trades_sample=[
+                {
+                    "repr": _safe_repr(t),
+                    "status_repr": _safe_repr(
+                        _safe_getattr(t, "status", None),
+                    ),
+                    "status_type": _safe_type(
+                        _safe_getattr(t, "status", None),
+                    ),
+                    "order_id": _safe_getattr(
+                        _safe_getattr(t, "order", None), "id", None,
+                    ),
+                    "status_deals_count": len(
+                        _safe_getattr(
+                            _safe_getattr(t, "status", None), "deals", None,
+                        ) or []
+                    ),
+                    "deal_qty_types": [
+                        _safe_type(_safe_getattr(d, "quantity", None))
+                        for d in (
+                            _safe_getattr(
+                                _safe_getattr(t, "status", None),
+                                "deals", None,
+                            ) or []
+                        )
+                    ],
+                }
+                for t in raw[:5]
+            ],
+        )
+        # ─── end P-obs-1 ────────────────────────────────────────────────
+
         out: list[dict] = []
         for trade in raw:
             try:
@@ -812,6 +990,54 @@ class LiveBroker:
             return []
         if not raw:
             return []
+
+        # ─── P-obs-1: raw payload observation ────────────────────────────
+        # Cap sample at 20 — portfolio size bounded by strategy, but
+        # observation here is mainly about per-position field types, not
+        # population statistics. 20 is enough to cover any plausible
+        # Helios holding count for the observation window.
+        #
+        # Dual-logging on quantity (raw + repr + type): same rationale as
+        # _submit. quantity is the load-bearing field for the
+        # × SHARES_PER_LOT boundary normalization — must observe
+        # structlog's serialization behavior directly.
+        #
+        # OPEN QUESTION (per §5 SSOT): if Helios ever holds both Common
+        # and IntradayOdd in same symbol, does list_positions return
+        # them as separate records (one per order_lot) or as one merged
+        # record? quantity_type per position is the key signal.
+        logger.info(
+            "shioaji_raw_fetch_holdings_observation",
+            positions_count=len(raw),
+            positions_truncated=len(raw) > 20,
+            positions_raw=[
+                {
+                    "repr": _safe_repr(p),
+                    "code": _safe_getattr(p, "code", None),
+                    # quantity: dual-log
+                    "quantity_raw": _safe_getattr(p, "quantity", None),
+                    "quantity_repr": _safe_repr(
+                        _safe_getattr(p, "quantity", None),
+                    ),
+                    "quantity_type": _safe_type(
+                        _safe_getattr(p, "quantity", None),
+                    ),
+                    # price: dual-log
+                    "price_raw": _safe_getattr(p, "price", None),
+                    "price_repr": _safe_repr(
+                        _safe_getattr(p, "price", None),
+                    ),
+                    "price_type": _safe_type(
+                        _safe_getattr(p, "price", None),
+                    ),
+                    "direction_repr": _safe_repr(
+                        _safe_getattr(p, "direction", None),
+                    ),
+                }
+                for p in raw[:20]
+            ],
+        )
+        # ─── end P-obs-1 ────────────────────────────────────────────────
 
         out: list[dict] = []
         for pos in raw:
