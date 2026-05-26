@@ -792,3 +792,55 @@ This is the accumulation → markup transition.
 Do NOT modify existing trend_breakout_v1 signal logic until steps 3-4
 are complete. The existing screener continues as the operational signal
 generator; bullish_features is a parallel research layer.
+
+## Backlog #20 OPEN — Notification layer abstraction (v0.2)
+
+**Identified:** 2026-05-26
+**Priority:** v0.2 (non-blocking for v0.1.17)
+**Status:** OPEN
+
+**Current state:**
+Strategy pipeline directly calls Telegram. This conflates:
+  signal generation → notification transport → execution approval
+
+**Target architecture:**
+
+  class NotificationSink(Protocol):
+      def send(self, event: SignalEvent) -> None: ...
+
+  implementations: TelegramSink, DiscordSink, EmailSink, WebhookSink
+
+Strategy knows nothing about Telegram/Discord. Clean layering.
+
+**Recommended stack (phased):**
+
+  v0.1 (current): Telegram + CSV exports
+  v0.2:           FastAPI + Streamlit dashboard + Telegram alerts
+  v0.3+:          FastAPI + React + Discord/Slack + AI agent interface
+
+**Notification tier design (from Advisor C):**
+
+  Info     (daily signals)   → Discord / Slack (channel separation)
+  Warning  (risk threshold)  → Telegram / Discord
+  Critical (circuit breaker) → SMS / Email
+  Audit    (all records)     → Webhook + Google Sheet / DB
+
+**Key invariant:**
+  Signal generation = pure deterministic pipeline
+  Notification      = fan-out transport layer (NOT approval gate)
+  Approval/execution= separate governance layer (already designed in
+                      execution_submitter_design.md INV-1)
+
+**Dashboard scope (Streamlit v0.2):**
+  - Market regime (BULL/STRESSED/CRISIS)
+  - Bullish candidates (from bullish_features)
+  - Bearish deterioration (from bearish_features)
+  - Portfolio state + risk exposure
+  - Signal lifecycle
+
+This is "state representation", not "event stream" (what chat apps
+are). Both are needed; they serve different cognitive functions.
+
+**Prerequisite:** v0.1.17 execution_submitter must complete first,
+because the approval layer needs to be cleanly separated before
+the notification layer is refactored.
