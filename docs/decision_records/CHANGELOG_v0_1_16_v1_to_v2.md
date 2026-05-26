@@ -876,10 +876,18 @@ exactly when today's data appears. This determines the new cron time.
   or on ex-dividend events only — not daily).
   build_adjusted_prices.py unchanged.
 
-**Raw price comparison needed:**
-  Verify Shioaji close == FinMind raw close for 5+ symbols across
-  multiple dates including ex-dividend dates. Must confirm Shioaji
-  daily_quotes is unadjusted raw price (not pre-adjusted).
+**Raw price comparison VERIFIED (2026-05-26):**
+  Shioaji daily_quotes close == FinMind raw close for 5/5 symbols
+  on 2026-05-25: 2330=2310, 2317=261, 2454=4245, 0050=100.8, 2412=136.5.
+  Shioaji daily_quotes is confirmed unadjusted raw price. [OBSERVED]
+
+  snapshots() also verified: ts=13:30:00 CST on trading days,
+  data available immediately after close. [OBSERVED]
+
+  Remaining verification needed:
+  - Ex-dividend date: confirm Shioaji close matches FinMind raw close
+    on ex-date (raw, not adjusted) for at least 1 symbol.
+  - OTC symbols: confirm daily_quotes includes OTC (not TSE only).
 
 **Prerequisite:** execution_submitter (backlog #15) should be
 implemented first — changing the data pipeline timing only matters
