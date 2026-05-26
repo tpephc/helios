@@ -1,0 +1,56 @@
+# config/accounts.yaml
+# Helios account configuration — v0.1.0 (2026-05-26)
+#
+# DESIGN:
+#   Each account maps to one set of broker credentials + one notification target.
+#   Secrets (api_key, secret_key, ca_password) are NOT stored here.
+#   They are loaded from ENV using the convention:
+#     {ACCOUNT_ID_UPPER}_SHIOAJI_API_KEY
+#     {ACCOUNT_ID_UPPER}_SHIOAJI_SECRET_KEY
+#     {ACCOUNT_ID_UPPER}_CA_PASSWORD
+#
+#   Example for account_id=philip_sim:
+#     PHILIP_SIM_SHIOAJI_API_KEY=xxx
+#     PHILIP_SIM_SHIOAJI_SECRET_KEY=yyy
+#     PHILIP_SIM_CA_PASSWORD=zzz
+#
+#   If only one account exists and you want backward compatibility with
+#   the legacy single-account .env (SHIOAJI_API_KEY, TELEGRAM_CHAT_ID),
+#   set use_legacy_env: true. This reads the existing .env keys without
+#   the account_id prefix.
+#
+# ACCOUNT entity:
+#   account_id   — machine-readable, used in logs, CLI --account flag,
+#                  and future DB account_id column (backlog #23 v0.1.18)
+#   owner        — human-readable label for notifications
+#   broker       — currently only 'shioaji'
+#   environment  — 'sim' | 'live' (maps to shioaji simulation=True/False)
+#   telegram_chat_id — notification target; if null, no Telegram push
+#   ca_cert_path — path to CA cert (.pfx), relative to project root
+#   enabled      — false = skip this account in all runs
+
+accounts:
+  - account_id: philip_sim
+    owner: Philip
+    broker: shioaji
+    environment: sim
+    telegram_chat_id: null          # set to your chat_id string, e.g. "123456789"
+    ca_cert_path: certs/Sinopac.pfx
+    enabled: true
+    use_legacy_env: true            # reads SHIOAJI_API_KEY (no prefix) for now
+                                    # set false when adding a second account
+
+  # Template for adding a second account — copy and fill in:
+  # - account_id: alice_sim
+  #   owner: Alice
+  #   broker: shioaji
+  #   environment: sim
+  #   telegram_chat_id: null
+  #   ca_cert_path: certs/Sinopac_alice.pfx
+  #   enabled: false
+  #   use_legacy_env: false
+  #   # ENV keys required:
+  #   #   ALICE_SIM_SHIOAJI_API_KEY=...
+  #   #   ALICE_SIM_SHIOAJI_SECRET_KEY=...
+  #   #   ALICE_SIM_CA_PASSWORD=...
+  #   #   ALICE_SIM_TELEGRAM_CHAT_ID=...  (or set telegram_chat_id above)

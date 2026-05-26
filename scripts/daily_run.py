@@ -44,13 +44,65 @@ def main() -> int:
     parser.add_argument("--no-listener", action="store_true",
                         help="skip telegram listener (CI / smoke test)")
     parser.add_argument("--ignore-prev-check", action="store_true")
+    parser.add_argument(
+        "--account", type=str, default=None,
+        metavar="ACCOUNT_ID",
+        help="Account ID from config/accounts.yaml. "
+             "Default: first enabled account. "
+             "Multi-account execution (--account all) requires "
+             "DB account_id columns (backlog #23 v0.1.18).",
+    )
     args = parser.parse_args()
 
     init_schema()
     as_of = date_type.fromisoformat(args.as_of) if args.as_of else date_type.today()
+
+    # ── v0.1.17-A: account config loading ────────────────────────────
+    # Scope: notification + credential routing only.
+    # Live execution remains single-account until DB has account_id columns
+    # (backlog #23 v0.1.18). See docs/decision_records/CHANGELOG_v0_1_16_v1_to_v2.md.
+    from config.account_config import load_accounts, get_account
+    if args.account and args.account != "all":
+        _account = get_account(args.account)
+    else:
+        _accounts = load_accounts()
+        # Hard gate: --account all with execution enabled is not allowed
+        # until DB tables include account_id (would cause silent collision).
+        if args.account == "all" and len(_accounts) > 1:
+            raise RuntimeError(
+                "Multi-account live execution requires account_id columns in "
+                "orders/positions tables. Complete backlog #23 v0.1.18 before "
+                "running --account all with execution enabled. "
+                "For dry-run observation, use --account <id> per account."
+            )
+        _account = _accounts[0]
+    logger.info(
+        "daily_run_account_selected",
+        account_id=_account.account_id,
+        owner=_account.owner,
+        environment=_account.environment,
+    )
+
     print(f"Helios daily_run — {datetime.now().isoformat(timespec='seconds')}  as_of={as_of}")
-    tg_cfg = TelegramConfig.from_env()
-    bot = TelegramBot(tg_cfg) if tg_cfg else None
+    print(f"  account={_account.account_id} ({_account.owner}, {_account.environment})")
+
+    # ── Telegram: account-aware routing (v0.1.17-A) ──────────────────
+    _chat_id = _account.resolved_telegram_chat_id
+    if _chat_id:
+        from config.settings import get_settings as _get_settings_for_tg
+        _tg_token = _get_settings_for_tg().telegram_bot_token
+        if _tg_token:
+            tg_cfg = TelegramConfig(
+                bot_token=_tg_token.get_secret_value(),
+                chat_id=_chat_id,
+            )
+            bot = TelegramBot(tg_cfg)
+        else:
+            bot = None
+    else:
+        # Fall back to legacy single-account .env config
+        tg_cfg = TelegramConfig.from_env()
+        bot = TelegramBot(tg_cfg) if tg_cfg else None
     telegram_notify = partial(push_simple, bot) if bot else None
 
     # ═══════════════════════════════════════════════════════════════════
@@ -175,9 +227,11 @@ def main() -> int:
         from config.settings import get_settings
 
         _cfg = get_settings()
-        _guard_mode = "sim_relaxed" if _cfg.shioaji_simulation else "production"
+        # v0.1.17-A: use account.environment instead of global shioaji_simulation
+        _is_sim = _account.is_simulation
+        _guard_mode = "sim_relaxed" if _is_sim else "production"
         _guard_config = (
-            PreTradeGuard.sim_relaxed() if _cfg.shioaji_simulation
+            PreTradeGuard.sim_relaxed() if _is_sim
             else PreTradeGuard()
         )
         logger.info(
@@ -275,6 +329,7 @@ def main() -> int:
 
         # ── Summary (v0.1.16 v2: + recovery + pending_reconcile + guard_mode) ──
         guard.set_summary({
+            "account_id": _account.account_id,   # v0.1.17-A
             "exits": exit_summary["exits_fired"],
             "pending_pushed": len(pending),
             "executed": len(exec_summary["executed"]),
