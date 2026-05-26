@@ -943,3 +943,24 @@ does NOT provide row-level provenance. Both are necessary.
 
 **Provenance is for dispute resolution, not query performance.**
 Do not add source to indexes unless query patterns require it.
+
+## Backlog #9 ADDENDUM — cron time updated to 14:50 (2026-05-26)
+
+**Original fix (791cf0f):** replaced $(date --date=yesterday) with
+previous_trading_day(date.today()) — prevents Monday non-trading-day decline.
+
+**This addendum:** cron time changed from 16:00 to 14:50 following
+Shioaji daily_quotes availability observation:
+
+  14:33 TST: 0 rows (not yet available)
+  14:43 TST: 0 rows
+  14:49 TST: 1089 rows ✅ (data appeared between 14:43 and 14:49)
+
+New cron time 14:50 provides ~1 minute buffer after data appears.
+This also decouples daily pipeline from the 16:00 P-obs-1
+observation window.
+
+**Also updated in this cron change:**
+  - download_daily.py → shioaji_download_daily.py (backlog #21)
+  - Added compute_bearish_features.py
+  - Added compute_bullish_features.py
