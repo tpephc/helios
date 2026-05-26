@@ -96,11 +96,13 @@ class AccountConfig:
 
     @property
     def resolved_telegram_chat_id(self) -> str | None:
-        """Return telegram_chat_id from YAML, or override from ENV if set."""
-        env_override = self._get_secret("TELEGRAM_CHAT_ID")
-        # suppress warning from _get_secret when ENV key not set (optional override)
+        """Return telegram_chat_id from YAML, or override from ENV if set.
+
+        ENV override is optional — no warning if absent. YAML value is
+        the primary source; ENV allows runtime override without editing YAML.
+        """
         env_key = f"{self._env_prefix}TELEGRAM_CHAT_ID"
-        env_override = os.environ.get(env_key)
+        env_override = os.environ.get(env_key)  # silent — optional override
         if env_override:
             return env_override
         return self.telegram_chat_id
