@@ -489,3 +489,56 @@ v1's catastrophic bug.
 ---
 
 **v2.1 hotfix (2026-05-25)**: See [`CHANGELOG_v0_1_16_v2_1.md`](CHANGELOG_v0_1_16_v2_1.md) for Shioaji boundary normalization patches addressing backlog items #12, #13, and #14.
+
+## Backlog #15 OPEN — Decouple signal generation from broker submission window
+
+**Identified:** 2026-05-25
+**Priority:** v0.1.17 P0
+**Status:** OPEN
+
+**Problem:**
+Current `daily_run` at 16:00 combines two concerns with incompatible
+timing requirements:
+  1. EOD signal generation (correct at 16:00 — data is fresh)
+  2. Broker order submission (wrong at 16:00 — Shioaji may reject
+     after-hours orders; intraday execution observation impossible)
+
+This conflation was acceptable for paper T+1 modeling but is
+structurally invalid for:
+  - Shioaji sim/live semantic observation (P-obs-1 / P-obs-2)
+  - Production live broker submission
+  - Any strategy requiring intraday execution timing
+
+**Required design:**
+
+    16:00 daily_run
+      → EOD signal scan
+      → create order intent / candidate (no broker submission)
+      → write INTENT to orders journal
+
+    09:00-13:30 execution_submitter (new component)
+      → read approved / pending intents
+      → submit to Shioaji during broker-valid window
+      → journal SUBMITTED / FILLED / PARTIAL / FAILED
+
+This preserves research timing (EOD) while aligning broker
+submission with exchange-valid hours.
+
+**Implication for P-obs-1:**
+P-obs-1 (2026-05-26 16:00 cron) is NOT a full execution observation
+window. It is an after-hours broker availability observation only.
+
+Observable at 16:00:
+  [OBSERVED] trading-day after-hours Shioaji login behavior
+  [OBSERVED] after-hours place_order path, if reached
+  [OBSERVED] after-hours broker reject type (broker_reject vs transport)
+  [OBSERVED] order_journal INTENT -> FAILED/SUBMITTED transition
+
+NOT observable at 16:00 (requires P-obs-2 intraday):
+  [UNOBSERVABLE] deal.quantity unit on actual fill
+  [UNOBSERVABLE] FILLED / PARTIAL path end-to-end
+  [UNOBSERVABLE] callback behavior
+  [UNOBSERVABLE] fetch_trades filled payload
+
+**Successor:** P-obs-2 intraday broker submission observation
+(planned for v0.1.17, requires backlog #15 implementation)

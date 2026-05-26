@@ -115,14 +115,50 @@ Format for each entry:
 **Notes:**          ...
 ```
 
-### §3.1  Order submission — SUBMITTED state
+### §3.1  After-hours broker availability (2026-05-26 16:00 cron)
 
-_(populate from first cron after 2026-05-26 with marketable signal)_
+**Observation scope (redefined 2026-05-25):**
+This entry covers the 16:00 cron observation only. Per backlog #15,
+16:00 cron is NOT a full execution observation window. It is an
+after-hours broker availability observation.
+
+Observable at 16:00 (trading-day after-hours):
+  - Shioaji login success / failure
+  - Contract fetch availability
+  - place_order reachability (if login succeeds)
+  - Broker reject type: broker_reject vs transport failure
+  - order_journal INTENT -> FAILED / SUBMITTED transition
+
+NOT observable here (requires P-obs-2 intraday):
+  - deal.quantity unit on actual fill  [UNOBSERVABLE]
+  - FILLED / PARTIAL path end-to-end  [UNOBSERVABLE]
+  - callback behavior                  [UNOBSERVABLE]
+  - fetch_trades filled payload        [UNOBSERVABLE]
+
+**Observation checklist for 5/26 16:00:**
+
+| Question | Expected | Observed |
+|----------|----------|----------|
+| Shioaji login succeeds after-hours? | Unknown [ASSUMED] | ? |
+| Contract fetch succeeds? | Unknown [ASSUMED] | ? |
+| place_order reached? | Depends on login | ? |
+| Reject type if failed | broker_reject or transport | ? |
+| order_journal status | INTENT -> FAILED or SUBMITTED | ? |
+| Telegram notification | signal pushed + order status | ? |
+
+_(populate from 5/26 16:00 cron log + audit script output)_
 
 ### §3.2  Single full fill — Common path, 1 lot
 
-_(this is the v2.1 critical path; PARTIAL misclassification bug
-lived here)_
+**Requires P-obs-2 (intraday broker submission observation).**
+This is the v2.1 critical path — PARTIAL misclassification bug lived
+here. Cannot be observed via 16:00 after-hours cron per §2 structural
+gaps and backlog #15.
+
+Target observation event: `shioaji_raw_submit_observation` with
+`status_deals_count >= 1` during intraday execution window.
+
+_(populate from P-obs-2 intraday observation — v0.1.17 target)_
 
 ### §3.3  Multi-lot fill — Common path, ≥ 2 lots
 
