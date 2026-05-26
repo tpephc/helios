@@ -1076,3 +1076,43 @@ v0.1.18 — DB isolation
   - Backlog #20 (notification abstraction): NotificationSink should be
     account-scoped
   - Backlog #17 (READY_FOR_SUBMISSION schema): must include account_id
+
+## Backlog #24 OPEN — MACD + Lower-Highs-Lows feature layer expansion (v0.2)
+
+**Identified:** 2026-05-26
+**Priority:** v0.2 (after backlog #18 outcome study)
+**Status:** OPEN
+
+**Background:**
+find_bearish_stocks.py has a stale comment "MACD / Lower-Highs-Lows → v0.1.16 補上"
+that was never implemented. features/technical.py explicitly excluded MACD in v0.1
+("MACD histogram zoo" — reviewer-curated minimalism decision).
+
+**Required work:**
+
+  MACD:
+    1. Add add_macd() to features/technical.py
+       Standard params: fast=12, slow=26, signal=9
+       Output: macd_line, macd_signal, macd_histogram
+    2. Add to FEATURE_COLUMNS in compute_features.py
+    3. Re-run compute_features.py (full recompute, 205 symbols)
+    4. Add MACD cross / histogram scoring to find_bearish_stocks.py
+       Suggested: macd_histogram < 0 and declining = +10pts
+
+  Lower-Highs-Lows:
+    Belongs in bearish_features layer (multi-bar, path-dependent).
+    Definition: lower_high = high[t] < high[t-N] for N in lookback
+                lower_low  = low[t]  < low[t-N]
+    Suggested column: lower_highs_lows_5d (count of LH+LL days in 5d window)
+    Add to bearish_regime.py after backlog #18 outcome study.
+
+**Prerequisite ordering:**
+  1. backlog #18 outcome study must complete first
+  2. Confirm MACD and LH-LL add incremental information
+     (not just correlated with existing RSI/ROC20/MA features)
+  3. Only then add to scoring with evidence-based weights
+
+**Design constraint:**
+  Do not add scoring weights without outcome evidence.
+  Both features should go through the same calibration process
+  as other bearish_features (forward return study by feature quantile).
