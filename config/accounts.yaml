@@ -34,7 +34,7 @@ accounts:
     owner: Philip
     broker: shioaji
     environment: sim
-    telegram_chat_id: null          # set to your chat_id string, e.g. "123456789"
+    telegram_chat_id: "8565726156"
     ca_cert_path: certs/Sinopac.pfx
     enabled: true
     use_legacy_env: true            # reads SHIOAJI_API_KEY (no prefix) for now
@@ -45,7 +45,7 @@ accounts:
   #   owner: Alice
   #   broker: shioaji
   #   environment: sim
-  #   telegram_chat_id: null
+  #   telegram_chat_id: "YOUR_CHAT_ID"
   #   ca_cert_path: certs/Sinopac_alice.pfx
   #   enabled: false
   #   use_legacy_env: false
