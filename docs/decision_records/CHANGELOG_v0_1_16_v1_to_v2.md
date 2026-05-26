@@ -653,3 +653,59 @@ daily_run no longer calls any broker API.
 execution_submitter successfully reads READY_FOR_SUBMISSION queue
 and submits to Shioaji sim during intraday window.
 EXPIRED path fires correctly for stale intents in startup_recovery.
+
+## Backlog #18 OPEN — Bearish feature outcome study (before any classifier)
+
+**Identified:** 2026-05-26
+**Priority:** v0.2 prerequisite (must precede any bearish scoring/classifier)
+**Status:** OPEN
+
+**Constraint:**
+Do NOT build a weighted bearish score or BearishRegimeStateMachine before
+this study is complete. Building a classifier without outcome validation
+produces hardcoded heuristics that look sophisticated but have no empirical
+basis. This is the same principle as backlog #16 (max_entry_gap_pct
+calibration) applied to the bearish feature layer.
+
+**Required research (research/bearish_feature_outcomes.py):**
+
+For each feature in bearish_features, compute:
+  - Feature quantile distribution (what values are typical vs extreme?)
+  - forward_return_20d distribution by feature quantile bucket
+  - forward_return_60d distribution by feature quantile bucket
+  - Max adverse excursion by feature quantile
+  - Hit rate: P(forward_return_20d < -5% | feature >= threshold)
+  - Persistence: how long does an elevated feature reading persist?
+
+Conditional interaction study:
+  - Does high_vol_down_days_5d AND failed_ma20_reclaim_5d provide
+    additive information, or do they both observe the same latent
+    deterioration process?
+  - Quantify: mutual information / conditional entropy between feature
+    pairs and forward drawdown
+  - This determines whether a weighted sum double-counts the same signal
+
+**Why this matters:**
+Features from the same family (below_ma20_streak, failed_ma20_reclaim_5d,
+new_low_after_rebound_5d) partially observe the same latent deterioration
+process. A classifier that weights them independently will double-count.
+The outcome study reveals which features are actually orthogonal.
+
+**Output:**
+  - Recommended feature weights (or evidence that equal weighting is adequate)
+  - Threshold calibration for each feature (replacing [ASSUMED] values)
+  - Evidence-based decision on whether a state machine adds value over
+    a simple score threshold
+  - Tag each threshold as [CALIBRATED] with dataset reference
+
+**Acceptance criterion:**
+At least the following thresholds tagged [CALIBRATED]:
+  - high_vol_down_days_5d threshold for "elevated distribution activity"
+  - failed_ma20_reclaim_5d threshold for "persistent rejection"
+  - atr_expansion_ratio threshold (currently [ASSUMED] 1.5)
+  - beta_adj_rs_20d threshold for "meaningful underperformance"
+
+**Dataset:**
+  2020-2024 Taiwan TWSE top-200 (available in current helios DB).
+  Use walk-forward validation, not full-sample optimization.
+  Minimum: 3 out-of-sample windows.
