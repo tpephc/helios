@@ -92,7 +92,13 @@ def insert_daily_prices(df: pl.DataFrame) -> int:
                 [stock_id, min_date, max_date],
             )
             conn.register("df_in", df.select(_PRICE_COLS).to_arrow())
-            conn.execute("INSERT INTO daily_price SELECT * FROM df_in")
+            conn.execute(
+            "INSERT INTO daily_price"
+            " (stock_id, date, open, high, low, close, volume,"
+            "  turnover, transactions, spread)"
+            " SELECT stock_id, date, open, high, low, close, volume,"
+            "        NULL, NULL, NULL FROM df_in"
+        )
             conn.unregister("df_in")
             # Watermark update inside the same transaction
             conn.execute(
