@@ -964,3 +964,78 @@ observation window.
   - download_daily.py → shioaji_download_daily.py (backlog #21)
   - Added compute_bearish_features.py
   - Added compute_bullish_features.py
+
+## Backlog #23 OPEN — Multi-account execution architecture (v0.1.17-A/B, v0.1.18)
+
+**Identified:** 2026-05-26
+**Priority:** v0.1.17-A (config + routing) → v0.1.17-B (runtime isolation) → v0.1.18 (DB)
+**Status:** OPEN — design frozen, implementation pending
+
+**Core framing:**
+The correct entity is `account`, not `user`.
+An account = broker credentials + CA cert + execution authority + notification routing.
+One person can have multiple accounts (philip_live, philip_paper, family_account).
+
+**accounts.yaml schema:**
+
+  accounts:
+    - account_id: philip_live
+      owner: Philip
+      broker: shioaji
+      environment: live
+      telegram_chat_id: "123456789"
+      ca_cert_path: certs/Sinopac_philip.pfx
+      enabled: true
+
+**Secret loading convention (YAML != secret provider):**
+
+  env_prefix = account_id.upper()  # e.g. PHILIP_LIVE
+  api_key = os.getenv(f"{env_prefix}_SHIOAJI_API_KEY")
+  secret  = os.getenv(f"{env_prefix}_SHIOAJI_SECRET_KEY")
+  ca_pass = os.getenv(f"{env_prefix}_CA_PASSWORD")
+
+YAML contains configuration. ENV contains secrets. Never mix.
+
+**CLI convention:**
+  --account philip_live   (not --user)
+
+**Phase plan:**
+
+v0.1.17-A — Config + routing (no DB changes)
+  - config/accounts.yaml
+  - config/account_config.py: AccountConfig dataclass + loader
+  - daily_run.py: --account flag, loop over enabled accounts
+  - Notification routing: each account -> its telegram_chat_id
+  - All logs: account_id field added
+
+v0.1.17-B — Runtime isolation
+  - account_id in all log events
+  - account_id in run markers
+  - account_id in approval routing
+  - Separate LiveBroker instance per account
+
+v0.1.18 — DB isolation
+  - orders: add account_id column + PRIMARY KEY(account_id, order_id)
+  - positions: add account_id + PRIMARY KEY(account_id, symbol)
+  - signals: add account_id
+  - approvals: add account_id
+  - Migration script required
+
+**Key invariants:**
+  INV-A1: account_id must appear in every structured log event
+          that touches execution, orders, positions, or fills
+  INV-A2: No shared mutable state between accounts
+          (separate LiveBroker, separate DB rows via account_id)
+  INV-A3: Notification routing is account-scoped, never broadcast
+          across accounts without explicit config
+
+**DB isolation prerequisite:**
+  G1-G6 live unlock gates (execution_model.md §14) must be completed
+  before multi-account live trading. Specifically G2 (reconcile handles
+  SUBMITTED) must account for per-account isolation.
+
+**Relationship to other backlogs:**
+  - Backlog #15 (execution_submitter): submitter must be account-aware
+  - Backlog #20 (notification abstraction): NotificationSink should be
+    account-scoped
+  - Backlog #17 (READY_FOR_SUBMISSION schema): must include account_id
