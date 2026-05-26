@@ -844,3 +844,43 @@ are). Both are needed; they serve different cognitive functions.
 **Prerequisite:** v0.1.17 execution_submitter must complete first,
 because the approval layer needs to be cleanly separated before
 the notification layer is refactored.
+
+## Backlog #21 OPEN — Shioaji daily_quotes as primary OHLCV source (v0.2)
+
+**Identified:** 2026-05-26 (exploration during session)
+**Priority:** v0.2
+**Status:** OPEN — data availability timing unconfirmed
+
+**Finding:**
+api.daily_quotes(date=d) returns full-market OHLCV in one call:
+  - 1975 rows for 2026-05-25 (full TWSE universe)
+  - Fields: Date, Code, Open, High, Low, Close, Volume, Transaction, Amount
+  - Today's data (2026-05-26) was NOT available at 14:06 TST
+  - Previous day data confirmed: 2330 close=2310 matches FinMind
+
+**Required observation:**
+Poll daily_quotes(date=today) at 14:30, 15:00, 15:30, 16:00 to find
+exactly when today's data appears. This determines the new cron time.
+
+**If data appears by 14:30:**
+  New cron: 14:30 (vs current 16:00)
+  Benefit: daily_run INTENT created 90 min earlier
+  Execution_submitter (backlog #15) still runs at T+1 08:30 —
+  the earlier signal generation has no impact on execution timing,
+  but it does eliminate the backlog #9 class of bugs entirely
+  (cron always runs on a confirmed trading day, not 'yesterday').
+
+**Architecture change required:**
+  Replace download_daily.py (FinMind) with shioaji_download_daily.py
+  corporate_actions table still needs periodic FinMind sync (monthly
+  or on ex-dividend events only — not daily).
+  build_adjusted_prices.py unchanged.
+
+**Raw price comparison needed:**
+  Verify Shioaji close == FinMind raw close for 5+ symbols across
+  multiple dates including ex-dividend dates. Must confirm Shioaji
+  daily_quotes is unadjusted raw price (not pre-adjusted).
+
+**Prerequisite:** execution_submitter (backlog #15) should be
+implemented first — changing the data pipeline timing only matters
+once the submission timing is also decoupled.
