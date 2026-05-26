@@ -542,3 +542,114 @@ NOT observable at 16:00 (requires P-obs-2 intraday):
 
 **Successor:** P-obs-2 intraday broker submission observation
 (planned for v0.1.17, requires backlog #15 implementation)
+
+## Backlog #16 OPEN — Historical open-gap calibration for INV-2
+
+**Identified:** 2026-05-26
+**Priority:** v0.1.17 P1 (blocks production unlock of INV-2)
+**Status:** OPEN
+
+**Problem:**
+`max_entry_gap_pct = 0.03` in execution_submitter_design.md §4 is
+currently `[ASSUMED]`. It is not a cosmetic parameter — it is an
+execution feasibility prior that directly affects:
+  - fill rate (too tight → high opportunity loss)
+  - realized slippage (too loose → chasing gaps)
+  - turnover and compounding
+  - regime sensitivity (bull gaps differ from bear gaps)
+
+Using an uncalibrated value violates INV-2 (backtest-live gap filter
+equivalence): if the live limit ceiling is wrong, the backtest skip
+rule is also wrong, and the two diverge silently.
+
+**Required research:**
+Compute historical T+1 open gap distribution:
+
+    gap[T] = open[T+1] / close[T] - 1
+
+Analysis dimensions:
+  - Unconditional: median, p75, p90, p95, p99 across full universe
+  - Conditional on signal score (high-score signals may cluster in
+    momentum names with larger gaps)
+  - Conditional on market regime (bull / neutral / bear / crisis)
+  - Conditional on liquidity bucket (volume tercile or market cap)
+  - Conditional on gap direction (upward gaps only, for BUY signals)
+
+Output:
+  - Recommended max_entry_gap_pct with empirical justification
+  - Expected fill rate at chosen threshold
+  - Sensitivity table: fill_rate vs gap_pct at p90/p95 of universe
+
+This research must be completed before execution_submitter goes to
+production. The output updates execution_submitter_design.md §4 and
+config/strategy_params (or equivalent).
+
+**Acceptance criterion:**
+max_entry_gap_pct is tagged [OBSERVED] with a reference to the
+calibration study, not [ASSUMED].
+
+
+## Backlog #17 OPEN — READY_FOR_SUBMISSION schema migration + submitter queue
+
+**Identified:** 2026-05-26
+**Priority:** v0.1.17 P0 (blocks execution_submitter implementation)
+**Status:** OPEN
+
+**Problem:**
+Current v0.1.16 architecture conflates three distinct lifecycle stages:
+  1. Signal confirmation       (strategy decision)
+  2. Submission readiness      (pre-submission checks passed)
+  3. Broker submission         (broker API called)
+
+The current orders table state machine reflects this conflation:
+  INTENT -> SUBMITTED -> FILLED / PARTIAL / FAILED
+
+INTENT currently implies "immediately submittable", which is only
+valid when daily_run and broker submission are in the same process
+at the same time. v0.1.17 breaks this assumption by decoupling
+signal generation (T 16:00) from broker submission (T+1 08:30).
+
+Without an explicit READY_FOR_SUBMISSION state:
+  - execution_submitter has no reliable queue to read
+  - daily_run cannot record "intent created, not yet submitted"
+    without ambiguity with "submitted but not yet filled"
+  - startup_recovery cannot distinguish stale intents (never
+    submitted) from stale submissions (submitted, fill unknown)
+
+**Required changes:**
+
+1. orders table schema migration:
+   Add READY_FOR_SUBMISSION as a valid status value.
+   Add target_fill_date column (date the submitter should process).
+   Add intent_confirmed_at timestamp (when daily_run created intent).
+
+2. daily_run modification:
+   Replace direct broker submission with:
+     order_journal.mark_ready_for_submission(
+         order_id, target_fill_date=next_trading_day(as_of)
+     )
+
+3. execution_submitter (new component):
+   SELECT orders WHERE status = READY_FOR_SUBMISSION
+   AND target_fill_date = today
+
+4. startup_recovery modification:
+   Handle stale READY_FOR_SUBMISSION (target_fill_date < today):
+     -> mark EXPIRED + alert (missed submission window)
+
+5. DB migration script:
+   migration_NNNN_add_ready_for_submission_state.sql
+
+**State machine (v0.1.17 target):**
+
+    INTENT (created at T 16:00 by daily_run)
+      -> READY_FOR_SUBMISSION (after PreTradeGuard passes)
+         target_fill_date = next_trading_day(T)
+      -> SUBMITTED (at T+1 08:30 by execution_submitter)
+      -> FILLED / PARTIAL / EXPIRED / FAILED
+
+**Acceptance criterion:**
+daily_run no longer calls any broker API.
+execution_submitter successfully reads READY_FOR_SUBMISSION queue
+and submits to Shioaji sim during intraday window.
+EXPIRED path fires correctly for stale intents in startup_recovery.
