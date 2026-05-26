@@ -752,8 +752,9 @@ This is the accumulation → markup transition.
 
   Family 3: Breakout quality
     volume_breakout_days_5d     high-vol up days in past 5 bars
+    volume_contraction_days_10d days with rel_vol < 0.7x in past 10 bars
+                                (accumulation: price-compression + vol-compression)
     tight_range_days_10d        low-ATR consolidation bars (base formation)
-    breakout_followthrough_5d   close > breakout level N days later
     failed_breakdown_count_10d  times price tested below MA20 but closed above
                                 (demand absorption — inverse of failed reclaim)
 
@@ -763,7 +764,15 @@ This is the accumulation → markup transition.
 
   Family 5: Volatility structure
     atr_compression_ratio       current ATR / 60d mean (low = base formation)
-    atr_expansion_after_breakout ATR expanding post-breakout (confirms markup)
+    atr_compression_days_10d    days in past 10 with atr_ratio < 0.8x (base persistence)
+
+**REMOVED from initial schema (lookahead risk):**
+  breakout_followthrough_5d: requires close[t+1..t+5] — lookahead leakage.
+    Correct location: research/bullish_feature_outcomes.py (forward outcome calc).
+  atr_expansion_after_breakout: definition ambiguous without strict temporal
+    boundary. Deferred until "breakout event" is cleanly defined at t,
+    not requiring forward confirmation. Initial version uses
+    atr_compression_ratio + atr_compression_days_10d instead.
 
 **Design constraints (same as bearish_features):**
   - Pure Polars transforms, no I/O, no scoring, no labels
