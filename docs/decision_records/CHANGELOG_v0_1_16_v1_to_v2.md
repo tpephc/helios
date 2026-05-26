@@ -1001,12 +1001,33 @@ YAML contains configuration. ENV contains secrets. Never mix.
 
 **Phase plan:**
 
-v0.1.17-A — Config + routing (no DB changes)
-  - config/accounts.yaml
-  - config/account_config.py: AccountConfig dataclass + loader
-  - daily_run.py: --account flag, loop over enabled accounts
-  - Notification routing: each account -> its telegram_chat_id
-  - All logs: account_id field added
+v0.1.17-A — Notification / credential routing only (no DB changes)
+  Correct scope: AccountConfig routes credentials and notifications.
+  This is NOT multi-account execution isolation.
+
+  Allowed in v0.1.17-A:
+    - Sequential dry-run per account (--account <id> --dry-run)
+    - Notification routing (each account -> its telegram_chat_id)
+    - Credential routing (each account -> its Shioaji API key)
+    - account_id in logs, markers, approval routing
+
+  NOT allowed in v0.1.17-A (DB has no account_id column):
+    - Concurrent multi-account execution writing to orders/positions
+    - --account all with live execution (would cause silent DB collision)
+
+  Hard gate in daily_run.py:
+    if len(accounts) > 1 and any execution steps enabled:
+        raise RuntimeError(
+            "Multi-account live execution requires DB account_id columns. "
+            "Complete backlog #23 v0.1.18 before running --account all "
+            "with execution enabled."
+        )
+
+  Files:
+    - config/accounts.yaml
+    - config/account_config.py: AccountConfig dataclass + loader
+    - daily_run.py: --account flag, single-account execution guard
+    - All logs: account_id field added
 
 v0.1.17-B — Runtime isolation
   - account_id in all log events
