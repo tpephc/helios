@@ -892,3 +892,54 @@ exactly when today's data appears. This determines the new cron time.
 **Prerequisite:** execution_submitter (backlog #15) should be
 implemented first — changing the data pipeline timing only matters
 once the submission timing is also decoupled.
+
+## Backlog #22 OPEN — daily_price source provenance (v0.2)
+
+**Identified:** 2026-05-26
+**Priority:** v0.2 P0 (must precede any cross-source audit or dispute resolution)
+**Status:** OPEN
+
+**Decision (2026-05-26):**
+  v0.1.0: shared daily_price watermark is acceptable
+  v0.1.1: source provenance must be added
+  Long-term: provider consistency audit
+
+**Problem:**
+With two ingestion sources (FinMind historical + Shioaji daily_quotes),
+the same (stock_id, date) row may be written by different providers.
+Without source provenance, data disputes cannot be attributed:
+
+  FinMind close = 100.0
+  Shioaji close = 100.5
+  → which row is in daily_price? written by whom? when?
+
+verify_shioaji_vs_finmind.py validates provider equivalence rate but
+does NOT provide row-level provenance. Both are necessary.
+
+**Required schema extension:**
+
+  ALTER TABLE daily_price ADD COLUMN source VARCHAR;
+  ALTER TABLE daily_price ADD COLUMN source_version VARCHAR;
+  ALTER TABLE daily_price ADD COLUMN ingested_at TIMESTAMP;
+
+**Source values:**
+  FinMind historical backfill:  source = 'finmind'
+  Shioaji daily incremental:    source = 'shioaji_daily_quotes'
+
+**Invariant to enforce (after migration):**
+  Both sources must guarantee identical semantics:
+    - raw unadjusted OHLCV (not pre-adjusted)
+    - same volume unit (shares, not lots)
+    - same ex-dividend semantics (raw price on ex-date)
+    - same stock_id/date key semantics
+
+**Implementation:**
+  1. Migration: add columns with DEFAULT NULL (backward compatible)
+  2. download_daily.py: populate source='finmind' on insert
+  3. shioaji_download_daily.py: populate source='shioaji_daily_quotes'
+  4. build_adjusted_prices.py: no change (reads daily_price, ignores source)
+  5. data_quality_log: add source field for audit trail
+  6. verify_shioaji_vs_finmind.py: compare by source on same (stock_id, date)
+
+**Provenance is for dispute resolution, not query performance.**
+Do not add source to indexes unless query patterns require it.
