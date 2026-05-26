@@ -710,6 +710,39 @@ At least the following thresholds tagged [CALIBRATED]:
   Use walk-forward validation, not full-sample optimization.
   Minimum: 3 out-of-sample windows.
 
+**Implementation reference (Advisor E, 2026-05-26):**
+
+  P1-3 fix — geometric vs arithmetic cumulative return:
+
+  Current code (arithmetic — wrong for volatile regimes):
+    total_s = sum(s_rets)   # percentage sum, not compounded
+    total_t = sum(t_rets)
+
+  Correct (geometric):
+    # Convert pct to multipliers, compound, convert back
+    cum_s = (prod(1 + r/100 for r in s_rets) - 1) * 100
+    cum_t = (prod(1 + r/100 for r in t_rets) - 1) * 100
+    rs_vals[i] = cum_s - beta * cum_t
+
+  Example of arithmetic error:
+    Day 1: +10%, Day 2: -10%
+    Arithmetic: 0%  (wrong)
+    Geometric:  (1.1 * 0.9 - 1) * 100 = -1%  (correct)
+
+  P1-2 fix — Polars vectorized rolling beta (Advisor E reference):
+
+    merged = merged.with_columns([
+        (pl.col("adj_close").pct_change() * 100).alias("s_ret"),
+        (pl.col("taiex_close").pct_change() * 100).alias("t_ret"),
+    ])
+    merged = merged.with_columns(
+        (pl.rolling_cov(pl.col("s_ret"), pl.col("t_ret"), window_size=60) /
+         pl.rolling_var(pl.col("t_ret"), window_size=60)).alias("beta_60")
+    )
+
+  Note: verify Polars rolling_cov / rolling_var API signature before
+  implementing — API may differ by Polars version.
+
 ## Backlog #19 OPEN — bullish_features temporal layer (Phase 3)
 
 **Identified:** 2026-05-26
