@@ -709,3 +709,77 @@ At least the following thresholds tagged [CALIBRATED]:
   2020-2024 Taiwan TWSE top-200 (available in current helios DB).
   Use walk-forward validation, not full-sample optimization.
   Minimum: 3 out-of-sample windows.
+
+## Backlog #19 OPEN — bullish_features temporal layer (Phase 3)
+
+**Identified:** 2026-05-26
+**Priority:** v0.2 (after backlog #18 bearish outcome study)
+**Status:** OPEN
+
+**Framing:**
+Bullish features are NOT the inverse of bearish features.
+
+  bearish_features = downside deterioration process detection
+  bullish_features = accumulation / breakout quality + timing
+
+The distinction matters because:
+  - bearish regime is primarily about detection (is distribution happening?)
+  - bullish entry is about timing + confirmation (is this breakout valid?)
+
+A close > MA20 > MA50 is a snapshot. The valuable signal is the
+temporal sequence: prolonged compression → volume return → breakout
+→ successful retest → relative strength leadership.
+This is the accumulation → markup transition.
+
+**Target architecture:**
+
+  daily_features      universal indicators (unchanged)
+  bearish_features    downside temporal observations  [built 2026-05-26]
+  bullish_features    upside temporal observations    [this backlog]
+  ──────────────────────────────────────────────────────────────────
+  entry_classifier    consume bullish_features + market_regime  [v0.2+]
+  risk_filter         consume bearish_features + market_regime  [v0.2+]
+
+**Proposed bullish_features columns:**
+
+  Family 1: Persistence
+    above_ma20_streak           consecutive days close > MA20
+    above_ma50_streak           consecutive days close > MA50
+
+  Family 2: Reclaim confirmation (accumulation base)
+    ma20_reclaim_confirmed      close > MA20 sustained N days after crossing
+    ma50_reclaim_confirmed      same for MA50
+
+  Family 3: Breakout quality
+    volume_breakout_days_5d     high-vol up days in past 5 bars
+    tight_range_days_10d        low-ATR consolidation bars (base formation)
+    breakout_followthrough_5d   close > breakout level N days later
+    failed_breakdown_count_10d  times price tested below MA20 but closed above
+                                (demand absorption — inverse of failed reclaim)
+
+  Family 4: Relative strength
+    beta_adj_rs_20d             shared with bearish_features (reuse computation)
+    beta_adj_rs_60d             same
+
+  Family 5: Volatility structure
+    atr_compression_ratio       current ATR / 60d mean (low = base formation)
+    atr_expansion_after_breakout ATR expanding post-breakout (confirms markup)
+
+**Design constraints (same as bearish_features):**
+  - Pure Polars transforms, no I/O, no scoring, no labels
+  - Separate table (bullish_features), NOT added to daily_features
+  - No bullish_score or entry_label in feature layer
+  - No entry classifier until backlog #18 outcome study complete
+  - Failed breakdowns assigned to t+1 (same lookahead discipline as
+    failed_reclaim in bearish_regime.py — lesson from P0-2 fix)
+
+**Prerequisite ordering:**
+  1. bearish_features Phase 2 COMPLETE (2026-05-26) ✅
+  2. backlog #18: bearish feature outcome study (validates methodology)
+  3. backlog #19: bullish_features.py pure layer
+  4. forward outcome study for bullish features
+  5. entry_classifier design (v0.2+)
+
+Do NOT modify existing trend_breakout_v1 signal logic until steps 3-4
+are complete. The existing screener continues as the operational signal
+generator; bullish_features is a parallel research layer.
