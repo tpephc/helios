@@ -379,7 +379,7 @@ def _print_table(results: list[dict], as_of: date_type) -> None:
     )
     print(f"\n  共 {len(results)} 檔 / 200 大成分股   {summary}")
     print("\n  評分：MA排列(40) + RSI(25) + ROC20加速(5) + 量能確認(30)")
-    print("  MACD / Lower-Highs-Lows → v0.1.16 補上")
+    print("  MACD / Lower-Highs-Lows → 待補（需擴充 daily_features + bearish_features）")
 
 
 # ── entry point ────────────────────────────────────────────────────────────────
