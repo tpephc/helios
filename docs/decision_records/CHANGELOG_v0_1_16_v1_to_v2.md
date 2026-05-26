@@ -1034,6 +1034,22 @@ v0.1.18 — DB isolation
   before multi-account live trading. Specifically G2 (reconcile handles
   SUBMITTED) must account for per-account isolation.
 
+**Current schema gap (confirmed 2026-05-26):**
+  orders table:    no account_id column
+  positions table: no account_id column
+
+  Required migrations (v0.1.18):
+    ALTER TABLE orders    ADD COLUMN account_id VARCHAR DEFAULT 'default';
+    ALTER TABLE positions ADD COLUMN account_id VARCHAR DEFAULT 'default';
+
+  DEFAULT 'default' allows backward compatibility — existing rows
+  are attributed to the implicit single account.
+
+  Long-term PRIMARY KEY changes:
+    orders:    PRIMARY KEY (account_id, order_id)
+    positions: PRIMARY KEY (account_id, position_id)
+               UNIQUE (account_id, symbol) WHERE status='OPEN'
+
 **Relationship to other backlogs:**
   - Backlog #15 (execution_submitter): submitter must be account-aware
   - Backlog #20 (notification abstraction): NotificationSink should be
