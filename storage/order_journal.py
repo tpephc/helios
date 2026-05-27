@@ -1,5 +1,5 @@
 # storage/order_journal.py
-"""Order journal repository — v0.1.16 (post-review v2).
+"""Order journal repository — v0.1.17.
 
 The orders table is an append-only event log with controlled UPDATEs for
 state transitions. This module is the single source of truth for orders
@@ -33,7 +33,7 @@ Design principles:
   6. NO unit conversion or normalization in this layer — domain boundary
      responsibility.
 
-Version: v0.1.16 (2026-05-24, v2)
+Version: v0.1.17 (2026-05-27)
 """
 from __future__ import annotations
 
@@ -88,8 +88,14 @@ class InvalidTransition(OrderJournalError):
 
 _LEGITIMATE_TRANSITIONS: dict[OrderStatus, frozenset[OrderStatus]] = {
     OrderStatus.INTENT: frozenset({
-        OrderStatus.SUBMITTED,
+        OrderStatus.READY_FOR_SUBMISSION,  # v0.1.17: daily_run T 16:00
+        OrderStatus.SUBMITTED,              # legacy direct-submit path
         OrderStatus.FAILED,
+    }),
+    OrderStatus.READY_FOR_SUBMISSION: frozenset({  # v0.1.17
+        OrderStatus.SUBMITTED,              # execution_submitter T+1 08:30
+        OrderStatus.EXPIRED,                # stale / suspended / limit-up
+        OrderStatus.FAILED,                 # risk cap / data missing / transport
     }),
     OrderStatus.SUBMITTED: frozenset({
         OrderStatus.FILLED,
@@ -179,7 +185,8 @@ class OrderRow:
         "requested_lots", "filled_shares", "avg_fill_price", "limit_price",
         "status", "failure_type", "error_code", "error_message",
         "requires_broker_verification", "broker", "broker_order_id",
-        "intent_at", "fill_date", "submitted_at", "last_polled_at", "finalized_at",
+        "intent_at", "fill_date", "target_fill_date",
+        "submitted_at", "last_polled_at", "finalized_at",
         "notional", "commission", "tax", "metadata",
         "created_at", "updated_at",
     )
@@ -212,7 +219,8 @@ _ORDER_COLUMNS = [
     "requested_lots", "filled_shares", "avg_fill_price", "limit_price",
     "status", "failure_type", "error_code", "error_message",
     "requires_broker_verification", "broker", "broker_order_id",
-    "intent_at", "fill_date", "submitted_at", "last_polled_at", "finalized_at",
+    "intent_at", "fill_date", "target_fill_date",
+    "submitted_at", "last_polled_at", "finalized_at",
     "notional", "commission", "tax", "metadata",
     "created_at", "updated_at",
 ]
@@ -382,6 +390,46 @@ def mark_submitted(
     logger.info(
         "order_submitted",
         order_id=order_id, broker_order_id=normalized_boi,
+    )
+
+
+def mark_ready_for_submission(
+    order_id: str,
+    *,
+    target_fill_date: "date_type",
+    ready_at: "datetime | None" = None,
+) -> None:
+    """INTENT → READY_FOR_SUBMISSION. Sets target_fill_date.
+
+    Called by daily_run at T 16:00 after PreTradeGuard passes. The order
+    sits in this state until execution_submitter picks it up at T+1 08:30.
+
+    Args:
+        order_id:         existing INTENT order to transition
+        target_fill_date: the trading day on which the order should be
+                          submitted (typically next_trading_day(signal_date))
+        ready_at:         transition timestamp (default: now in Taipei TZ)
+    """
+    current = get(order_id)
+    _validate_transition(current.status, OrderStatus.READY_FOR_SUBMISSION)
+
+    when = ready_at or datetime.now(tz=TAIPEI_TZ)
+
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE orders SET
+                status = 'READY_FOR_SUBMISSION',
+                target_fill_date = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?
+            """,
+            [target_fill_date, order_id],
+        )
+    logger.info(
+        "order_ready_for_submission",
+        order_id=order_id,
+        target_fill_date=str(target_fill_date),
     )
 
 
@@ -867,6 +915,58 @@ def list_stale_submitted_by_fill_date(
         rows = conn.execute(
             f"{_SELECT_ALL} WHERE status = 'SUBMITTED' AND fill_date <= ? "
             f"ORDER BY fill_date, submitted_at",
+            [expired_on_or_before],
+        ).fetchall()
+    return [OrderRow.from_row(r, _ORDER_COLUMNS) for r in rows]
+
+
+def list_ready_for_submission(
+    *,
+    target_fill_date: "date_type",
+) -> list["OrderRow"]:
+    """READY_FOR_SUBMISSION orders for a given target fill date.
+
+    Primary query for execution_submitter at T+1 08:30.
+
+    Args:
+        target_fill_date: the trading day to submit for (typically today).
+
+    Returns:
+        Orders where status=READY_FOR_SUBMISSION AND target_fill_date matches,
+        ordered by intent_at (FIFO).
+    """
+    with connect(read_only=True) as conn:
+        rows = conn.execute(
+            f"{_SELECT_ALL} WHERE status = 'READY_FOR_SUBMISSION' "
+            f"AND target_fill_date = ? ORDER BY intent_at",
+            [target_fill_date],
+        ).fetchall()
+    return [OrderRow.from_row(r, _ORDER_COLUMNS) for r in rows]
+
+
+def list_stale_ready_for_submission(
+    *,
+    expired_on_or_before: "date_type",
+) -> list["OrderRow"]:
+    """READY_FOR_SUBMISSION orders whose target_fill_date has passed.
+
+    Used by startup_recovery to expire stale intents that were never
+    picked up by execution_submitter (e.g. submitter didn't run,
+    or machine was down on T+1).
+
+    Args:
+        expired_on_or_before: orders with target_fill_date <= this are stale.
+            Caller (startup_recovery) typically passes the last completed
+            trading day's date.
+
+    Returns:
+        Stale READY_FOR_SUBMISSION orders, ordered by target_fill_date then
+        intent_at.
+    """
+    with connect(read_only=True) as conn:
+        rows = conn.execute(
+            f"{_SELECT_ALL} WHERE status = 'READY_FOR_SUBMISSION' "
+            f"AND target_fill_date <= ? ORDER BY target_fill_date, intent_at",
             [expired_on_or_before],
         ).fetchall()
     return [OrderRow.from_row(r, _ORDER_COLUMNS) for r in rows]

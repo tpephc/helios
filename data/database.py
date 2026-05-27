@@ -114,9 +114,10 @@ CREATE INDEX IF NOT EXISTS idx_signals_idempotency
     ON signals(symbol, strategy, signal_type, signal_date, approval_status);
 
 -- ─────────────────────────────────────────────────────────────────────────
--- orders journal — v0.1.16 (v2)
--- Canonical migration: migrations/0002_orders_journal_v0_1_16.sql
--- KEEP THIS BLOCK IN SYNC WITH MIGRATION 0002. A semantic-equivalence
+-- orders journal — v0.1.17
+-- Migration from v0.1.16: added READY_FOR_SUBMISSION status + target_fill_date.
+-- Canonical migration: migrations/0003_orders_v0_1_17.sql
+-- KEEP THIS BLOCK IN SYNC WITH MIGRATION 0003. A semantic-equivalence
 -- smoke test in tests/test_schema_consistency.py verifies the two.
 --
 -- UNIT CONVENTION (read before touching this table):
@@ -143,10 +144,11 @@ CREATE TABLE IF NOT EXISTS orders (
     avg_fill_price  DOUBLE,
     limit_price     DOUBLE,
 
-    -- Lifecycle state (7 states; no PLACED)
+    -- Lifecycle state (8 states; v0.1.17 adds READY_FOR_SUBMISSION)
     status          TEXT    NOT NULL
                             CHECK (status IN (
                                 'INTENT',
+                                'READY_FOR_SUBMISSION',
                                 'SUBMITTED',
                                 'FILLED',
                                 'PARTIAL',
@@ -169,6 +171,7 @@ CREATE TABLE IF NOT EXISTS orders (
     -- Timestamps
     intent_at       TIMESTAMP NOT NULL,
     fill_date       DATE    NOT NULL,
+    target_fill_date DATE,
     submitted_at    TIMESTAMP,
     last_polled_at  TIMESTAMP,
     finalized_at    TIMESTAMP,
@@ -192,7 +195,8 @@ CREATE TABLE IF NOT EXISTS orders (
         (status = 'PARTIAL' AND filled_shares > 0
                             AND filled_shares < requested_lots * 1000)
         OR
-        (status IN ('INTENT', 'SUBMITTED', 'FAILED', 'CANCELLED', 'EXPIRED'))
+        (status IN ('INTENT', 'READY_FOR_SUBMISSION', 'SUBMITTED',
+                    'FAILED', 'CANCELLED', 'EXPIRED'))
     ),
 
     -- Invariant 2: FAILED <=> failure_type set
@@ -210,8 +214,12 @@ CREATE INDEX IF NOT EXISTS idx_orders_intent_date
     ON orders (CAST(intent_at AS DATE));
 CREATE INDEX IF NOT EXISTS idx_orders_fill_date
     ON orders (fill_date);
+CREATE INDEX IF NOT EXISTS idx_orders_target_fill_date
+    ON orders (target_fill_date);
 CREATE INDEX IF NOT EXISTS idx_orders_status
     ON orders (status);
+CREATE INDEX IF NOT EXISTS idx_orders_status_target
+    ON orders (status, target_fill_date);
 CREATE INDEX IF NOT EXISTS idx_orders_broker_order_id
     ON orders (broker_order_id);
 CREATE INDEX IF NOT EXISTS idx_orders_signal_id
@@ -467,6 +475,104 @@ def connect(read_only: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
         conn.close()
 
 
+def _migrate_orders_v0_1_17() -> bool:
+    """Migrate orders table: add READY_FOR_SUBMISSION status + target_fill_date.
+
+    DuckDB CHECK constraints cannot be ALTERed, so we recreate the table.
+    Strategy: rename old → let init_schema's SCHEMA_SQL create new → copy → drop old.
+
+    Called by init_schema() BEFORE conn.execute(SCHEMA_SQL). This ordering
+    ensures the old table is renamed so SCHEMA_SQL creates a fresh one with
+    the v0.1.17 schema (READY_FOR_SUBMISSION + target_fill_date).
+
+    Safe for small tables (expected <100 rows in paper trading phase).
+
+    Returns True if migration was applied, False if already migrated.
+    """
+    with connect() as conn:
+        # Check if orders table exists
+        tables = [r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = 'orders'"
+        ).fetchall()]
+        if not tables:
+            return False  # fresh DB, no migration needed
+
+        cols = [r[0] for r in conn.execute("DESCRIBE orders").fetchall()]
+        if "target_fill_date" in cols:
+            return False  # already migrated
+
+        old_count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        logger.info("migrate_orders_v0_1_17_start", existing_rows=old_count)
+
+        # Drop indexes first — DuckDB cannot rename tables with dependencies.
+        for idx in conn.execute(
+            "SELECT index_name FROM duckdb_indexes() "
+            "WHERE table_name = 'orders'"
+        ).fetchall():
+            conn.execute(f"DROP INDEX {idx[0]}")
+
+        # Rename old table. SCHEMA_SQL (called next by init_schema) will
+        # create a fresh orders table with the v0.1.17 schema.
+        conn.execute("ALTER TABLE orders RENAME TO _orders_v0_1_16_bak")
+
+    # Return True to signal that init_schema must run the copy-back step.
+    # We store old_count for verification in the post-copy step.
+    _migrate_orders_v0_1_17._pending_count = old_count
+    return True
+
+
+def _migrate_orders_v0_1_17_copy_back() -> None:
+    """Copy data from backup table into new orders table after SCHEMA_SQL runs.
+
+    Called by init_schema() AFTER conn.execute(SCHEMA_SQL) when migration
+    was applied. Backfills target_fill_date = fill_date for existing rows.
+    """
+    with connect() as conn:
+        # Check backup table exists
+        tables = [r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = '_orders_v0_1_16_bak'"
+        ).fetchall()]
+        if not tables:
+            return  # no backup to copy from
+
+        conn.execute("""
+            INSERT INTO orders (
+                order_id, signal_id, symbol, side, requested_lots,
+                filled_shares, avg_fill_price, limit_price, status,
+                failure_type, error_code, error_message,
+                requires_broker_verification, broker, broker_order_id,
+                intent_at, fill_date, target_fill_date,
+                submitted_at, last_polled_at, finalized_at,
+                notional, commission, tax, metadata,
+                created_at, updated_at
+            )
+            SELECT
+                order_id, signal_id, symbol, side, requested_lots,
+                filled_shares, avg_fill_price, limit_price, status,
+                failure_type, error_code, error_message,
+                requires_broker_verification, broker, broker_order_id,
+                intent_at, fill_date, fill_date,
+                submitted_at, last_polled_at, finalized_at,
+                notional, commission, tax, metadata,
+                created_at, updated_at
+            FROM _orders_v0_1_16_bak
+        """)
+
+        # Verify row count
+        expected = getattr(_migrate_orders_v0_1_17, '_pending_count', None)
+        new_count = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+        if expected is not None and expected != new_count:
+            raise RuntimeError(
+                f"Migration row count mismatch: expected={expected}, "
+                f"got={new_count}. Backup _orders_v0_1_16_bak preserved."
+            )
+
+        conn.execute("DROP TABLE _orders_v0_1_16_bak")
+        logger.info("migrate_orders_v0_1_17_complete", rows_migrated=new_count)
+
+
 def init_schema() -> None:
     """初始化所有 table (idempotent)。
 
@@ -478,9 +584,22 @@ def init_schema() -> None:
     """
     s = get_settings()
     s.ensure_dirs()
+    # v0.1.17: migrate orders table BEFORE executing SCHEMA_SQL.
+    # Migration renames old table → lets SCHEMA_SQL create the new one.
+    _migrate_orders_v0_1_17()
+
+    # v0.1.17: migrate orders table in two phases around SCHEMA_SQL.
+    # Phase 1: rename old table (if migration needed).
+    _migrated = _migrate_orders_v0_1_17()
+
     with connect() as conn:
         _drop_pre_c3_signals_if_present(conn)
         conn.execute(SCHEMA_SQL)
+
+    # Phase 2: copy data from backup into new table (if migration ran).
+    if _migrated:
+        _migrate_orders_v0_1_17_copy_back()
+
     logger.info("schema_initialized", db_path=str(s.db_path))
 
 

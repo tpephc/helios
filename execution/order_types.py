@@ -1,5 +1,5 @@
 # execution/order_types.py
-"""Order lifecycle domain types — v0.1.16 (post-review v2).
+"""Order lifecycle domain types — v0.1.17.
 
 v2 changes from v1:
   - Renamed OrderSubmissionResult.requested_qty → requested_lots (unit: lots)
@@ -25,7 +25,7 @@ Design references:
   - docs/design/execution_model.md
   - Advisor review: K-P0-1, K-P0-2
 
-Version: v0.1.16 (2026-05-24, v2)
+Version: v0.1.17 (2026-05-27)
 """
 from __future__ import annotations
 
@@ -53,26 +53,31 @@ SHARES_PER_LOT: int = 1000
 
 
 class OrderStatus(str, Enum):
-    """Order lifecycle states.
+    """Order lifecycle states — v0.1.17.
 
     State transitions (legitimate only):
 
-        INTENT    → SUBMITTED          (place_order accepted by broker API)
-        INTENT    → FAILED             (place_order raised; transport/reject)
-        SUBMITTED → FILLED             (deals confirmed via update_status)
-        SUBMITTED → PARTIAL            (deals confirmed but shares < requested)
-        SUBMITTED → CANCELLED          (broker cancelled, e.g. user override)
-        SUBMITTED → EXPIRED            (ROD expired without fill)
-        SUBMITTED → FAILED             (broker rejected after acceptance)
+        INTENT                → READY_FOR_SUBMISSION  (daily_run T 16:00)
+        INTENT                → SUBMITTED             (direct submit, legacy)
+        INTENT                → FAILED                (pre-trade guard fail)
+        READY_FOR_SUBMISSION  → SUBMITTED             (execution_submitter T+1 08:30)
+        READY_FOR_SUBMISSION  → EXPIRED               (stale / suspended / limit-up)
+        READY_FOR_SUBMISSION  → FAILED                (risk cap / data missing)
+        SUBMITTED             → FILLED                (deals confirmed)
+        SUBMITTED             → PARTIAL               (deals < requested)
+        SUBMITTED             → CANCELLED             (broker cancelled)
+        SUBMITTED             → EXPIRED               (ROD expired / cancel sweep)
+        SUBMITTED             → FAILED                (broker reject post-accept)
 
     Terminal: FILLED, FAILED, CANCELLED, EXPIRED.
-    PARTIAL is operationally terminal in v0.1.16 (manual review required).
+    PARTIAL is operationally terminal in v0.1.17 (manual review required).
 
     No PLACED state. "Submitted but not yet filled" = SUBMITTED with
     last_polled_at set and filled_shares=0.
     """
 
     INTENT = "INTENT"
+    READY_FOR_SUBMISSION = "READY_FOR_SUBMISSION"
     SUBMITTED = "SUBMITTED"
     FILLED = "FILLED"
     PARTIAL = "PARTIAL"
@@ -92,7 +97,11 @@ class OrderStatus(str, Enum):
 
     @property
     def is_in_flight(self) -> bool:
-        return self in {OrderStatus.INTENT, OrderStatus.SUBMITTED}
+        return self in {
+            OrderStatus.INTENT,
+            OrderStatus.READY_FOR_SUBMISSION,
+            OrderStatus.SUBMITTED,
+        }
 
 
 class OrderSide(str, Enum):
