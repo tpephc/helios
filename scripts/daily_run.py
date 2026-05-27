@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/daily_run.py
-"""Daily run orchestration — v0.1.14.3. Orchestration ONLY (no business logic).
+"""Daily run orchestration — v0.1.17. Orchestration ONLY (no business logic).
 
 Pipeline: prev-check → is_trading_day → T+1 readiness → freshness → expire →
 exits → entries → listener → reconcile. Each step = single module call.
@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="v0.1.14.3 daily paper-trading run")
+    parser = argparse.ArgumentParser(description="v0.1.17 daily paper-trading run")
     parser.add_argument("--as-of", type=str, default=None)
     parser.add_argument("--capital", type=float, default=1_000_000)
     parser.add_argument("--listener-minutes", type=int, default=30)
@@ -214,44 +214,20 @@ def main() -> int:
         )
         print(f"[6] entry pipeline: {len(pending)} pending signals pushed")
 
-        # ── Step 7: auto-execute entry signals via LiveBroker ────────────
-        # v0.1.16 v2: uses OrderSubmissionResult.position_opened (NOT
-        # result.success) to decide whether to count as executed.
-        # SUBMITTED-but-unfilled orders go to pending_reconcile (reconcile
-        # will resolve at T+1 morning). FAILED/PARTIAL/CANCELLED/EXPIRED
-        # go to failed bucket.
-        # sim_relaxed guard thresholds applied when shioaji_simulation=True
-        # (week-1 smoke test profile; see docs/design/execution_model.md §6).
-        from execution.live_broker import LiveBroker
-        from execution.pre_trade_guard import PreTradeGuard
-        from config.settings import get_settings
-
-        _cfg = get_settings()
-        # v0.1.17-A: use account.environment instead of global shioaji_simulation
-        _is_sim = _account.is_simulation
-        _guard_mode = "sim_relaxed" if _is_sim else "production"
-        _guard_config = (
-            PreTradeGuard.sim_relaxed() if _is_sim
-            else PreTradeGuard()
-        )
-        logger.info(
-            "daily_run_pre_trade_guard_selected",
-            mode=_guard_mode,
-            max_order_notional=_guard_config.max_order_notional,
-            max_daily_notional=_guard_config.max_daily_notional,
-        )
+        # ── Step 7: queue entry intents for T+1 submission ─────────────
+        # v0.1.17: daily_run no longer calls broker APIs. Signals are
+        # recorded as ORDER_INTENT → READY_FOR_SUBMISSION. The new
+        # execution_submitter (cron 08:30 T+1) reads these and submits
+        # to broker. See docs/design/execution_submitter_design.md §1-§3.
+        from execution.order_types import OrderSide
+        from storage import order_journal
+        from storage.signals import get_signal as _get_signal
 
         exec_summary = {
-            "executed": [],            # FILLED + position opened
-            "pending_reconcile": [],   # SUBMITTED (awaiting fill)
-            "failed": [],              # FAILED / PARTIAL / CANCELLED / EXPIRED
+            "queued": [],              # READY_FOR_SUBMISSION for T+1
+            "failed": [],              # validation failures at intent time
         }
         if pending:
-            # v0.1.16 v2: process_entries.generate_pending_signals returns
-            # list[str] of signal_ids (not list[dict]). Resolve symbol +
-            # signal_type via storage.signals.get_signal.
-            from storage.signals import get_signal as _get_signal
-            broker = LiveBroker(bot=bot, guard=_guard_config)
             for signal_id in pending:
                 sig_row = _get_signal(signal_id)
                 if sig_row is None:
@@ -269,9 +245,6 @@ def main() -> int:
                     )
                     exec_summary["failed"].append(signal_id)
                     continue
-                # v0.1.16 v2 only auto-executes buy signals. sell/exit
-                # signals come from exit scan (currently disabled via
-                # HELIOS_SKIP_EXIT_SCAN; v0.1.17 will route through journal).
                 if sig_row.signal_type != "buy":
                     logger.warning(
                         "daily_run_skip_non_buy_signal",
@@ -281,46 +254,53 @@ def main() -> int:
                     )
                     exec_summary["failed"].append(symbol)
                     continue
-                result = broker.submit_buy(
-                    symbol=symbol,
-                    lots=1,
-                    fill_date=fill_date,
-                    signal_id=signal_id,
-                )
-                if result.position_opened:
-                    exec_summary["executed"].append(symbol)
+
+                try:
+                    # Record INTENT (no broker call)
+                    from datetime import datetime
+                    from zoneinfo import ZoneInfo
+                    _now = datetime.now(tz=ZoneInfo("Asia/Taipei"))
+
+                    order_id = order_journal.record_intent(
+                        symbol=symbol,
+                        side=OrderSide.BUY,
+                        requested_lots=1,
+                        intent_at=_now,
+                        fill_date=fill_date,
+                        signal_id=signal_id,
+                    )
+
+                    # Transition to READY_FOR_SUBMISSION
+                    order_journal.mark_ready_for_submission(
+                        order_id,
+                        target_fill_date=fill_date,
+                        ready_at=_now,
+                    )
+
+                    exec_summary["queued"].append(symbol)
                     logger.info(
-                        "daily_run_entry_executed",
-                        symbol=symbol, status=result.status.value,
-                        avg_fill_price=result.avg_fill_price,
-                        filled_shares=result.filled_shares,
-                        order_id=result.order_id,
+                        "daily_run_entry_queued",
+                        symbol=symbol,
+                        order_id=order_id,
+                        signal_id=signal_id,
+                        target_fill_date=str(fill_date),
                     )
-                elif result.is_pending:
-                    exec_summary["pending_reconcile"].append(symbol)
-                    logger.warning(
-                        "daily_run_entry_pending_reconcile",
-                        symbol=symbol, status=result.status.value,
-                        order_id=result.order_id,
-                        broker_order_id=result.broker_order_id,
-                    )
-                else:
+                except Exception as exc:
                     exec_summary["failed"].append(symbol)
-                    logger.warning(
-                        "daily_run_entry_failed",
-                        symbol=symbol, status=result.status.value,
-                        error_code=result.error_code,
-                        error_message=result.error_message,
-                        order_id=result.order_id,
+                    logger.error(
+                        "daily_run_entry_queue_failed",
+                        symbol=symbol,
+                        signal_id=signal_id,
+                        error=str(exc),
                     )
+
             print(
-                f"[7] executed={len(exec_summary['executed'])} "
-                f"pending_reconcile={len(exec_summary['pending_reconcile'])} "
+                f"[7] queued={len(exec_summary['queued'])} "
                 f"failed={len(exec_summary['failed'])} "
-                f"(guard={_guard_mode})"
+                f"(target_fill_date={fill_date})"
             )
         else:
-            print(f"[7] no pending signals, skip execution (guard={_guard_mode})")
+            print(f"[7] no pending signals, skip intent queue")
 
         # ── Step 8: reconciliation (stub) ─────────────────
         recon = reconciliation.reconcile(as_of)
@@ -332,9 +312,9 @@ def main() -> int:
             "account_id": _account.account_id,   # v0.1.17-A
             "exits": exit_summary["exits_fired"],
             "pending_pushed": len(pending),
-            "executed": len(exec_summary["executed"]),
-            "pending_reconcile": len(exec_summary["pending_reconcile"]),
+            "queued_for_submission": len(exec_summary["queued"]),
             "failed_entries": len(exec_summary["failed"]),
+            "target_fill_date": str(fill_date),
             "reconciliation": "skipped" if recon.skipped else "ran",
             "recovery_orphan_intents":
                 recovery_summary["orphan_intents_resolved"],
@@ -342,7 +322,6 @@ def main() -> int:
                 recovery_summary["stale_submitted_resolved"],
             "recovery_errors":
                 len(recovery_summary["resolution_errors"]),
-            "guard_mode": _guard_mode,
             **{k: exit_summary[k] for k in ("exits_failed", "exits_failed_symbols",
                 "skipped_no_data", "skipped_no_data_symbols", "open_position_days",
                 "avg_position_days", "max_position_days")},
