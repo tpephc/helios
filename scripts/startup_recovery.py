@@ -1,5 +1,5 @@
 # scripts/startup_recovery.py
-"""Startup recovery for in-flight orders — v0.1.16 (post-review v2).
+"""Startup recovery for in-flight orders — v0.1.17 (post-review v2).
 
 Called by daily_run.py as Step 0a, BEFORE any business logic. Scans the
 orders journal for in-flight rows from a previous process and resolves
@@ -32,7 +32,7 @@ Two categories handled:
    broker fill, the EXPIRED row is incorrect but the fill is safe;
    flag as anomaly.
 
-Version: v0.1.16 (2026-05-24, v2)
+Version: v0.1.17 (2026-05-27)
 """
 from __future__ import annotations
 
@@ -119,8 +119,10 @@ def recover_in_flight_orders(
     summary = {
         "orphan_intents_resolved": 0,
         "stale_submitted_resolved": 0,
+        "stale_ready_resolved": 0,
         "orphan_intent_ids": [],
         "stale_submitted_ids": [],
+        "stale_ready_ids": [],
         "resolution_errors": [],
     }
 
@@ -200,10 +202,51 @@ def recover_in_flight_orders(
                 "error": str(exc),
             })
 
+    # ── Resolve stale READY_FOR_SUBMISSION (v0.1.17) ─────────────────
+    # Orders that were queued by daily_run but never picked up by
+    # execution_submitter (e.g. submitter didn't run on T+1).
+    stale_ready = order_journal.list_stale_ready_for_submission(
+        expired_on_or_before=expired_cutoff,
+    )
+    for stale in stale_ready:
+        try:
+            order_journal.mark_expired(
+                order_id=stale.order_id,
+                reason=(
+                    f"READY_FOR_SUBMISSION with target_fill_date="
+                    f"{stale.target_fill_date} <= "
+                    f"last_trading_day={expired_cutoff}; "
+                    f"submission window missed."
+                ),
+                finalized_at=when,
+            )
+            summary["stale_ready_resolved"] += 1
+            summary["stale_ready_ids"].append(stale.order_id)
+            logger.warning(
+                "startup_recovery_stale_ready_resolved",
+                order_id=stale.order_id, symbol=stale.symbol,
+                target_fill_date=(
+                    str(stale.target_fill_date)
+                    if stale.target_fill_date else None
+                ),
+                expired_cutoff=str(expired_cutoff),
+            )
+        except Exception as exc:
+            logger.error(
+                "startup_recovery_stale_ready_resolve_failed",
+                order_id=stale.order_id, error=str(exc),
+            )
+            summary["resolution_errors"].append({
+                "order_id": stale.order_id,
+                "kind": "stale_ready",
+                "error": str(exc),
+            })
+
     logger.info(
         "startup_recovery_complete",
         orphan_intents_resolved=summary["orphan_intents_resolved"],
         stale_submitted_resolved=summary["stale_submitted_resolved"],
+        stale_ready_resolved=summary["stale_ready_resolved"],
         resolution_errors=len(summary["resolution_errors"]),
     )
 
@@ -211,6 +254,7 @@ def recover_in_flight_orders(
     if notify is not None and (
         summary["orphan_intents_resolved"]
         or summary["stale_submitted_resolved"]
+        or summary["stale_ready_resolved"]
         or summary["resolution_errors"]
     ):
         lines = ["🔧 啟動修復摘要"]
@@ -222,6 +266,11 @@ def recover_in_flight_orders(
         if summary["stale_submitted_resolved"]:
             lines.append(
                 f"過期 SUBMITTED: {summary['stale_submitted_resolved']} 筆"
+            )
+        if summary["stale_ready_resolved"]:
+            lines.append(
+                f"過期 READY: {summary['stale_ready_resolved']} 筆 "
+                f"(submitter 未執行)"
             )
         if summary["resolution_errors"]:
             lines.append(
@@ -239,10 +288,13 @@ def main() -> int:
     print("Startup recovery summary:")
     print(f"  Orphan INTENTs resolved:     {summary['orphan_intents_resolved']}")
     print(f"  Stale SUBMITTEDs resolved:   {summary['stale_submitted_resolved']}")
+    print(f"  Stale READYs resolved:       {summary['stale_ready_resolved']}")
     if summary["orphan_intent_ids"]:
         print(f"  Orphan INTENT IDs: {summary['orphan_intent_ids']}")
     if summary["stale_submitted_ids"]:
         print(f"  Stale SUBMITTED IDs: {summary['stale_submitted_ids']}")
+    if summary["stale_ready_ids"]:
+        print(f"  Stale READY IDs: {summary['stale_ready_ids']}")
     if summary["resolution_errors"]:
         print(f"  Resolution errors: {summary['resolution_errors']}")
     return 0 if not summary["resolution_errors"] else 1
