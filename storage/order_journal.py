@@ -1,0 +1,886 @@
+# storage/order_journal.py
+"""Order journal repository — v0.1.16 (post-review v2).
+
+The orders table is an append-only event log with controlled UPDATEs for
+state transitions. This module is the single source of truth for orders
+table CRUD.
+
+v2 changes from v1 (per advisor review):
+  - record_intent: accepts fill_date (C-P0-1) and notional (caller-computed
+    per K-P0-1 decision; journal does NOT compute notional from
+    limit_price * qty because the unit conversion belongs at the
+    domain boundary, not in the repository).
+  - Renamed parameters: requested_qty → requested_lots, filled_qty →
+    filled_shares (K-P0-1 / decision 1).
+  - list_orders_by_fill_date: new method for reconcile (C-P0-1 / K-P1-4).
+    list_orders_for_date kept as deprecated shim for non-reconcile callers
+    that want intent_at semantics (raises DeprecationWarning).
+  - mark_polled: validates submitted_at IS NOT NULL before recording poll
+    (D-P0-1). Also rejects filled_shares=0 with non-None avg_fill_price
+    (K-P2-b).
+  - new_order_id: uses Asia/Taipei timezone explicitly (K-P2-a).
+  - update_order_spec: new method for setting limit_price/notional after
+    contract lookup (C-P0-3, K-P0-1).
+  - mark_submitted: empty-string broker_order_id normalized to None
+    (K-P1-5).
+
+Design principles:
+  1. ID generation: 'helios_{YYYYMMDD}_{uuid8}', Taipei time.
+  2. Application-layer updated_at.
+  3. State transition validation (illegal transitions raise).
+  4. intent_at = decision time (T); fill_date = expected execution (T+1).
+  5. Crash recovery + reconcile surfaces exposed.
+  6. NO unit conversion or normalization in this layer — domain boundary
+     responsibility.
+
+Version: v0.1.16 (2026-05-24, v2)
+"""
+from __future__ import annotations
+
+import json
+import uuid
+import warnings
+from datetime import date as date_type
+from datetime import datetime, timedelta
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from data.database import connect
+from execution.order_types import (
+    FailureType,
+    OrderSide,
+    OrderStatus,
+)
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
+# Module timezone: order_id date prefix uses local market time.
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Exceptions
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class OrderJournalError(Exception):
+    """Base class for order journal failures."""
+
+
+class OrderNotFound(OrderJournalError):
+    """Raised when an order_id has no corresponding row."""
+
+
+class InvalidTransition(OrderJournalError):
+    """Raised when a state transition violates the lifecycle state machine.
+
+    This is a caller bug. The journal will not silently accept illegal
+    transitions because doing so masks application-layer state corruption.
+    """
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Legitimate state transitions
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_LEGITIMATE_TRANSITIONS: dict[OrderStatus, frozenset[OrderStatus]] = {
+    OrderStatus.INTENT: frozenset({
+        OrderStatus.SUBMITTED,
+        OrderStatus.FAILED,
+    }),
+    OrderStatus.SUBMITTED: frozenset({
+        OrderStatus.FILLED,
+        OrderStatus.PARTIAL,
+        OrderStatus.CANCELLED,
+        OrderStatus.EXPIRED,
+        OrderStatus.FAILED,
+    }),
+    # Terminal states
+    OrderStatus.FILLED: frozenset(),
+    OrderStatus.PARTIAL: frozenset(),
+    OrderStatus.FAILED: frozenset(),
+    OrderStatus.CANCELLED: frozenset(),
+    OrderStatus.EXPIRED: frozenset(),
+}
+
+
+def _validate_transition(
+    from_status: OrderStatus, to_status: OrderStatus
+) -> None:
+    """Raise InvalidTransition if not in the legitimate set."""
+    if to_status not in _LEGITIMATE_TRANSITIONS[from_status]:
+        raise InvalidTransition(
+            f"Illegal state transition: {from_status.value} → {to_status.value}. "
+            f"Allowed from {from_status.value}: "
+            f"{sorted(s.value for s in _LEGITIMATE_TRANSITIONS[from_status])}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ID generation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def new_order_id(at: datetime | None = None) -> str:
+    """Generate a journal order_id.
+
+    Format: 'helios_{YYYYMMDD}_{uuid4_hex[:8]}'
+    Example: 'helios_20260525_a3f8b2c1'
+
+    v2 fix (K-P2-a): date prefix is Asia/Taipei local time. Previously
+    used naive datetime.now() which would yield wrong date if the host
+    clock was in UTC (e.g. CI/containers) — order_id "date" would be
+    yesterday's date in Taiwan.
+    """
+    when = at if at is not None else datetime.now(tz=TAIPEI_TZ)
+    # If caller passes a naive datetime, assume Taipei local
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=TAIPEI_TZ)
+    else:
+        when = when.astimezone(TAIPEI_TZ)
+    return f"helios_{when.strftime('%Y%m%d')}_{uuid.uuid4().hex[:8]}"
+
+
+def _normalize_broker_order_id(value: str | None) -> str | None:
+    """Normalize broker-assigned order ID: empty string → None (K-P1-5).
+
+    Shioaji sim mode can return '' (empty string) for trade.order.id.
+    Empty string is semantically equivalent to "no broker ID" and storing
+    it would corrupt reconcile match logic (find_by_broker_order_id('')
+    returns None, but list_orders_for_date sees an order with empty
+    string).
+    """
+    if value is None or value == "":
+        return None
+    return value
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DTOs (read models)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class OrderRow:
+    """In-memory representation of an orders row.
+
+    Plain class (not dataclass) to avoid OrderSubmissionResult's
+    __post_init__ invariant coupling — the journal reads back rows in
+    intermediate states that the result type would reject.
+
+    v2: field names match the unit-bearing schema (requested_lots,
+    filled_shares, fill_date).
+    """
+
+    __slots__ = (
+        "order_id", "signal_id", "symbol", "side",
+        "requested_lots", "filled_shares", "avg_fill_price", "limit_price",
+        "status", "failure_type", "error_code", "error_message",
+        "requires_broker_verification", "broker", "broker_order_id",
+        "intent_at", "fill_date", "submitted_at", "last_polled_at", "finalized_at",
+        "notional", "commission", "tax", "metadata",
+        "created_at", "updated_at",
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        for slot in self.__slots__:
+            setattr(self, slot, kwargs.get(slot))
+
+    @classmethod
+    def from_row(cls, row: tuple, columns: list[str]) -> OrderRow:
+        """Build from DB row + column names."""
+        data = dict(zip(columns, row))
+        if data.get("status") is not None:
+            data["status"] = OrderStatus(data["status"])
+        if data.get("side") is not None:
+            data["side"] = OrderSide(data["side"])
+        if data.get("failure_type") is not None:
+            data["failure_type"] = FailureType(data["failure_type"])
+        if data.get("metadata"):
+            try:
+                data["metadata"] = json.loads(data["metadata"])
+            except (json.JSONDecodeError, TypeError):
+                data["metadata"] = None
+        return cls(**data)
+
+
+# Canonical column order (matches schema declaration).
+_ORDER_COLUMNS = [
+    "order_id", "signal_id", "symbol", "side",
+    "requested_lots", "filled_shares", "avg_fill_price", "limit_price",
+    "status", "failure_type", "error_code", "error_message",
+    "requires_broker_verification", "broker", "broker_order_id",
+    "intent_at", "fill_date", "submitted_at", "last_polled_at", "finalized_at",
+    "notional", "commission", "tax", "metadata",
+    "created_at", "updated_at",
+]
+
+_SELECT_ALL = f"SELECT {', '.join(_ORDER_COLUMNS)} FROM orders"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Create / record
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def record_intent(
+    *,
+    symbol: str,
+    side: OrderSide,
+    requested_lots: int,
+    intent_at: datetime,
+    fill_date: date_type,
+    notional: float = 0.0,
+    signal_id: str | None = None,
+    limit_price: float | None = None,
+    broker: str | None = None,
+    metadata: dict | None = None,
+) -> str:
+    """Insert a new INTENT row. Returns generated order_id.
+
+    Called by broker.submit_buy/sell BEFORE invoking the broker API. If
+    the process crashes between this call and api.place_order(),
+    startup_recovery will find the orphan INTENT.
+
+    Args:
+        symbol:         TWSE stock code
+        side:           OrderSide.BUY or OrderSide.SELL
+        requested_lots: lot count (Common lot = SHARES_PER_LOT shares)
+        intent_at:      business decision time (T day)
+        fill_date:      expected execution date (T+1 trading day)
+        notional:       TWD commitment (caller-computed); typically
+                        limit_price * requested_lots * SHARES_PER_LOT.
+                        Default 0 for pre-contract-lookup intent;
+                        update_order_spec sets actual value once
+                        limit_price is known.
+        signal_id:      upstream signal reference
+        limit_price:    TWD per share; None if not yet known
+        broker:         broker tag
+        metadata:       debug context dict (serialized to JSON)
+
+    v2 changes:
+      - fill_date required (was missing in v1; reconcile couldn't query
+        by execution date)
+      - notional is a caller-passed parameter (was computed as
+        limit_price * requested_qty which was wrong by factor of 1000
+        and also yielded 0 when limit_price=None at intent time)
+
+    Returns:
+        The generated order_id.
+    """
+    if requested_lots <= 0:
+        raise ValueError(
+            f"requested_lots must be positive, got {requested_lots}"
+        )
+
+    order_id = new_order_id(at=intent_at)
+    metadata_json = json.dumps(metadata) if metadata else None
+
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO orders (
+                order_id, signal_id, symbol, side, requested_lots,
+                status, limit_price, notional, broker,
+                intent_at, fill_date, metadata,
+                created_at, updated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?,
+                'INTENT', ?, ?, ?,
+                ?, ?, ?,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """,
+            [
+                order_id, signal_id, symbol, side.value, requested_lots,
+                limit_price, notional, broker,
+                intent_at, fill_date, metadata_json,
+            ],
+        )
+    logger.info(
+        "order_intent_recorded",
+        order_id=order_id, symbol=symbol, side=side.value,
+        requested_lots=requested_lots, fill_date=str(fill_date),
+        notional=notional, broker=broker, signal_id=signal_id,
+    )
+    return order_id
+
+
+def update_order_spec(
+    order_id: str,
+    *,
+    limit_price: float,
+    notional: float,
+) -> None:
+    """Update limit_price and notional after contract lookup.
+
+    Used between record_intent (which knows requested_lots but not
+    necessarily price) and pre_trade_guard / place_order. Caller computes
+    notional as limit_price * requested_lots * SHARES_PER_LOT.
+
+    Only legal in INTENT state — prevents post-submission tampering.
+
+    v2 (C-P0-3, K-P0-1): without this, notional stays at the value passed
+    to record_intent (typically 0), and PreTradeGuard.check_daily_notional
+    becomes effectively a no-op.
+    """
+    current = get(order_id)
+    if current.status is not OrderStatus.INTENT:
+        raise InvalidTransition(
+            f"update_order_spec requires status=INTENT, got "
+            f"{current.status.value} for order_id={order_id}"
+        )
+
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE orders SET
+                limit_price = ?,
+                notional = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?
+            """,
+            [limit_price, notional, order_id],
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# State transitions
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def mark_submitted(
+    order_id: str,
+    *,
+    broker_order_id: str | None,
+    submitted_at: datetime,
+) -> None:
+    """INTENT → SUBMITTED. Records broker_order_id.
+
+    v2 (K-P1-5): empty-string broker_order_id from sim mode is normalized
+    to NULL so reconcile lookup semantics are consistent.
+    """
+    current = get(order_id)
+    _validate_transition(current.status, OrderStatus.SUBMITTED)
+
+    normalized_boi = _normalize_broker_order_id(broker_order_id)
+
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE orders SET
+                status = 'SUBMITTED',
+                broker_order_id = ?,
+                submitted_at = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?
+            """,
+            [normalized_boi, submitted_at, order_id],
+        )
+    logger.info(
+        "order_submitted",
+        order_id=order_id, broker_order_id=normalized_boi,
+    )
+
+
+def mark_polled(
+    order_id: str,
+    *,
+    polled_at: datetime,
+    filled_shares: int = 0,
+    avg_fill_price: float | None = None,
+) -> None:
+    """Record a poll of broker status. Does NOT transition status.
+
+    Updates last_polled_at and (optionally) filled_shares / avg_fill_price.
+    Used when polling returns SUBMITTED-but-not-yet-filled state.
+
+    v2 changes:
+      - D-P0-1: requires current.submitted_at is not None (defensive;
+        normal INTENT→mark_polled is illegal but this catches it before
+        DB corruption).
+      - K-P2-b: filled_shares=0 must have avg_fill_price=None (no fills
+        means no VWAP).
+    """
+    current = get(order_id)
+    if current.status is not OrderStatus.SUBMITTED:
+        raise InvalidTransition(
+            f"mark_polled requires status=SUBMITTED, got {current.status.value} "
+            f"for order_id={order_id}"
+        )
+    if current.submitted_at is None:
+        # Defensive check: status=SUBMITTED without submitted_at indicates
+        # journal corruption. Refuse to compound the inconsistency.
+        raise InvalidTransition(
+            f"mark_polled called on order {order_id} with status=SUBMITTED "
+            f"but submitted_at=None. Journal inconsistency; investigate "
+            f"before continuing."
+        )
+    if filled_shares == 0 and avg_fill_price is not None:
+        raise ValueError(
+            f"mark_polled: filled_shares=0 requires avg_fill_price=None, "
+            f"got avg_fill_price={avg_fill_price}"
+        )
+    if filled_shares < 0:
+        raise ValueError(
+            f"mark_polled: filled_shares must be non-negative, got {filled_shares}"
+        )
+
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE orders SET
+                last_polled_at = ?,
+                filled_shares = ?,
+                avg_fill_price = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?
+            """,
+            [polled_at, filled_shares, avg_fill_price, order_id],
+        )
+
+
+def mark_filled(
+    order_id: str,
+    *,
+    filled_shares: int,
+    avg_fill_price: float,
+    commission: float = 0.0,
+    tax: float = 0.0,
+    finalized_at: datetime | None = None,
+) -> None:
+    """SUBMITTED → FILLED.
+
+    filled_shares MUST equal requested_lots * SHARES_PER_LOT (DB CHECK
+    enforces; this method asserts at application layer for earlier failure).
+
+    v2: parameter renamed filled_qty → filled_shares for unit clarity.
+    Comparison is share-equivalent.
+    """
+    from execution.order_types import SHARES_PER_LOT  # local import to avoid cycle in repr
+
+    current = get(order_id)
+    _validate_transition(current.status, OrderStatus.FILLED)
+
+    required_shares = current.requested_lots * SHARES_PER_LOT
+    if filled_shares != required_shares:
+        raise InvalidTransition(
+            f"mark_filled requires filled_shares ({filled_shares}) == "
+            f"requested_lots × {SHARES_PER_LOT} ({required_shares}) "
+            f"for order_id={order_id}. Use mark_partial for incomplete fills."
+        )
+
+    finalized = finalized_at or datetime.now(tz=TAIPEI_TZ)
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE orders SET
+                status = 'FILLED',
+                filled_shares = ?,
+                avg_fill_price = ?,
+                commission = ?,
+                tax = ?,
+                finalized_at = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?
+            """,
+            [filled_shares, avg_fill_price, commission, tax, finalized, order_id],
+        )
+    logger.info(
+        "order_filled",
+        order_id=order_id, filled_shares=filled_shares,
+        avg_fill_price=avg_fill_price, commission=commission, tax=tax,
+    )
+
+
+def mark_partial(
+    order_id: str,
+    *,
+    filled_shares: int,
+    avg_fill_price: float,
+    commission: float = 0.0,
+    tax: float = 0.0,
+    finalized_at: datetime | None = None,
+) -> None:
+    """SUBMITTED → PARTIAL. filled_shares MUST be 0 < x < requested_shares.
+
+    PARTIAL is operationally terminal in v0.1.16 (manual review required).
+    Position is NOT opened.
+
+    v2 (D-P2-a): log level upgraded to error (was warning) — partial fills
+    require operator action so the signal must be high.
+    """
+    from execution.order_types import SHARES_PER_LOT
+
+    current = get(order_id)
+    _validate_transition(current.status, OrderStatus.PARTIAL)
+
+    required_shares = current.requested_lots * SHARES_PER_LOT
+    if not (0 < filled_shares < required_shares):
+        raise InvalidTransition(
+            f"mark_partial requires 0 < filled_shares ({filled_shares}) < "
+            f"requested_shares ({required_shares}; "
+            f"= requested_lots {current.requested_lots} × {SHARES_PER_LOT}) "
+            f"for order_id={order_id}"
+        )
+
+    finalized = finalized_at or datetime.now(tz=TAIPEI_TZ)
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE orders SET
+                status = 'PARTIAL',
+                filled_shares = ?,
+                avg_fill_price = ?,
+                commission = ?,
+                tax = ?,
+                finalized_at = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?
+            """,
+            [filled_shares, avg_fill_price, commission, tax, finalized, order_id],
+        )
+    logger.error(
+        "order_partial_filled_manual_review_required",
+        order_id=order_id, filled_shares=filled_shares,
+        requested_shares=required_shares,
+    )
+
+
+def mark_failed(
+    order_id: str,
+    *,
+    failure_type: FailureType,
+    error_code: str,
+    error_message: str | None = None,
+    finalized_at: datetime | None = None,
+) -> None:
+    """{INTENT, SUBMITTED} → FAILED. failure_type required.
+
+    For TRANSPORT, requires_broker_verification is set TRUE automatically.
+    """
+    current = get(order_id)
+    _validate_transition(current.status, OrderStatus.FAILED)
+
+    finalized = finalized_at or datetime.now(tz=TAIPEI_TZ)
+    requires_verification = failure_type.requires_broker_verification
+
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE orders SET
+                status = 'FAILED',
+                failure_type = ?,
+                error_code = ?,
+                error_message = ?,
+                requires_broker_verification = ?,
+                finalized_at = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?
+            """,
+            [
+                failure_type.value, error_code, error_message,
+                requires_verification, finalized, order_id,
+            ],
+        )
+    log_level = "error" if requires_verification else "warning"
+    getattr(logger, log_level)(
+        "order_failed",
+        order_id=order_id, failure_type=failure_type.value,
+        error_code=error_code, error_message=error_message,
+        requires_broker_verification=requires_verification,
+    )
+
+
+def mark_cancelled(
+    order_id: str,
+    *,
+    reason: str | None = None,
+    finalized_at: datetime | None = None,
+) -> None:
+    """SUBMITTED → CANCELLED."""
+    current = get(order_id)
+    _validate_transition(current.status, OrderStatus.CANCELLED)
+
+    finalized = finalized_at or datetime.now(tz=TAIPEI_TZ)
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE orders SET
+                status = 'CANCELLED',
+                error_message = ?,
+                finalized_at = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?
+            """,
+            [reason, finalized, order_id],
+        )
+    logger.info("order_cancelled", order_id=order_id, reason=reason)
+
+
+def mark_expired(
+    order_id: str,
+    *,
+    reason: str | None = None,
+    finalized_at: datetime | None = None,
+) -> None:
+    """SUBMITTED → EXPIRED. Used by startup_recovery for stale ROD orders."""
+    current = get(order_id)
+    _validate_transition(current.status, OrderStatus.EXPIRED)
+
+    finalized = finalized_at or datetime.now(tz=TAIPEI_TZ)
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE orders SET
+                status = 'EXPIRED',
+                error_message = ?,
+                finalized_at = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE order_id = ?
+            """,
+            [reason, finalized, order_id],
+        )
+    logger.info("order_expired", order_id=order_id, reason=reason)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reads
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def get(order_id: str) -> OrderRow:
+    """Fetch one order by ID. Raises OrderNotFound if absent."""
+    with connect(read_only=True) as conn:
+        row = conn.execute(
+            f"{_SELECT_ALL} WHERE order_id = ?",
+            [order_id],
+        ).fetchone()
+    if row is None:
+        raise OrderNotFound(f"order_id={order_id}")
+    return OrderRow.from_row(row, _ORDER_COLUMNS)
+
+
+def find_by_broker_order_id(broker_order_id: str | None) -> OrderRow | None:
+    """Lookup by broker-assigned ID. Returns None if absent or empty input."""
+    normalized = _normalize_broker_order_id(broker_order_id)
+    if normalized is None:
+        return None
+    with connect(read_only=True) as conn:
+        row = conn.execute(
+            f"{_SELECT_ALL} WHERE broker_order_id = ?",
+            [normalized],
+        ).fetchone()
+    return OrderRow.from_row(row, _ORDER_COLUMNS) if row else None
+
+
+def list_orders_by_fill_date(fill_date: date_type) -> list[OrderRow]:
+    """All orders whose fill_date equals the given date.
+
+    PRIMARY API for reconcile_fills.py. T+1 morning reconcile passes
+    fill_date=today, capturing all orders expected to execute today
+    regardless of when intent was recorded (e.g. Friday EOD intent with
+    Monday fill_date).
+
+    v2 (C-P0-1, K-P1-4): added as the correct reconcile lookup. The v1
+    code used list_orders_for_date (intent_at semantics) which silently
+    missed all real orders.
+    """
+    with connect(read_only=True) as conn:
+        rows = conn.execute(
+            f"{_SELECT_ALL} WHERE fill_date = ? ORDER BY intent_at",
+            [fill_date],
+        ).fetchall()
+    return [OrderRow.from_row(r, _ORDER_COLUMNS) for r in rows]
+
+
+def list_orders_for_intent_date(intent_date: date_type) -> list[OrderRow]:
+    """All orders whose intent_at date equals the given date.
+
+    Used by reports and audit queries that key on decision date (NOT for
+    reconcile — use list_orders_by_fill_date instead).
+
+    v2: renamed from list_orders_for_date for clarity.
+    """
+    with connect(read_only=True) as conn:
+        rows = conn.execute(
+            f"{_SELECT_ALL} WHERE CAST(intent_at AS DATE) = ? ORDER BY intent_at",
+            [intent_date],
+        ).fetchall()
+    return [OrderRow.from_row(r, _ORDER_COLUMNS) for r in rows]
+
+
+def list_orders_for_date(as_of: date_type) -> list[OrderRow]:
+    """DEPRECATED — use list_orders_by_fill_date or list_orders_for_intent_date.
+
+    Removed in v0.1.17.
+    """
+    warnings.warn(
+        "list_orders_for_date is deprecated; use list_orders_by_fill_date "
+        "for reconcile or list_orders_for_intent_date for audit reports.",
+        DeprecationWarning, stacklevel=2,
+    )
+    return list_orders_for_intent_date(as_of)
+
+
+def list_by_status(status: OrderStatus) -> list[OrderRow]:
+    """All orders currently in the given status."""
+    with connect(read_only=True) as conn:
+        rows = conn.execute(
+            f"{_SELECT_ALL} WHERE status = ? ORDER BY intent_at",
+            [status.value],
+        ).fetchall()
+    return [OrderRow.from_row(r, _ORDER_COLUMNS) for r in rows]
+
+
+def count_today_orders(
+    side: OrderSide | None = None,
+    now: datetime | None = None,
+    exclude_order_id: str | None = None,
+) -> int:
+    """Count orders intent'd today (for PreTradeGuard daily cap).
+
+    Counts ALL statuses including FAILED — pre-trade guard caps attempts,
+    not just successful submissions, to prevent retry storms.
+
+    v2 (C-P0-2): exclude_order_id parameter for the "currently being
+    evaluated" intent. PreTradeGuard records intent THEN runs checks; if
+    we counted the just-recorded intent, max_daily_orders=3 would block
+    the 3rd legitimate order. Pass current order_id to exclude.
+
+    Args:
+        side: optional filter
+        now: reference time (default: Taipei now)
+        exclude_order_id: optional order to exclude from count (the
+            current self-check)
+    """
+    when = (now or datetime.now(tz=TAIPEI_TZ))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=TAIPEI_TZ)
+    else:
+        when = when.astimezone(TAIPEI_TZ)
+    today = when.date()
+
+    query = "SELECT COUNT(*) FROM orders WHERE CAST(intent_at AS DATE) = ?"
+    params: list[Any] = [today]
+    if side is not None:
+        query += " AND side = ?"
+        params.append(side.value)
+    if exclude_order_id is not None:
+        query += " AND order_id != ?"
+        params.append(exclude_order_id)
+    with connect(read_only=True) as conn:
+        result = conn.execute(query, params).fetchone()
+    return int(result[0]) if result else 0
+
+
+def sum_today_notional(
+    side: OrderSide | None = None,
+    now: datetime | None = None,
+    exclude_failed: bool = True,
+    exclude_order_id: str | None = None,
+) -> float:
+    """Sum notional of orders intent'd today (for PreTradeGuard).
+
+    Includes SUBMITTED orders by design: SUBMITTED notional is real
+    committed capital at the broker (even before fill). Daily cap is
+    "total commitment", not "total fills".
+
+    exclude_failed=True (default): FAILED orders don't count toward
+    notional (no capital committed for rejected orders).
+
+    v2 (C-P0-2): exclude_order_id parameter for self-exclusion (symmetric
+    with count_today_orders).
+    """
+    when = (now or datetime.now(tz=TAIPEI_TZ))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=TAIPEI_TZ)
+    else:
+        when = when.astimezone(TAIPEI_TZ)
+    today = when.date()
+
+    query = (
+        "SELECT COALESCE(SUM(notional), 0) FROM orders "
+        "WHERE CAST(intent_at AS DATE) = ?"
+    )
+    params: list[Any] = [today]
+    if side is not None:
+        query += " AND side = ?"
+        params.append(side.value)
+    if exclude_failed:
+        query += " AND status != 'FAILED'"
+    if exclude_order_id is not None:
+        query += " AND order_id != ?"
+        params.append(exclude_order_id)
+    with connect(read_only=True) as conn:
+        result = conn.execute(query, params).fetchone()
+    return float(result[0]) if result else 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Recovery surfaces
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def list_orphan_intents(
+    *,
+    older_than: timedelta = timedelta(minutes=10),
+    now: datetime | None = None,
+) -> list[OrderRow]:
+    """INTENT orders older than `older_than` — likely crash-orphans."""
+    when = now or datetime.now(tz=TAIPEI_TZ)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=TAIPEI_TZ)
+    cutoff = when - older_than
+    with connect(read_only=True) as conn:
+        rows = conn.execute(
+            f"{_SELECT_ALL} WHERE status = 'INTENT' AND intent_at < ? "
+            f"ORDER BY intent_at",
+            [cutoff],
+        ).fetchall()
+    return [OrderRow.from_row(r, _ORDER_COLUMNS) for r in rows]
+
+
+def list_stale_submitted_by_fill_date(
+    *,
+    expired_on_or_before: date_type,
+    now: datetime | None = None,
+) -> list[OrderRow]:
+    """SUBMITTED orders whose fill_date has passed without resolution.
+
+    v2 (C-P0-5): replaces v1's wall-clock 16-hour threshold which
+    misfires across weekends (Friday 16:00 → Monday 09:00 is 65 hours
+    but the fill_date is Monday, so the order is NOT stale Sunday).
+
+    Args:
+        expired_on_or_before: orders with fill_date <= this are stale.
+            Caller (startup_recovery) typically passes the last completed
+            trading day's date.
+        now: reference time (informational, used in logs).
+
+    Returns:
+        Orders where status=SUBMITTED AND fill_date <= expired_on_or_before.
+    """
+    with connect(read_only=True) as conn:
+        rows = conn.execute(
+            f"{_SELECT_ALL} WHERE status = 'SUBMITTED' AND fill_date <= ? "
+            f"ORDER BY fill_date, submitted_at",
+            [expired_on_or_before],
+        ).fetchall()
+    return [OrderRow.from_row(r, _ORDER_COLUMNS) for r in rows]
+
+
+def list_orders_requiring_verification() -> list[OrderRow]:
+    """Orders with requires_broker_verification=TRUE.
+
+    These are FAILED.transport orders where Helios doesn't know if the
+    broker actually received the order. Reconcile MUST resolve them.
+    """
+    with connect(read_only=True) as conn:
+        rows = conn.execute(
+            f"{_SELECT_ALL} WHERE requires_broker_verification = TRUE "
+            f"AND status = 'FAILED' ORDER BY finalized_at",
+        ).fetchall()
+    return [OrderRow.from_row(r, _ORDER_COLUMNS) for r in rows]

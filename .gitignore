@@ -29,3 +29,19 @@ Thumbs.db
 shioaji.log
 .coverage
 certs/
+
+# v0.1.16 v2 deployment staging (transient)
+_v0_1_16_staging/
+
+# v0.1.16 v2 deployment backup files (transient, kept for emergency rollback)
+*.pre_v0_1_16_v2.bak
+
+# v0.1.16 v2.1 hotfix backup files (transient, kept for emergency rollback)
+*.pre_v2_1*.bak
+*.pre_swap.bak
+
+# Runtime lock files (cron jobs use file-locks to prevent concurrent runs)
+.lock/
+
+# Catch-all for transient .pre_* backup files (any patch session)
+*.pre_*.bak

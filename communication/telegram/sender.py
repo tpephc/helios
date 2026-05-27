@@ -17,6 +17,21 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+
+def _get_display_name(stock_id: str) -> str:
+    """Return short_name from company_metadata, fallback to stock_id."""
+    try:
+        from data.database import connect
+        with connect(read_only=True) as conn:
+            row = conn.execute(
+                "SELECT short_name FROM company_metadata WHERE stock_id = ?",
+                [stock_id],
+            ).fetchone()
+        return row[0] if row else stock_id
+    except Exception:
+        return stock_id
+
+
 def format_entry_request(
     sig: SignalRow,
     *,
@@ -67,7 +82,7 @@ def format_entry_request(
     sec_new = ((sector_value + target_notional) / equity * 100) if equity > 0 else 0.0
 
     lines: list[str] = [
-        f"🟢 進場訊號 — {sym} ({sector})",
+        f"🟢 進場訊號 — {_get_display_name(sym)} {sym}",
         f"訊號 ID: `{sig.signal_id}`",
         f"分數: {sig.score:.2f} / 價: {sig.price:.2f} / ATR: {sig.entry_atr:.2f}"
             if sig.entry_atr else f"分數: {sig.score:.2f} / 價: {sig.price:.2f}",

@@ -117,7 +117,10 @@ def _compute_score(r: dict) -> tuple[int, str]:
 
     # ── MA alignment (40 pts) ──────────────────────────────
     full_align = (close < ma20 < ma50 < ma200) and d20 < 0 and d50 < 0
-    partial_align = not full_align and (close < ma20 < ma50)
+    # Require MA20 slope negative to exclude short-term pullbacks
+    # in stocks still in uptrend. d50 <= 0 not required (MA50 may
+    # lag) but d20 < 0 is the minimum signal of deterioration.
+    partial_align = not full_align and (close < ma20 < ma50) and d20 < 0
 
     if full_align:
         score += 40
@@ -127,11 +130,15 @@ def _compute_score(r: dict) -> tuple[int, str]:
         return 0, "NONE"
 
     # ── Momentum: RSI (25 pts) ─────────────────────────────
+    # RSI 30-45 (weakening, not yet oversold) scores highest.
+    # RSI < 30 scores less: oversold territory increases mean-reversion
+    # risk and makes the stock a poor risk-exclusion candidate.
+    # Goal: find stocks WEAKENING, not stocks already beaten down.
     if rsi is not None:
-        if rsi < 30:
-            score += 25
-        elif rsi < 40:
-            score += 18
+        if 30 <= rsi < 45:
+            score += 25   # weakening sweet spot
+        elif rsi < 30:
+            score += 12   # oversold — mean-reversion risk, score lower
         elif rsi < 50:
             score += 8
 
@@ -372,7 +379,7 @@ def _print_table(results: list[dict], as_of: date_type) -> None:
     )
     print(f"\n  共 {len(results)} 檔 / 200 大成分股   {summary}")
     print("\n  評分：MA排列(40) + RSI(25) + ROC20加速(5) + 量能確認(30)")
-    print("  MACD / Lower-Highs-Lows → v0.1.16 補上")
+    print("  MACD / Lower-Highs-Lows → 待補（需擴充 daily_features + bearish_features）")
 
 
 # ── entry point ────────────────────────────────────────────────────────────────
@@ -392,7 +399,7 @@ def main() -> int:
     min_score = 0 if args.all else args.min_score
     logger.info("bearish_screen_start", as_of=str(as_of), min_score=min_score)
 
-    results = find_bearish_stocks(as_of=as_of, min_score=min_score)
+    results = find_bearish_stocks(as_of=as_of, min_score=min_score, include_none=args.all)
     _print_table(results, as_of)
 
     if not args.dry_run:
