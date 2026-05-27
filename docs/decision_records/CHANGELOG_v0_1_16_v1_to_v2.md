@@ -1149,3 +1149,32 @@ that was never implemented. features/technical.py explicitly excluded MACD in v0
   Do not add scoring weights without outcome evidence.
   Both features should go through the same calibration process
   as other bearish_features (forward return study by feature quantile).
+
+## Backlog #25 OPEN — intraday_monitor recovery notification (v0.2)
+
+**Identified:** 2026-05-27
+**Priority:** v0.2 (non-blocking)
+**Status:** OPEN
+
+**Problem:**
+_maybe_send_system_alert() only sends degradation alerts (succeeded < total).
+There is no corresponding recovery notification when monitoring returns to normal.
+Operator receives "⚠️ 監控異常" but never receives "✅ 恢復正常" automatically.
+
+**Required:**
+Add recovery detection to _maybe_send_system_alert() or a new
+_maybe_send_recovery_alert():
+  - Track last degradation alert timestamp
+  - On next successful run (succeeded == total), if previous run was degraded,
+    send recovery notification
+  - Include: symbols recovered, duration of degradation, root cause if available
+
+**Suggested message:**
+  ✅ Helios 盤中監控已恢復正常
+  報價取得：{succeeded}/{total} 個股票
+  異常持續時間：{duration}
+
+**Implementation note:**
+  intraday_monitor_runs table already tracks system_alert_sent.
+  Recovery can be detected by:
+    prev_run.system_alert_sent = 1 AND current_run.succeeded == total
