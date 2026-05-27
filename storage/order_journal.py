@@ -335,9 +335,11 @@ def update_order_spec(
     becomes effectively a no-op.
     """
     current = get(order_id)
-    if current.status is not OrderStatus.INTENT:
+    _allowed = {OrderStatus.INTENT, OrderStatus.READY_FOR_SUBMISSION}
+    if current.status not in _allowed:
         raise InvalidTransition(
-            f"update_order_spec requires status=INTENT, got "
+            f"update_order_spec requires status in "
+            f"{sorted(s.value for s in _allowed)}, got "
             f"{current.status.value} for order_id={order_id}"
         )
 
