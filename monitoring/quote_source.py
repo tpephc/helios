@@ -173,7 +173,10 @@ class ShioajiQuoteSource:
         from config.settings import get_settings
 
         cfg = get_settings()
-        api = sj.Shioaji()
+        # Use simulation=True if configured — simulation token does not
+        # have production permission but supports snapshots API.
+        _is_sim = cfg.shioaji_simulation
+        api = sj.Shioaji(simulation=_is_sim)
         try:
             api.login(
                 api_key=cfg.shioaji_api_key.get_secret_value(),
