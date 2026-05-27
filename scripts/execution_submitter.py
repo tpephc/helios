@@ -52,9 +52,9 @@ TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 LOCK_FILE = Path("data/_storage/.execution_submitter.lock")
 
 # ── Configuration defaults ────────────────────────────────────────────────
-# max_entry_gap_pct: [ASSUMED] 0.03 (3%) until calibrated by #16.
-# This is the SINGLE source for both backtest entry filter and live
-# limit price ceiling (INV-2). When #16 calibrates, update here.
+# max_entry_gap_pct: [CALIBRATED] 0.03 (3%) — P95 of positive overnight gaps.
+# Calibrated 2026-05-27 via research/open_gap_study.py (212K obs, 2022-2026).
+# This is the SINGLE source for both backtest entry filter and live limit price (INV-2).
 DEFAULT_MAX_ENTRY_GAP_PCT = 0.03
 
 # cancel_after_minutes: cancel unfilled orders after this many minutes
