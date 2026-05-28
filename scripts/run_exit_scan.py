@@ -12,11 +12,17 @@ ARCHITECTURE §6.5 state machine:
   OPEN → CLOSING (sell submitted) → CLOSED (paper: same step, instant)
   Per ADR-001: synchronous, no async, no streaming.
 
-Usage:
-  uv run python scripts/run_exit_scan.py                    # today
-  uv run python scripts/run_exit_scan.py --as-of 2026-05-15 # specific date
+v0.1.18: account_id parameter added to scan_and_exit. All positions
+  queries are account-scoped. update_running_stats gets account_id.
+  close_position_for_exit receives account_id (requires lifecycle
+  module update; if not yet updated, account_id passed as kwarg and
+  lifecycle ignores it until its own Batch update).
 
-Version: v0.1.0 (2026-05-17)
+Usage:
+  uv run python scripts/run_exit_scan.py --account philip_sim
+  uv run python scripts/run_exit_scan.py --account philip_sim --as-of 2026-05-15
+
+Version: v0.1.18 (2026-05-28)
 """
 from __future__ import annotations
 
@@ -57,9 +63,8 @@ def _to_rule_input(pos: Position) -> RuleInputPosition:
         entry_atr=pos.entry_atr,
         regime_at_entry=pos.regime_at_entry,
         strategy=pos.strategy,
-        score=0.0,  # not needed by exit rules
+        score=0.0,
     )
-    # Hydrate running stats
     if pos.max_close_since_entry is not None:
         p.max_close_since_entry = pos.max_close_since_entry
         p.max_close_date = pos.max_close_date
@@ -97,42 +102,28 @@ def scan_and_exit(
     as_of: date_type,
     fill_date: date_type | None = None,
     fees: TransactionFees | None = None,
+    *,
+    account_id: str,
 ) -> dict:
     """Execute exit scan for one trading day.
 
-    Decision date is `as_of` (day-T close used for rule evaluation + running
-    stats update). Fill date is `fill_date` (T+1 fill day per v0.1.14.2-c
-    P0-2; under v0.1.14.3 this fills at adj_open[fill_date], not adj_close).
-    If `fill_date` is None, falls back to `as_of` (legacy / unit-test
-    convenience).
+    v0.1.18: account_id is required (keyword-only). All positions queries
+    and lifecycle calls are account-scoped.
 
-    Closure goes through `execution.lifecycle.close_position_for_exit` so the
-    broker+storage write is the SAME code path that v0.1.15 will swap for live
-    Shioaji (P1-7).
+    Args:
+        as_of: decision date (day-T close for rule evaluation).
+        fill_date: T+1 fill day. If None, falls back to as_of.
+        fees: transaction fee config. If None, uses DEFAULT_TW_FEES.
+        account_id: broker account identifier.
 
-    v0.1.14.3 — summary now includes stability-instrumentation counters:
-      - open_position_days: list of {position_id, symbol, age_days} for every
-        OPEN position scanned. Lets the 5-day rollup surface stuck-OPEN cases.
-      - exits_failed_symbols: list of symbols whose exit fired this run but
-        failed at fill time (paper_broker returned success=False). Cross-run
-        aggregation in run_summary.py detects "same symbol failing N days
-        in a row" — a stability scar that wouldn't show in a single-day run.
-      - skipped_no_data_symbols: symbols where today's data wasn't available
-        (atr or regime missing). Mirror of skipped_no_data count.
-
-    v0.1.14.3.1 — derived aggregates:
-      - avg_position_days / max_position_days (computed from open_position_days)
-        for the rollup's holding-time pathologies surface.
-
-    No state-machine changes — counters are observation only.
-
-    Returns summary dict for logging / reporting.
+    Returns:
+        Summary dict for logging / reporting.
     """
+
     fees = fees if fees is not None else DEFAULT_TW_FEES
     broker = PaperBroker(fees=fees)
-    open_positions = get_open_positions()
+    open_positions = get_open_positions(account_id=account_id)
     # Exclude synthetic bootstrap positions from execution workflow.
-    # Synthetic positions are for monitoring/alert testing only.
     open_positions = [p for p in open_positions
                       if getattr(p, 'is_synthetic', None) is not True
                       and p.strategy != 'dev_bootstrap']
@@ -140,13 +131,13 @@ def scan_and_exit(
     summary = {
         "as_of": str(as_of),
         "fill_date": str(fill_date),
+        "account_id": account_id,
         "open_positions_scanned": len(open_positions),
         "updated_stats": 0,
         "exits_fired": 0,
         "exits_failed": 0,
         "skipped_no_data": 0,
         "exits": [],
-        # v0.1.14.3 stability instrumentation
         "open_position_days": [],
         "exits_failed_symbols": [],
         "skipped_no_data_symbols": [],
@@ -156,7 +147,6 @@ def scan_and_exit(
         if pos.status != "OPEN":
             continue
 
-        # v0.1.14.3: report every OPEN position's age — surface stuck positions.
         age_days = (as_of - pos.entry_date).days if pos.entry_date else None
         summary["open_position_days"].append({
             "position_id": pos.position_id,
@@ -168,15 +158,19 @@ def scan_and_exit(
         if lookup is None:
             logger.warning(
                 "exit_scan_no_data",
-                position_id=pos.position_id, symbol=pos.symbol, as_of=str(as_of),
+                position_id=pos.position_id, symbol=pos.symbol,
+                account_id=account_id, as_of=str(as_of),
             )
             summary["skipped_no_data"] += 1
             summary["skipped_no_data_symbols"].append(pos.symbol)
             continue
         close, atr, regime = lookup
 
-        # 1. Update running stats using day-T close
-        update_running_stats(pos.position_id, close=close, as_of=as_of)
+        # 1. Update running stats using day-T close (account-scoped)
+        update_running_stats(
+            pos.position_id, close=close, as_of=as_of,
+            account_id=account_id,
+        )
         summary["updated_stats"] += 1
 
         # 2. Apply exit rules with fresh state
@@ -190,21 +184,24 @@ def scan_and_exit(
             if not decision.should_exit:
                 continue
 
-            # 3. P1-7: delegate closure to lifecycle (single source of truth)
+            # 3. Delegate closure to lifecycle (account-scoped)
             ok = close_position_for_exit(
                 position_id=pos.position_id,
                 exit_date=fill_date,
                 exit_reason=decision.reason or rule.name,
                 regime_at_exit=regime,
                 broker=broker,
+                account_id=account_id,
             )
             if not ok:
                 summary["exits_failed"] += 1
                 summary["exits_failed_symbols"].append(pos.symbol)
                 break
 
-            # Re-read closed position to report exit details
-            closed = pos_store.get_position(pos.position_id)
+            # Readback: account-scoped to maintain boundary consistency
+            closed = pos_store.get_position_for_account(
+                pos.position_id, account_id=account_id,
+            )
             summary["exits_fired"] += 1
             summary["exits"].append({
                 "position_id": pos.position_id,
@@ -217,11 +214,8 @@ def scan_and_exit(
                     closed.gross_return_pct if closed and closed.gross_return_pct is not None else 0.0
                 ),
             })
-            break  # first triggering rule wins
+            break
 
-    # v0.1.14.3.1: derived holding-time aggregates for the rollup. Avg/max
-    # surface "stuck OPEN" patterns that the per-position list alone hides
-    # (e.g. one outlier holding 60 days while everything else is 5).
     ages = [d["age_days"] for d in summary["open_position_days"]
             if d["age_days"] is not None]
     summary["avg_position_days"] = sum(ages) / len(ages) if ages else None
@@ -231,22 +225,43 @@ def scan_and_exit(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="v0.1.14.2 daily exit scan")
+    parser = argparse.ArgumentParser(description="v0.1.18 daily exit scan")
     parser.add_argument(
         "--as-of", type=str, default=None,
         help="trading date (YYYY-MM-DD); default = today",
     )
     parser.add_argument(
         "--fill-date", type=str, default=None,
-        help="override T+1 fill date (default: next_trading_day(as-of))",
+        help="override T+1 fill date",
     )
     parser.add_argument(
         "--slippage", type=float, default=None,
         help="override slippage rate (default 0.001 = 0.1%%)",
     )
+    parser.add_argument(
+        "--account", type=str, default=None,
+        metavar="ACCOUNT_ID",
+        help="Account ID from config/accounts.yaml.",
+    )
     args = parser.parse_args()
 
     init_schema()
+
+    # ── v0.1.18: account config loading ──────────────────────────────
+    from config.account_config import load_accounts, get_account
+
+    if args.account == "all":
+        raise RuntimeError(
+            "--account all is not supported for run_exit_scan. "
+            "Use --account <id> and run separately per account."
+        )
+
+    if args.account:
+        _account = get_account(args.account)
+    else:
+        _account = load_accounts()[0]
+
+    account_id = _account.account_id
 
     as_of = (
         date_type.fromisoformat(args.as_of) if args.as_of
@@ -258,9 +273,8 @@ def main() -> int:
     )
 
     print(f"Helios run_exit_scan — {datetime.now().isoformat(timespec='seconds')}")
-    print(f"As-of date: {as_of}")
+    print(f"As-of date: {as_of}  account: {account_id}")
 
-    # P0-2 (c3): derive T+1 fill date unless explicit override; needs data ingested
     from market.trading_calendar import next_fillable_day
     fill_date = (
         date_type.fromisoformat(args.fill_date) if args.fill_date
@@ -269,7 +283,10 @@ def main() -> int:
     print(f"Fill date:  {fill_date} ({'T+1 proxy' if fill_date != as_of else 'T-close fallback'})")
     print()
 
-    summary = scan_and_exit(as_of=as_of, fill_date=fill_date, fees=fees)
+    summary = scan_and_exit(
+        as_of=as_of, fill_date=fill_date, fees=fees,
+        account_id=account_id,
+    )
 
     print(f"Open positions scanned: {summary['open_positions_scanned']}")
     print(f"Running-stats updates:  {summary['updated_stats']}")

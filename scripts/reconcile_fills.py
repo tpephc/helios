@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 # scripts/reconcile_fills.py
-"""T+1 fill reconciliation — v0.1.16 (post-review v2).
+"""T+1 fill reconciliation — v0.1.18.
 
 Daily three-way reconciliation between Helios order journal, broker
 trades, and positions table.
 
+v0.1.18: account_id threaded through all order_journal calls and
+  _fetch_helios_open_positions raw SQL. --account parameter added to CLI.
+  --account all rejected (single-account per run).
+
 v2 changes from v1 (per advisor review):
   - C-P0-1 / K-P1-4: queries Helios orders by fill_date (not intent_at).
-    T+1 morning reconcile passes fill_date=today, capturing orders that
-    were intent'd yesterday EOD.
-  - D-P0-2 / decision 3a: uses BrokerAdapter protocol via
-    LiveBroker.login_session(); no longer reaches into private _login.
-    Avoids `import shioaji` at module level.
-  - Extra decision: ReconcileCandidate model for fuzzy matching when
-    broker_order_id is absent. NOT auto-merged; emits human-review
-    candidates only. v0.1.17 may automate.
-  - K-P1-3: side normalization centralized in broker adapter (no string
-    compare here).
+  - D-P0-2 / decision 3a: uses BrokerAdapter protocol.
+  - Extra decision: ReconcileCandidate model for fuzzy matching.
+  - K-P1-3: side normalization centralized in broker adapter.
   - K-P2-e: pop guarded against None key.
   - K-P2-f: sim_fallback excludes SUBMITTED from expecting_trades.
   - D-P2-b: --send-telegram CLI flag for critical findings.
@@ -29,16 +26,7 @@ Reconcile axes:
 
 Reconcile does NOT mutate state. It emits a report; operator decides.
 
-Sim fallback:
-  shioaji_sim sometimes returns empty list_trades(). Reconcile detects
-  this and degrades to two-way (B only) with a warning.
-
-Usage:
-  uv run python scripts/reconcile_fills.py                       # T+1 default
-  uv run python scripts/reconcile_fills.py --as-of 2026-05-23
-  uv run python scripts/reconcile_fills.py --send-telegram       # on critical
-
-Version: v0.1.16 (v2) — 2026-05-24
+Version: v0.1.18 (2026-05-28)
 """
 from __future__ import annotations
 
@@ -58,16 +46,15 @@ logger = get_logger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Report types
+# Report types (unchanged from v0.1.16 v2)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class ReconcileFinding:
     """Single reconciliation finding."""
-
     category: str
-    severity: str  # 'info' | 'warning' | 'critical'
+    severity: str
     order_id: str | None
     broker_order_id: str | None
     symbol: str
@@ -76,66 +63,27 @@ class ReconcileFinding:
 
 @dataclass
 class ReconcileCandidate:
-    """Fuzzy-match candidate for orphans without broker_order_id.
-
-    v2 (extra decision): emitted as part of Axis D for human review when:
-      - Helios FAILED.transport order has no broker_order_id but broker
-        shows a similar trade, OR
-      - Helios SUBMITTED/FILLED order has no broker_order_id and a
-        broker trade matches (symbol, side, shares, time window).
-
-    NOT auto-merged. v0.1.16 just surfaces these for operator decision.
-    v0.1.17 may add policy-driven auto-merge with audit log.
-
-    Why broker_order_id alone cannot be the matching key:
-      1. sim mode: Shioaji may return empty string broker_order_id
-      2. transport failure: place_order raised before broker_order_id captured
-      3. partial deal aggregation: broker may emit deals over multiple
-         trade objects with the same logical order; ID semantics depend
-         on SDK version
-    The candidate model gives the operator a structured tuple
-    (symbol, side, submitted_date, filled_shares, avg_price,
-    time_distance) to resolve manually.
-
-    Field name notes:
-      - broker_submitted_date is the broker trade's date (== fill_date
-        from Helios perspective for ROD orders); not the order submission
-        timestamp.
-      - broker_avg_price is the VWAP from broker deals.
-    """
-
+    """Fuzzy-match candidate for orphans without broker_order_id."""
     helios_order_id: str
-    broker_trade_index: int   # index in fetched trades list
+    broker_trade_index: int
     symbol: str
     side: str
-
-    # Quantity (always shares-equivalent on both sides — K-P0-1 rules apply)
     helios_requested_shares: int
     broker_filled_shares: int
-
-    # Price (only broker side has meaningful price for fuzzy match;
-    # Helios INTENT may have limit_price but FAILED.transport may not)
     broker_avg_price: float | None
     helios_limit_price: float | None
-
-    # Dates / time distance
     helios_intent_at: datetime | None
-    broker_submitted_date: date_type | None      # broker trade_date
+    broker_submitted_date: date_type | None
     time_distance_seconds: float | None
-
-    # Optional identifiers
     broker_order_id: str | None
-
-    # Operator-facing confidence
-    confidence: str  # 'high' | 'medium' | 'low'
+    confidence: str
 
 
 @dataclass
 class ReconcileReport:
     """Aggregate reconcile findings for one as_of date."""
-
     as_of: date_type
-    mode: str  # 'three_way' | 'two_way_sim_fallback' | 'no_broker'
+    mode: str
     helios_orders_total: int = 0
     broker_trades_total: int = 0
     broker_holdings_total: int = 0
@@ -144,14 +92,8 @@ class ReconcileReport:
     candidates: list[ReconcileCandidate] = field(default_factory=list)
 
     def add(
-        self,
-        *,
-        category: str,
-        severity: str,
-        order_id: str | None,
-        broker_order_id: str | None,
-        symbol: str,
-        detail: str,
+        self, *, category: str, severity: str, order_id: str | None,
+        broker_order_id: str | None, symbol: str, detail: str,
     ) -> None:
         self.findings.append(ReconcileFinding(
             category=category, severity=severity,
@@ -172,11 +114,8 @@ class ReconcileReport:
         lines.append(f"  Findings:                     {len(self.findings)}")
         lines.append(f"  Candidates (human review):    {len(self.candidates)}")
         lines.append("")
-
         for severity_filter, label in [
-            ("critical", "CRITICAL"),
-            ("warning", "WARNING"),
-            ("info", "INFO"),
+            ("critical", "CRITICAL"), ("warning", "WARNING"), ("info", "INFO"),
         ]:
             matching = [f for f in self.findings if f.severity == severity_filter]
             if not matching:
@@ -184,51 +123,26 @@ class ReconcileReport:
             lines.append(f"--- {label} ({len(matching)}) ---")
             for f in matching:
                 broker_id = f.broker_order_id or "-"
-                order_id = f.order_id or "-"
+                oid = f.order_id or "-"
                 lines.append(
                     f"  [{f.category}] {f.symbol} "
-                    f"helios={order_id} broker={broker_id}\n"
+                    f"helios={oid} broker={broker_id}\n"
                     f"    {f.detail}"
                 )
             lines.append("")
-
         if self.candidates:
             lines.append(f"--- FUZZY CANDIDATES ({len(self.candidates)}) ---")
             for c in self.candidates:
-                price_line = ""
-                if c.broker_avg_price is not None or c.helios_limit_price is not None:
-                    bp = (
-                        f"{c.broker_avg_price:.2f}"
-                        if c.broker_avg_price is not None else "?"
-                    )
-                    hp = (
-                        f"{c.helios_limit_price:.2f}"
-                        if c.helios_limit_price is not None else "?"
-                    )
-                    price_line = (
-                        f"\n    price: broker_avg={bp} helios_limit={hp}"
-                    )
-                date_line = (
-                    f"\n    submitted_date(broker)={c.broker_submitted_date} "
-                    f"intent_at(helios)={c.helios_intent_at}"
-                    if c.broker_submitted_date or c.helios_intent_at else ""
-                )
                 lines.append(
-                    f"  [{c.confidence}] {c.symbol} {c.side}\n"
-                    f"    helios_order={c.helios_order_id} "
-                    f"({c.helios_requested_shares} shares requested)\n"
-                    f"    broker_trade={c.broker_order_id or '(no id)'} "
-                    f"({c.broker_filled_shares} shares filled)"
-                    f"{price_line}"
-                    f"{date_line}"
-                    f"\n    time_distance={c.time_distance_seconds}s"
+                    f"  [{c.confidence}] {c.symbol} {c.side} "
+                    f"helios={c.helios_order_id} "
+                    f"({c.helios_requested_shares} shares) "
+                    f"broker=({c.broker_filled_shares} shares)"
                 )
             lines.append("")
-
         return "\n".join(lines)
 
     def to_telegram(self) -> str:
-        """Compact Telegram message for critical findings."""
         if not self.has_critical():
             return f"✅ Reconcile {self.as_of}: no critical findings ({self.mode})"
         crit = [f for f in self.findings if f.severity == "critical"]
@@ -237,11 +151,9 @@ class ReconcileReport:
             f"Mode: {self.mode}",
             f"Critical findings: {len(crit)}",
         ]
-        for f in crit[:5]:  # cap at 5 to fit Telegram message limit
-            lines.append(
-                f"\n• {f.symbol} [{f.category}]"
-            )
-            lines.append(f"  {f.detail[:200]}")  # truncate long details
+        for f in crit[:5]:
+            lines.append(f"\n• {f.symbol} [{f.category}]")
+            lines.append(f"  {f.detail[:200]}")
         if len(crit) > 5:
             lines.append(f"\n...and {len(crit) - 5} more (see console).")
         return "\n".join(lines)
@@ -252,16 +164,20 @@ class ReconcileReport:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _fetch_helios_open_positions() -> list[dict]:
-    """Fetch Helios OPEN positions snapshot."""
+def _fetch_helios_open_positions(account_id: str) -> list[dict]:
+    """Fetch Helios OPEN positions snapshot for an account.
+
+    v0.1.18: added account_id filter to raw SQL query.
+    """
     with connect(read_only=True) as conn:
         rows = conn.execute(
             """
             SELECT position_id, symbol, shares, source_order_id,
                    entry_date, entry_price, status
             FROM positions
-            WHERE status = 'OPEN'
+            WHERE status = 'OPEN' AND account_id = ?
             """,
+            [account_id],
         ).fetchall()
     return [
         {
@@ -284,7 +200,6 @@ def _reconcile_orders_vs_trades(
     report: ReconcileReport,
 ) -> None:
     """Axis A: orders ↔ broker trades."""
-    # Build broker_order_id index (skip None keys per K-P2-e)
     broker_by_id: dict[str, dict] = {
         t["broker_order_id"]: t for t in broker_trades
         if t.get("broker_order_id")
@@ -293,12 +208,9 @@ def _reconcile_orders_vs_trades(
     for ho in helios_orders:
         if ho.status in (OrderStatus.CANCELLED, OrderStatus.EXPIRED):
             continue
-        # FAILED.broker_reject is terminal; FAILED.transport handled in Axis C
         if ho.status is OrderStatus.FAILED:
             continue
-
         if ho.status is OrderStatus.INTENT:
-            # Shouldn't exist after startup_recovery
             report.add(
                 category="orphan_helios_order", severity="critical",
                 order_id=ho.order_id, broker_order_id=ho.broker_order_id,
@@ -311,7 +223,6 @@ def _reconcile_orders_vs_trades(
             )
             continue
 
-        # SUBMITTED / PARTIAL / FILLED expect broker_order_id
         if not ho.broker_order_id:
             report.add(
                 category="orphan_helios_order", severity="warning",
@@ -322,12 +233,9 @@ def _reconcile_orders_vs_trades(
                     f"Cannot reconcile by ID. See fuzzy candidates section."
                 ),
             )
-            # Try to surface candidates by symbol + side
             _maybe_add_fuzzy_candidate(ho, broker_trades, report)
             continue
 
-        # K-P2-e: guard pop against None key (defensive — broker_order_id
-        # may be None despite our filter above due to schema state)
         if ho.broker_order_id is None:
             continue
 
@@ -354,7 +262,6 @@ def _reconcile_orders_vs_trades(
                     ),
                 )
         else:
-            # Matched: verify qty consistency
             broker_filled = match.get("filled_shares", 0)
             if ho.status is OrderStatus.FILLED:
                 if broker_filled == (ho.filled_shares or 0):
@@ -362,10 +269,7 @@ def _reconcile_orders_vs_trades(
                         category="matched_fill", severity="info",
                         order_id=ho.order_id, broker_order_id=ho.broker_order_id,
                         symbol=ho.symbol,
-                        detail=(
-                            f"Matched: {ho.filled_shares} shares "
-                            f"@ {ho.avg_fill_price}"
-                        ),
+                        detail=f"Matched: {ho.filled_shares} shares @ {ho.avg_fill_price}",
                     )
                 else:
                     report.add(
@@ -389,7 +293,6 @@ def _reconcile_orders_vs_trades(
                     ),
                 )
 
-    # Anything left in broker_by_id has no Helios match
     for broker_id, trade in broker_by_id.items():
         report.add(
             category="unexpected_broker_trade", severity="critical",
@@ -406,11 +309,9 @@ def _reconcile_orders_vs_trades(
 def _maybe_add_fuzzy_candidate(
     helios_order, broker_trades: list[dict], report: ReconcileReport,
 ) -> None:
-    """Surface broker trades that *might* correspond to a Helios order
-    without broker_order_id. Human review only.
-    """
+    """Surface broker trades that might correspond to a Helios order
+    without broker_order_id. Human review only."""
     helios_shares = (helios_order.requested_lots or 0) * SHARES_PER_LOT
-
     for idx, trade in enumerate(broker_trades):
         if trade.get("symbol") != helios_order.symbol:
             continue
@@ -419,19 +320,15 @@ def _maybe_add_fuzzy_candidate(
         ):
             continue
 
-        # Compute time distance if both timestamps available
         time_distance = None
         if helios_order.intent_at and trade.get("trade_date"):
-            # trade_date is a date, intent_at is datetime; use start-of-day
             trade_dt = datetime.combine(trade["trade_date"], datetime.min.time())
             if helios_order.intent_at.tzinfo is not None:
-                # Treat trade_dt as same tz for distance computation
                 trade_dt = trade_dt.replace(tzinfo=helios_order.intent_at.tzinfo)
             time_distance = abs(
                 (helios_order.intent_at - trade_dt).total_seconds()
             )
 
-        # Confidence heuristic
         broker_shares = trade.get("filled_shares", 0)
         if broker_shares == helios_shares:
             confidence = "high"
@@ -466,15 +363,13 @@ def _reconcile_positions_vs_holdings(
     broker_by_symbol: dict[str, dict] = {
         h["symbol"]: h for h in broker_holdings
     }
-
     for hp in helios_positions:
         symbol = hp["symbol"]
         match = broker_by_symbol.pop(symbol, None)
         if match is None:
             report.add(
                 category="desync_helios_position", severity="critical",
-                order_id=None, broker_order_id=None,
-                symbol=symbol,
+                order_id=None, broker_order_id=None, symbol=symbol,
                 detail=(
                     f"Helios OPEN position ({hp['shares']} shares) but "
                     f"broker holds no shares. Possible position desync."
@@ -483,8 +378,7 @@ def _reconcile_positions_vs_holdings(
         elif match["shares"] != hp["shares"]:
             report.add(
                 category="desync_helios_position", severity="warning",
-                order_id=None, broker_order_id=None,
-                symbol=symbol,
+                order_id=None, broker_order_id=None, symbol=symbol,
                 detail=(
                     f"Share count mismatch: Helios={hp['shares']}, "
                     f"broker={match['shares']}"
@@ -494,8 +388,7 @@ def _reconcile_positions_vs_holdings(
     for symbol, holding in broker_by_symbol.items():
         report.add(
             category="unexpected_broker_holding", severity="critical",
-            order_id=None, broker_order_id=None,
-            symbol=symbol,
+            order_id=None, broker_order_id=None, symbol=symbol,
             detail=(
                 f"Broker holds {holding['shares']} shares with no "
                 f"corresponding Helios OPEN position."
@@ -506,9 +399,15 @@ def _reconcile_positions_vs_holdings(
 def _reconcile_transport_verifications(
     report: ReconcileReport,
     broker_trades: list[dict],
+    account_id: str,
 ) -> None:
-    """Axis C: FAILED.transport orders needing broker verification."""
-    pending = order_journal.list_orders_requiring_verification()
+    """Axis C: FAILED.transport orders needing broker verification.
+
+    v0.1.18: account_id parameter added.
+    """
+    pending = order_journal.list_orders_requiring_verification(
+        account_id=account_id,
+    )
     if not pending:
         return
 
@@ -566,26 +465,42 @@ def _reconcile_transport_verifications(
 
 def reconcile(
     fill_date: date_type,
+    *,
+    account_id: str,
     adapter: BrokerAdapter | None = None,
 ) -> ReconcileReport:
     """Run reconciliation for orders with the given fill_date.
 
-    v2: parameter renamed `as_of` → `fill_date` for clarity. This is the
-    expected execution date, NOT the intent date.
+    v0.1.18: account_id is required. All queries are account-scoped.
 
     Args:
         fill_date: T+1 trading day to reconcile (orders.fill_date == this)
+        account_id: broker account identifier.
         adapter: optional broker adapter (default: new LiveBroker())
 
     Returns:
         ReconcileReport
     """
-    # Fetch Helios state (using fill_date semantics; C-P0-1 fix)
-    helios_orders = order_journal.list_orders_by_fill_date(fill_date)
-    helios_positions = _fetch_helios_open_positions()
+    helios_orders = order_journal.list_orders_by_fill_date(
+        fill_date, account_id=account_id,
+    )
+    helios_positions = _fetch_helios_open_positions(account_id)
 
-    # Initialize broker if not provided
     if adapter is None:
+        # WARNING: LiveBroker() uses legacy global credentials (Settings).
+        # DB queries are account-scoped via account_id, but the broker
+        # adapter may use a different account's credentials if multi-account
+        # is enabled. This is safe while only one account is active.
+        # Broker adapter multi-account support deferred to #28.
+        # DO NOT enable a second account until #28 is complete.
+        logger.warning(
+            "reconcile_broker_adapter_global_credentials",
+            account_id=account_id,
+            note="Broker adapter uses legacy global credentials. "
+                 "DB queries are account-scoped but broker connection "
+                 "may not match. Safe for single-account only. "
+                 "Multi-account broker adapter: ticket #28.",
+        )
         try:
             from execution.live_broker import LiveBroker
             adapter = LiveBroker()
@@ -601,7 +516,6 @@ def reconcile(
             )
             return report
 
-    # Fetch broker state via adapter
     broker_trades: list[dict] = []
     broker_holdings: list[dict] = []
     broker_unavailable = False
@@ -627,9 +541,6 @@ def reconcile(
         )
         return report
 
-    # v2 (K-P2-f): sim_fallback only when broker_trades empty AND
-    # FILLED/PARTIAL orders exist (NOT SUBMITTED — SUBMITTED with empty
-    # broker trades is normal pre-market state).
     is_simulation = (
         hasattr(adapter, "_simulation") and getattr(adapter, "_simulation", False)
     )
@@ -638,9 +549,7 @@ def reconcile(
         for o in helios_orders
     )
     sim_fallback = (
-        is_simulation
-        and not broker_trades
-        and expecting_trades
+        is_simulation and not broker_trades and expecting_trades
     )
 
     report = ReconcileReport(
@@ -671,9 +580,8 @@ def reconcile(
         )
     else:
         _reconcile_orders_vs_trades(helios_orders, broker_trades, report)
-        _reconcile_transport_verifications(report, broker_trades)
+        _reconcile_transport_verifications(report, broker_trades, account_id)
 
-    # Axis B always runs
     _reconcile_positions_vs_holdings(helios_positions, broker_holdings, report)
 
     return report
@@ -685,11 +593,7 @@ def reconcile(
 
 
 def _send_telegram_alert(report: ReconcileReport) -> None:
-    """Send Telegram alert for reconcile result.
-
-    Imports done locally to avoid hard dependency on telegram module at
-    module level.
-    """
+    """Send Telegram alert for reconcile result."""
     try:
         from communication.telegram.sender import push_simple
         from communication.telegram.bot import get_bot
@@ -700,19 +604,37 @@ def _send_telegram_alert(report: ReconcileReport) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="v0.1.16 fill reconciliation")
+    parser = argparse.ArgumentParser(description="v0.1.18 fill reconciliation")
     parser.add_argument(
         "--as-of", type=str, default=None,
-        help=(
-            "fill_date to reconcile (YYYY-MM-DD). Orders with "
-            "fill_date == this are checked. Default = today's date."
-        ),
+        help="fill_date to reconcile (YYYY-MM-DD). Default = today.",
     )
     parser.add_argument(
         "--send-telegram", action="store_true",
-        help="Send Telegram alert on critical findings (D-P2-b).",
+        help="Send Telegram alert on critical findings.",
+    )
+    parser.add_argument(
+        "--account", type=str, default=None,
+        metavar="ACCOUNT_ID",
+        help="Account ID from config/accounts.yaml.",
     )
     args = parser.parse_args()
+
+    # ── v0.1.18: account config loading ──────────────────────────────
+    from config.account_config import load_accounts, get_account
+
+    if args.account == "all":
+        raise RuntimeError(
+            "--account all is not supported for reconcile_fills. "
+            "Run separately per account."
+        )
+
+    if args.account:
+        _account = get_account(args.account)
+    else:
+        _account = load_accounts()[0]
+
+    account_id = _account.account_id
 
     fill_date = (
         date_type.fromisoformat(args.as_of) if args.as_of
@@ -720,10 +642,10 @@ def main() -> int:
     )
 
     print(f"Helios reconcile_fills — {datetime.now().isoformat(timespec='seconds')}")
-    print(f"Reconcile fill_date: {fill_date}")
+    print(f"Reconcile fill_date: {fill_date}  account: {account_id}")
     print()
 
-    report = reconcile(fill_date)
+    report = reconcile(fill_date, account_id=account_id)
     print(report.to_console())
 
     if report.has_critical():
@@ -732,7 +654,6 @@ def main() -> int:
             _send_telegram_alert(report)
         return 1
     if args.send_telegram and report.findings:
-        # Non-critical but findings exist — send concise summary
         _send_telegram_alert(report)
     return 0
 

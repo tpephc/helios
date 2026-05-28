@@ -1,5 +1,5 @@
 # config/account_config.py
-"""Account configuration — v0.1.0.
+"""Account configuration — v0.1.18.
 
 Loads per-account broker credentials and notification routing from
 config/accounts.yaml + environment variables.
@@ -23,14 +23,17 @@ Legacy compatibility:
   SHIOAJI_API_KEY, SHIOAJI_SECRET_KEY, CA_PASSWORD, TELEGRAM_CHAT_ID
   This allows a single-account setup to keep the existing .env unchanged.
 
-Version: v0.1.0 (2026-05-26)
+Version: v0.1.18 (2026-05-28)
 Changelog:
+  v0.1.18 (2026-05-28): account_id normalization — _ACCOUNT_ID_RE regex
+    enforced in __post_init__; type + strip checks.
   v0.1.0 (2026-05-26): Initial — v0.1.17-A config layer.
     Phase A: config + routing only. DB account_id column added in v0.1.18.
 """
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,6 +45,10 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 _ACCOUNTS_YAML = Path(__file__).resolve().parent / "accounts.yaml"
+
+# account_id normalization: lowercase alphanumeric + underscore only.
+# Enforced at load time to prevent case-sensitive ghost accounts.
+_ACCOUNT_ID_RE = re.compile(r"^[a-z0-9_]+$")
 
 
 @dataclass
@@ -60,6 +67,23 @@ class AccountConfig:
     ca_cert_path: Path | None
     enabled: bool
     use_legacy_env: bool = False      # backward compat for single-account setups
+
+    def __post_init__(self) -> None:
+        """Validate account_id format at construction time."""
+        if not isinstance(self.account_id, str):
+            raise TypeError(
+                f"account_id must be str, got {type(self.account_id).__name__}"
+            )
+        if self.account_id != self.account_id.strip():
+            raise ValueError(
+                f"account_id has leading/trailing whitespace: "
+                f"{self.account_id!r}. Strip before constructing."
+            )
+        if not _ACCOUNT_ID_RE.match(self.account_id):
+            raise ValueError(
+                f"account_id must match [a-z0-9_]+, got: {self.account_id!r}. "
+                f"Use lowercase with underscores only."
+            )
 
     # ── Secret accessors (read from ENV at call time) ──────────────────
 
@@ -224,6 +248,7 @@ def get_account(
     for acc in all_accounts:
         if acc.account_id == account_id:
             return acc
+
     available = [a.account_id for a in all_accounts]
     raise KeyError(
         f"Account '{account_id}' not found in accounts.yaml. "

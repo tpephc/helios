@@ -17,7 +17,11 @@ Both are single-call atomic from caller's perspective; internally they sequence
 the broker call and storage write, with rollback discipline if intermediate
 failure occurs.
 
-Version: v0.1.0 (2026-05-17)
+v0.1.18: account_id parameter added to both operations. All pos_store calls
+  are account-scoped. get_position replaced with get_position_for_account
+  for ownership verification on read-after-write paths.
+
+Version: v0.1.18 (2026-05-28)
 """
 from __future__ import annotations
 
@@ -37,23 +41,21 @@ def open_position_from_signal(
     target_notional: float,
     fill_date: date_type,
     broker: PaperBroker,
+    account_id: str,
 ) -> str | None:
     """Approved signal → broker buy → write OPEN position.
 
+    v0.1.18: account_id is required. All pos_store calls are account-scoped.
+
     Args:
         signal_id: approved signal's id
-        target_notional: NTD to deploy (per_position_pct × equity at signal time)
+        target_notional: NTD to deploy
         fill_date: which trading day to fill on
         broker: PaperBroker instance with cost model
+        account_id: broker account identifier
 
     Returns:
         position_id on success, None on failure.
-
-    Failure modes:
-        - signal not found / not approved → log + None
-        - broker fill fails (no price, insufficient notional) → log + None
-        - storage write fails → log + None (broker order still recorded as filled
-          — this is a real-world scar; reconciliation in v0.1.15 will catch)
     """
     sig = get_signal(signal_id)
     if sig is None:
@@ -66,11 +68,11 @@ def open_position_from_signal(
         )
         return None
 
-    # Already open for this symbol? Defense against double-fire.
-    if pos_store.has_open_position(sig.symbol):
+    # Already open for this symbol in this account? Defense against double-fire.
+    if pos_store.has_open_position(sig.symbol, account_id=account_id):
         logger.warning(
             "lifecycle_open_symbol_already_held",
-            signal_id=signal_id, symbol=sig.symbol,
+            signal_id=signal_id, symbol=sig.symbol, account_id=account_id,
         )
         return None
 
@@ -88,9 +90,10 @@ def open_position_from_signal(
         )
         return None
 
-    # 2. Record position
+    # 2. Record position (account-scoped)
     try:
         position_id = pos_store.open_position(
+            account_id=account_id,
             symbol=sig.symbol,
             strategy=sig.strategy,
             entry_date=fill_date,
@@ -110,16 +113,16 @@ def open_position_from_signal(
     except Exception as exc:
         logger.exception(
             "lifecycle_open_storage_failed",
-            signal_id=signal_id, symbol=sig.symbol, order_id=fill.order_id,
+            signal_id=signal_id, symbol=sig.symbol,
+            account_id=account_id, order_id=fill.order_id,
             error=str(exc),
         )
-        # Order is filled at broker but position not recorded — recoverable
-        # via reconciliation. Log + return None so caller doesn't think success.
         return None
 
     logger.info(
         "lifecycle_open_complete",
-        position_id=position_id, signal_id=signal_id, symbol=sig.symbol,
+        position_id=position_id, signal_id=signal_id,
+        symbol=sig.symbol, account_id=account_id,
         shares=fill.shares, fill_price=fill.fill_price,
     )
     return position_id
@@ -131,23 +134,35 @@ def close_position_for_exit(
     exit_reason: str,
     regime_at_exit: str,
     broker: PaperBroker,
+    account_id: str,
     exit_signal_id: str | None = None,
 ) -> bool:
     """Trigger exit → broker sell → write CLOSED position.
 
+    v0.1.18: account_id is required. Position ownership verified via
+    get_position_for_account before any mutation.
+
     Returns True if position is now CLOSED (success), False otherwise.
 
-    Per ADR-004: exits do NOT require approval. This function is called directly
-    by daily_run's exit-scan step.
+    Per ADR-004: exits do NOT require approval. This function is called
+    directly by daily_run's exit-scan step.
     """
-    pos = pos_store.get_position(position_id)
-    if pos is None:
-        logger.error("lifecycle_close_no_position", position_id=position_id)
+    try:
+        pos = pos_store.get_position_for_account(
+            position_id, account_id=account_id,
+        )
+    except ValueError:
+        logger.error(
+            "lifecycle_close_no_position",
+            position_id=position_id, account_id=account_id,
+        )
         return False
+
     if pos.status != pos_store.OPEN:
         logger.warning(
             "lifecycle_close_not_open",
-            position_id=position_id, status=pos.status,
+            position_id=position_id, account_id=account_id,
+            status=pos.status,
         )
         return False
 
@@ -159,17 +174,19 @@ def close_position_for_exit(
     if not fill.success:
         logger.error(
             "lifecycle_close_fill_failed",
-            position_id=position_id, reason=fill.error,
+            position_id=position_id, account_id=account_id,
+            reason=fill.error,
         )
         return False
 
     # Net proceeds (gross - commission - tax). Slippage already embedded in fill_price.
     proceeds = fill.notional - fill.commission - fill.tax
 
-    # 2. Mark position closed
+    # 2. Mark position closed (account-scoped)
     try:
         pos_store.mark_position_closed(
             position_id,
+            account_id=account_id,
             exit_date=exit_date,
             exit_price=fill.fill_price or pos.last_close or pos.entry_price,
             exit_reason=exit_reason,
@@ -184,13 +201,15 @@ def close_position_for_exit(
     except Exception as exc:
         logger.exception(
             "lifecycle_close_storage_failed",
-            position_id=position_id, order_id=fill.order_id, error=str(exc),
+            position_id=position_id, account_id=account_id,
+            order_id=fill.order_id, error=str(exc),
         )
         return False
 
     logger.info(
         "lifecycle_close_complete",
         position_id=position_id, symbol=pos.symbol,
+        account_id=account_id,
         shares=pos.shares, fill_price=fill.fill_price,
         exit_reason=exit_reason, proceeds=proceeds,
     )

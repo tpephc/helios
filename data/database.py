@@ -6,8 +6,12 @@ Schema 設計原則：
 - Event log (signals/orders): append-only，全程留下審計軌跡
 - snapshots: 每日狀態快照，配合 event log 可重建任意時點
 
-Version: v0.1.6 (2026-05-17)
+Version: v0.1.18 (2026-05-28)
 Changelog:
+  v0.1.18 (2026-05-28): orders + positions 加 account_id NOT NULL;
+    positions 補 is_synthetic/bootstrap_batch_id/source_order_id 進 SCHEMA_SQL;
+    compound indexes on (account_id, status), (account_id, symbol);
+    migration: table recreate + backfill with 'philip_sim' default.
   v0.1.6 (2026-05-17): 新增 positions 表 (v0.1.14.2 paper trading state machine)
   v0.1.5 (2026-05-17): 新增 daily_features 表 + market_regime 表 (v0.1.11 indicators + regime)
   v0.1.4 (2026-05-16): 新增 daily_price_adj 表 + adjustment_state 表 (v0.1.10 還原權息)
@@ -34,6 +38,7 @@ SCHEMA_SQL = """
 -- ═══════════════════════════════════════════════════════════
 -- Reference & Price Data
 -- ═══════════════════════════════════════════════════════════
+
 CREATE TABLE IF NOT EXISTS stock_info (
     stock_id    VARCHAR PRIMARY KEY,
     stock_name  VARCHAR NOT NULL,
@@ -114,10 +119,11 @@ CREATE INDEX IF NOT EXISTS idx_signals_idempotency
     ON signals(symbol, strategy, signal_type, signal_date, approval_status);
 
 -- ─────────────────────────────────────────────────────────────────────────
--- orders journal — v0.1.17
--- Migration from v0.1.16: added READY_FOR_SUBMISSION status + target_fill_date.
--- Canonical migration: migrations/0003_orders_v0_1_17.sql
--- KEEP THIS BLOCK IN SYNC WITH MIGRATION 0003. A semantic-equivalence
+-- orders journal — v0.1.18
+-- Migration from v0.1.17: added account_id NOT NULL.
+-- Canonical migration: migrations/0003_orders_v0_1_17.sql (v0.1.17),
+--   _migrate_table_add_account_id() in database.py (v0.1.18).
+-- KEEP THIS BLOCK IN SYNC WITH MIGRATIONS. A semantic-equivalence
 -- smoke test in tests/test_schema_consistency.py verifies the two.
 --
 -- UNIT CONVENTION (read before touching this table):
@@ -129,6 +135,7 @@ CREATE INDEX IF NOT EXISTS idx_signals_idempotency
 CREATE TABLE IF NOT EXISTS orders (
     -- Identity
     order_id        TEXT    PRIMARY KEY,
+    account_id      TEXT    NOT NULL,
     signal_id       TEXT,
 
     -- Trade specification
@@ -198,14 +205,12 @@ CREATE TABLE IF NOT EXISTS orders (
         (status IN ('INTENT', 'READY_FOR_SUBMISSION', 'SUBMITTED',
                     'FAILED', 'CANCELLED', 'EXPIRED'))
     ),
-
     -- Invariant 2: FAILED <=> failure_type set
     CHECK (
         (status = 'FAILED' AND failure_type IS NOT NULL)
         OR
         (status <> 'FAILED' AND failure_type IS NULL)
     ),
-
     -- Invariant 3: metadata must be valid JSON if present
     CHECK (metadata IS NULL OR json_valid(metadata))
 );
@@ -226,6 +231,12 @@ CREATE INDEX IF NOT EXISTS idx_orders_signal_id
     ON orders (signal_id);
 CREATE INDEX IF NOT EXISTS idx_orders_signal_intent
     ON orders (signal_id, intent_at);
+CREATE INDEX IF NOT EXISTS idx_orders_account_status
+    ON orders (account_id, status);
+CREATE INDEX IF NOT EXISTS idx_orders_account_symbol
+    ON orders (account_id, symbol);
+CREATE INDEX IF NOT EXISTS idx_orders_account_broker_oid
+    ON orders (account_id, broker_order_id);
 
 CREATE TABLE IF NOT EXISTS snapshots (
     snapshot_date     DATE PRIMARY KEY,
@@ -399,6 +410,9 @@ CREATE TABLE IF NOT EXISTS market_regime (
 
 -- ═══════════════════════════════════════════════════════════
 -- v0.1.14.2: positions table (paper trading state machine)
+-- v0.1.18: added account_id NOT NULL; formalized is_synthetic,
+--   bootstrap_batch_id, source_order_id (existed in DB but were
+--   missing from SCHEMA_SQL).
 -- ═══════════════════════════════════════════════════════════
 -- ARCHITECTURE.md §6.5 Signal Lifecycle State Machine.
 --
@@ -414,6 +428,7 @@ CREATE TABLE IF NOT EXISTS market_regime (
 --   CLOSED   - fully realized; exit fields populated
 CREATE TABLE IF NOT EXISTS positions (
     position_id              VARCHAR PRIMARY KEY,
+    account_id               VARCHAR NOT NULL,
     entry_signal_id          VARCHAR,                -- FK signals.signal_id (entry)
     entry_order_id           VARCHAR,                -- FK orders.order_id (buy)
     exit_signal_id           VARCHAR,                -- FK signals.signal_id (exit), nullable
@@ -456,11 +471,23 @@ CREATE TABLE IF NOT EXISTS positions (
 
     status                   VARCHAR NOT NULL,       -- OPENING / OPEN / CLOSING / CLOSED
     created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    -- Bootstrap / synthetic fields (formalized in v0.1.18 SCHEMA_SQL)
+    is_synthetic             BOOLEAN DEFAULT FALSE,
+    bootstrap_batch_id       VARCHAR,
+    source_order_id          VARCHAR
 );
+
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_positions_symbol ON positions(symbol);
 CREATE INDEX IF NOT EXISTS idx_positions_entry_date ON positions(entry_date);
+CREATE INDEX IF NOT EXISTS idx_positions_account_status
+    ON positions (account_id, status);
+CREATE INDEX IF NOT EXISTS idx_positions_account_symbol
+    ON positions (account_id, symbol);
+CREATE INDEX IF NOT EXISTS idx_positions_source_order_id
+    ON positions (source_order_id);
 """
 
 
@@ -486,7 +513,6 @@ def _migrate_orders_v0_1_17() -> bool:
     the v0.1.17 schema (READY_FOR_SUBMISSION + target_fill_date).
 
     Safe for small tables (expected <100 rows in paper trading phase).
-
     Returns True if migration was applied, False if already migrated.
     """
     with connect() as conn:
@@ -495,6 +521,7 @@ def _migrate_orders_v0_1_17() -> bool:
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema = 'main' AND table_name = 'orders'"
         ).fetchall()]
+
         if not tables:
             return False  # fresh DB, no migration needed
 
@@ -534,6 +561,7 @@ def _migrate_orders_v0_1_17_copy_back() -> None:
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema = 'main' AND table_name = '_orders_v0_1_16_bak'"
         ).fetchall()]
+
         if not tables:
             return  # no backup to copy from
 
@@ -573,32 +601,296 @@ def _migrate_orders_v0_1_17_copy_back() -> None:
         logger.info("migrate_orders_v0_1_17_complete", rows_migrated=new_count)
 
 
-def init_schema() -> None:
-    """初始化所有 table (idempotent)。
+# ─────────────────────────────────────────────────────────────────────────────
+# v0.1.18 migration: add account_id to orders + positions
+# ─────────────────────────────────────────────────────────────────────────────
 
-    v0.1.14.2-c3: detects old signals schema (timestamp column, pre-c3) and
-    rebuilds it. Per c3 release notes: no backwards compat — paper trading
-    DB has no production data, so a clean rebuild is acceptable. Other
-    tables (positions, orders, etc.) are not touched; the column rename
-    is signals-only.
+_V0_1_18_DEFAULT_ACCOUNT = "philip_sim"
+_V0_1_18_ALLOWED_TABLES = {"orders", "positions"}
+
+
+def _needs_account_id_migration(table: str) -> bool:
+    """Check if a table exists but lacks account_id column."""
+    if table not in _V0_1_18_ALLOWED_TABLES:
+        raise ValueError(
+            f"_needs_account_id_migration: table must be one of "
+            f"{sorted(_V0_1_18_ALLOWED_TABLES)}, got {table!r}"
+        )
+    with connect() as conn:
+        tables = [r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = ?",
+            [table],
+        ).fetchall()]
+        if not tables:
+            return False  # table doesn't exist yet; SCHEMA_SQL will create it
+        cols = [r[0] for r in conn.execute(f"DESCRIBE {table}").fetchall()]
+        return "account_id" not in cols
+
+
+def _migrate_table_add_account_id(table: str) -> bool:
+    """Rename table so SCHEMA_SQL recreates it with account_id.
+
+    Same two-phase pattern as v0.1.17:
+      Phase 1 (this function): DROP indexes → RENAME to _bak
+      Phase 2 (_copy_back): INSERT ... SELECT with backfill → DROP _bak
+
+    Returns True if migration was initiated, False if not needed.
+    """
+    if not _needs_account_id_migration(table):
+        return False
+
+    bak_name = f"_{table}_v0_1_17_bak"
+
+    with connect() as conn:
+        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        logger.info(
+            "migrate_account_id_start",
+            table=table, existing_rows=count,
+        )
+
+        # Drop indexes (DuckDB cannot rename tables with index dependencies)
+        for idx in conn.execute(
+            "SELECT index_name FROM duckdb_indexes() "
+            "WHERE table_name = ?",
+            [table],
+        ).fetchall():
+            conn.execute(f"DROP INDEX {idx[0]}")
+
+        conn.execute(f"ALTER TABLE {table} RENAME TO {bak_name}")
+
+    # Store count for verification
+    _migrate_table_add_account_id._pending_counts = getattr(
+        _migrate_table_add_account_id, "_pending_counts", {}
+    )
+    _migrate_table_add_account_id._pending_counts[table] = count
+    return True
+
+
+def _copy_back_with_account_id(table: str) -> None:
+    """Copy data from backup table into new table (with account_id backfill).
+
+    Called AFTER SCHEMA_SQL creates the new table with account_id column.
+    Preserves new table column order; backfills account_id with default.
+    """
+    if table not in _V0_1_18_ALLOWED_TABLES:
+        raise ValueError(
+            f"_copy_back_with_account_id: table must be one of "
+            f"{sorted(_V0_1_18_ALLOWED_TABLES)}, got {table!r}"
+        )
+
+    bak_name = f"_{table}_v0_1_17_bak"
+
+    with connect() as conn:
+        # Check backup exists
+        tables = [r[0] for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = ?",
+            [bak_name],
+        ).fetchall()]
+        if not tables:
+            return
+
+        # Get column lists
+        old_cols = set(
+            r[0] for r in conn.execute(f"DESCRIBE {bak_name}").fetchall()
+        )
+        new_cols = [
+            r[0] for r in conn.execute(f"DESCRIBE {table}").fetchall()
+        ]
+
+        # Build INSERT/SELECT preserving new table column order.
+        # For each new column:
+        #   - account_id → backfill with default
+        #   - exists in old table → copy
+        #   - new column not in old table → skip (will get DB default);
+        #     log warning so future maintainers know it's not magic-safe
+        insert_cols: list[str] = []
+        select_exprs: list[str] = []
+
+        for col in new_cols:
+            if col == "account_id":
+                insert_cols.append(col)
+                select_exprs.append(
+                    f"'{_V0_1_18_DEFAULT_ACCOUNT}'"
+                )
+            elif col in old_cols:
+                insert_cols.append(col)
+                select_exprs.append(col)
+            else:
+                # New column not in old table — relies on DB DEFAULT.
+                # If column is NOT NULL without DEFAULT, INSERT will fail
+                # at runtime (desired: fail-fast over silent corruption).
+                logger.warning(
+                    "migration_column_default_assumed",
+                    table=table,
+                    column=col,
+                )
+
+        if len(insert_cols) != len(select_exprs):
+            raise RuntimeError(
+                f"_copy_back_with_account_id: insert/select column count "
+                f"mismatch: {len(insert_cols)} vs {len(select_exprs)}"
+            )
+
+        sql = (
+            f"INSERT INTO {table} ({', '.join(insert_cols)})\n"
+            f"SELECT {', '.join(select_exprs)}\n"
+            f"FROM {bak_name}"
+        )
+        logger.info(
+            "migrate_account_id_copy_back",
+            table=table,
+            insert_cols_count=len(insert_cols),
+            old_cols_count=len(old_cols),
+            new_cols_count=len(new_cols),
+        )
+        conn.execute(sql)
+
+        # Verify row count
+        expected = getattr(
+            _migrate_table_add_account_id, "_pending_counts", {}
+        ).get(table)
+        new_count = conn.execute(
+            f"SELECT COUNT(*) FROM {table}"
+        ).fetchone()[0]
+
+        if expected is not None and expected != new_count:
+            raise RuntimeError(
+                f"Migration row count mismatch for {table}: "
+                f"expected={expected}, got={new_count}. "
+                f"Backup {bak_name} preserved."
+            )
+
+        # Verify no NULL account_id
+        null_count = conn.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE account_id IS NULL"
+        ).fetchone()[0]
+        if null_count > 0:
+            raise RuntimeError(
+                f"Migration integrity check failed: {null_count} rows in "
+                f"{table} have NULL account_id. Backup {bak_name} preserved."
+            )
+
+        conn.execute(f"DROP TABLE {bak_name}")
+        logger.info(
+            "migrate_account_id_complete",
+            table=table, rows_migrated=new_count,
+            default_account=_V0_1_18_DEFAULT_ACCOUNT,
+        )
+
+
+def verify_post_migration() -> None:
+    """Post-migration integrity checks for v0.1.18.
+
+    Verifies:
+    1. account_id column exists and is NOT NULL in both tables
+    2. Row counts (logged for audit)
+    3. Required indexes exist
+    """
+    with connect(read_only=True) as conn:
+        for table in ("orders", "positions"):
+            # Check account_id column exists
+            cols = [r[0] for r in conn.execute(
+                f"DESCRIBE {table}"
+            ).fetchall()]
+            if "account_id" not in cols:
+                raise RuntimeError(
+                    f"verify_post_migration: {table} missing "
+                    f"account_id column"
+                )
+
+            # Check no NULL account_id
+            null_count = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE account_id IS NULL"
+            ).fetchone()[0]
+            if null_count > 0:
+                raise RuntimeError(
+                    f"verify_post_migration: {table} has {null_count} "
+                    f"rows with NULL account_id"
+                )
+
+        # Row count sanity (log for audit — counts may legitimately
+        # differ from pre-migration if concurrent writes occurred,
+        # but this is the migration completion gate so we log them)
+        orders_count = conn.execute(
+            "SELECT COUNT(*) FROM orders"
+        ).fetchone()[0]
+        positions_count = conn.execute(
+            "SELECT COUNT(*) FROM positions"
+        ).fetchone()[0]
+
+        # Check indexes exist
+        index_names = {r[0] for r in conn.execute(
+            "SELECT index_name FROM duckdb_indexes()"
+        ).fetchall()}
+
+        required_indexes = {
+            "idx_orders_account_status",
+            "idx_orders_account_symbol",
+            "idx_orders_account_broker_oid",
+            "idx_positions_account_status",
+            "idx_positions_account_symbol",
+        }
+        missing = required_indexes - index_names
+        if missing:
+            raise RuntimeError(
+                f"verify_post_migration: missing indexes: "
+                f"{sorted(missing)}"
+            )
+
+    logger.info(
+        "verify_post_migration_passed",
+        orders_count=orders_count,
+        positions_count=positions_count,
+    )
+
+
+def init_schema() -> None:
+    """初始化所有 table (idempotent).
+
+    Migration order:
+      1. v0.1.17: orders table READY_FOR_SUBMISSION + target_fill_date
+      2. v0.1.18: orders + positions add account_id
+      3. Execute SCHEMA_SQL (creates any missing tables)
+      4. Copy-back migrated data from backup tables
+      5. Post-migration verification (only if migrations ran)
     """
     s = get_settings()
     s.ensure_dirs()
-    # v0.1.17: migrate orders table BEFORE executing SCHEMA_SQL.
-    # Migration renames old table → lets SCHEMA_SQL create the new one.
-    _migrate_orders_v0_1_17()
 
-    # v0.1.17: migrate orders table in two phases around SCHEMA_SQL.
-    # Phase 1: rename old table (if migration needed).
-    _migrated = _migrate_orders_v0_1_17()
+    # ── Phase 1: Rename tables that need migration ──────────────────────
+    # v0.1.17: orders table schema migration
+    _migrated_v0_1_17 = _migrate_orders_v0_1_17()
 
+    # v0.1.18: account_id migration (orders + positions)
+    _migrated_orders_v0_1_18 = _migrate_table_add_account_id("orders")
+    _migrated_positions_v0_1_18 = _migrate_table_add_account_id("positions")
+
+    any_migration = (
+        _migrated_v0_1_17
+        or _migrated_orders_v0_1_18
+        or _migrated_positions_v0_1_18
+    )
+
+    # ── Phase 2: Create fresh tables from SCHEMA_SQL ────────────────────
     with connect() as conn:
         _drop_pre_c3_signals_if_present(conn)
         conn.execute(SCHEMA_SQL)
 
-    # Phase 2: copy data from backup into new table (if migration ran).
-    if _migrated:
+    # ── Phase 3: Copy data back from backup tables ──────────────────────
+    if _migrated_v0_1_17:
         _migrate_orders_v0_1_17_copy_back()
+
+    if _migrated_orders_v0_1_18:
+        _copy_back_with_account_id("orders")
+
+    if _migrated_positions_v0_1_18:
+        _copy_back_with_account_id("positions")
+
+    # ── Phase 4: Post-migration verification ────────────────────────────
+    if any_migration:
+        verify_post_migration()
 
     logger.info("schema_initialized", db_path=str(s.db_path))
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/execution_submitter.py
-"""Execution submitter — v0.1.17.
+"""Execution submitter — v0.1.18.
 
 Reads READY_FOR_SUBMISSION orders and submits them to broker at T+1 08:30,
 or cancels stale SUBMITTED orders at T+1 09:05.
@@ -8,15 +8,17 @@ or cancels stale SUBMITTED orders at T+1 09:05.
 Two modes:
   --mode submit  (default, cron 08:30)
     1. Acquire filesystem lock (prevent double-run)
-    2. Read READY_FOR_SUBMISSION WHERE target_fill_date = today
-    3. Pre-submission checks per order
-    4. Compute limit_price = prev_close * (1 + max_entry_gap_pct)
-    5. Shioaji login → contract → place_order (LMT ROD)
-    6. mark_submitted (with requires_broker_verification until confirmed)
-    7. Telegram summary
+    2. Read READY_FOR_SUBMISSION WHERE target_fill_date = today AND account_id
+    3. Pre-submission checks per order (account-scoped)
+    4. Resolve contract + compute limit_price
+    5. update_order_spec (limit_price, notional)
+    6. mark_submitted (optimistic, before broker call)
+    7. Shioaji place_order (LMT ROD)
+    8. confirm_submission (broker_order_id, clear verification flag)
+    9. Telegram summary
 
   --mode cancel  (cron 09:05)
-    1. Read SUBMITTED WHERE submitted_at < now - cancel_after_minutes
+    1. Read SUBMITTED WHERE submitted_at < now - cancel_after_minutes AND account_id
     2. Cancel via Shioaji API
     3. mark_expired
     4. Expire any remaining READY_FOR_SUBMISSION (missed submission window)
@@ -25,7 +27,18 @@ Design: docs/design/execution_submitter_design.md
 Invariants: INV-1 (no broker in daily_run), INV-2 (gap filter), INV-3 (near-open),
             INV-EXEC-1 (no double submit), INV-EXEC-4 (idempotent)
 
-Version: v0.1.17 (2026-05-27)
+v0.1.18 changes:
+  - account_id threaded through all order_journal/positions calls.
+  - --account required; --account all rejected (single-account per run).
+  - _shioaji_login uses AccountConfig credentials (not global Settings).
+  - Operation order: update_order_spec → mark_submitted → place_order →
+    confirm_submission. (v0.1.17 had mark_submitted before update_order_spec,
+    which caused InvalidTransition because SUBMITTED state disallows
+    update_order_spec.)
+  - Raw SQL broker_order_id confirm replaced with order_journal.confirm_submission.
+  - Two-phase SUBMITTED broker verification deferred to #27.
+
+Version: v0.1.18 (2026-05-28)
 """
 from __future__ import annotations
 
@@ -38,7 +51,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from config.settings import get_settings
+from config.account_config import AccountConfig
 from data.database import connect, init_schema
 from execution.order_types import FailureType, OrderStatus, SHARES_PER_LOT
 from market.trading_calendar import is_trading_day
@@ -53,12 +66,9 @@ LOCK_FILE = Path("data/_storage/.execution_submitter.lock")
 
 # ── Configuration defaults ────────────────────────────────────────────────
 # max_entry_gap_pct: [CALIBRATED] 0.03 (3%) — P95 of positive overnight gaps.
-# Calibrated 2026-05-27 via research/open_gap_study.py (212K obs, 2022-2026).
-# This is the SINGLE source for both backtest entry filter and live limit price (INV-2).
 DEFAULT_MAX_ENTRY_GAP_PCT = 0.03
 
 # cancel_after_minutes: cancel unfilled orders after this many minutes
-# post-submission. 5 minutes captures opening auction + early continuous.
 DEFAULT_CANCEL_AFTER_MINUTES = 5
 
 
@@ -77,7 +87,6 @@ def _acquire_lock() -> int:
             "execution_submitter already running (lock held). "
             "If stale, remove data/_storage/.execution_submitter.lock"
         )
-    # Write PID for debugging
     os.ftruncate(fd, 0)
     os.write(fd, f"{os.getpid()}\n".encode())
     return fd
@@ -95,27 +104,45 @@ def _release_lock(fd: int) -> None:
 # ── Shioaji session management ────────────────────────────────────────────
 
 
-def _shioaji_login(cfg: Any) -> tuple[Any, Any]:
-    """Login to Shioaji. Returns (api, sj_module) or raises.
+def _shioaji_login(account: AccountConfig) -> tuple[Any, Any]:
+    """Login to Shioaji using account-specific credentials.
 
-    Separate from LiveBroker to avoid its record_intent side-effect.
-    Uses the same config fields.
+    v0.1.18: takes AccountConfig instead of global Settings. This ensures
+    multi-account runs use the correct broker credentials per account.
+
+    Returns (api, sj_module) or raises.
     """
     import shioaji as sj
 
-    simulation = cfg.shioaji_simulation
+    simulation = account.is_simulation
     api = sj.Shioaji(simulation=simulation)
+
+    api_key = account.shioaji_api_key
+    secret_key = account.shioaji_secret_key
+    if not api_key or not secret_key:
+        raise RuntimeError(
+            f"Shioaji credentials missing for account {account.account_id}. "
+            f"Check ENV keys: {account._env_prefix}SHIOAJI_API_KEY / SECRET_KEY"
+        )
+
     api.login(
-        api_key=cfg.shioaji_api_key.get_secret_value() if cfg.shioaji_api_key else "",
-        secret_key=cfg.shioaji_secret_key.get_secret_value() if cfg.shioaji_secret_key else "",
+        api_key=api_key,
+        secret_key=secret_key,
         fetch_contract=True,
         contracts_timeout=30_000,
         subscribe_trade=True,
     )
     if not simulation:
+        ca_password = account.ca_password
+        ca_path = str(account.ca_cert_path) if account.ca_cert_path else ""
+        if not ca_password:
+            raise RuntimeError(
+                f"CA password missing for account {account.account_id}. "
+                f"Check ENV key: {account._env_prefix}CA_PASSWORD"
+            )
         api.activate_ca(
-            ca_path=cfg.ca_cert_path or "",
-            ca_passwd=cfg.ca_password.get_secret_value() if cfg.ca_password else "",
+            ca_path=ca_path,
+            ca_passwd=ca_password,
             person_id=api.stock_account.person_id,
         )
     api.set_default_account(api.stock_account)
@@ -136,10 +163,7 @@ def _shioaji_logout(api: Any) -> None:
 
 
 def _get_prev_close(symbol: str, as_of: date_type) -> float | None:
-    """Get adj_close for symbol on as_of date from daily_price_adj.
-
-    as_of is the signal date (T). prev_close = adj_close[T].
-    """
+    """Get adj_close for symbol on as_of date from daily_price_adj."""
     with connect(read_only=True) as conn:
         row = conn.execute(
             "SELECT adj_close FROM daily_price_adj "
@@ -155,26 +179,24 @@ def _get_prev_close(symbol: str, as_of: date_type) -> float | None:
 def _pre_submission_check(
     order: Any,
     today: date_type,
+    account_id: str,
 ) -> tuple[bool, str]:
     """Run pre-submission checks for a READY_FOR_SUBMISSION order.
 
+    v0.1.18: account_id parameter; position check is account-scoped.
+
     Returns (passed, reason). If not passed, caller should expire/fail.
     """
-    # Check 1: target_fill_date == today
     if order.target_fill_date != today:
         return False, (
             f"stale: target_fill_date={order.target_fill_date} != today={today}"
         )
 
-    # Check 2: no duplicate open position
-    open_positions = get_open_positions()
+    open_positions = get_open_positions(account_id=account_id)
     open_symbols = {p.symbol for p in open_positions}
     if order.symbol in open_symbols:
         return False, f"duplicate_position: {order.symbol} already OPEN"
 
-    # Check 3: prev_close available
-    # We need the signal date to look up prev_close. The signal date is
-    # the trading day before target_fill_date. Use intent_at date as proxy.
     signal_date = order.intent_at.date() if order.intent_at else None
     if signal_date is None:
         return False, "data_missing: intent_at is None"
@@ -193,14 +215,20 @@ def _pre_submission_check(
 
 def _run_submit(
     today: date_type,
+    account: AccountConfig,
     max_entry_gap_pct: float,
     dry_run: bool = False,
     notify_fn: Any = None,
 ) -> dict:
     """Submit READY_FOR_SUBMISSION orders to broker.
 
+    v0.1.18: takes AccountConfig; all calls are account-scoped.
+    Operation order: resolve contract → update_order_spec → mark_submitted
+    → place_order → confirm_submission.
+
     Returns summary dict.
     """
+    account_id = account.account_id
     summary = {
         "submitted": [],
         "expired": [],
@@ -210,10 +238,14 @@ def _run_submit(
 
     orders = order_journal.list_ready_for_submission(
         target_fill_date=today,
+        account_id=account_id,
     )
 
     if not orders:
-        logger.info("execution_submitter_no_orders", target_fill_date=str(today))
+        logger.info(
+            "execution_submitter_no_orders",
+            target_fill_date=str(today), account_id=account_id,
+        )
         print(f"[submit] No READY_FOR_SUBMISSION orders for {today}")
         return summary
 
@@ -222,12 +254,12 @@ def _run_submit(
     # Pre-submission checks first (before login)
     eligible = []
     for order in orders:
-        passed, reason = _pre_submission_check(order, today)
+        passed, reason = _pre_submission_check(order, today, account_id)
         if not passed:
-            # Determine fail vs expire
             if reason.startswith("stale:") or reason.startswith("duplicate_position:"):
                 order_journal.mark_expired(
                     order_id=order.order_id,
+                    account_id=account_id,
                     reason=f"pre_submission_check: {reason}",
                 )
                 summary["expired"].append(
@@ -235,11 +267,13 @@ def _run_submit(
                 )
                 logger.warning(
                     "execution_submitter_pre_check_expired",
-                    order_id=order.order_id, symbol=order.symbol, reason=reason,
+                    order_id=order.order_id, account_id=account_id,
+                    symbol=order.symbol, reason=reason,
                 )
             else:
                 order_journal.mark_failed(
                     order_id=order.order_id,
+                    account_id=account_id,
                     failure_type=FailureType.BROKER_REJECT,
                     error_code="pre_submission_check",
                     error_message=reason,
@@ -249,7 +283,8 @@ def _run_submit(
                 )
                 logger.error(
                     "execution_submitter_pre_check_failed",
-                    order_id=order.order_id, symbol=order.symbol, reason=reason,
+                    order_id=order.order_id, account_id=account_id,
+                    symbol=order.symbol, reason=reason,
                 )
             continue
         eligible.append(order)
@@ -276,15 +311,14 @@ def _run_submit(
             )
         return summary
 
-    # Login to Shioaji (once for all orders)
-    cfg = get_settings()
+    # Login to Shioaji using account-specific credentials (P0-2 fix)
     try:
-        api, sj = _shioaji_login(cfg)
+        api, sj = _shioaji_login(account)
     except Exception as exc:
-        # Login failed — fail all eligible orders
         for order in eligible:
             order_journal.mark_failed(
                 order_id=order.order_id,
+                account_id=account_id,
                 failure_type=FailureType.TRANSPORT,
                 error_code="shioaji_login_failed",
                 error_message=str(exc),
@@ -307,21 +341,12 @@ def _run_submit(
             prev_close = _get_prev_close(order.symbol, signal_date)
             limit_price = round(prev_close * (1 + max_entry_gap_pct), 2)
 
-            # ── Idempotency: mark SUBMITTED + requires_broker_verification ──
-            # before broker call. If we crash after place_order but before
-            # confirm, reconcile will resolve via requires_broker_verification.
-            now = datetime.now(tz=TAIPEI_TZ)
-            order_journal.mark_submitted(
-                order_id=order.order_id,
-                broker_order_id=None,  # not yet known
-                submitted_at=now,
-            )
-
-            # Resolve contract
+            # ── Step 1: Resolve contract ────────────────────────────
             contract = _resolve_stock_contract(api, order.symbol)
             if contract is None:
                 order_journal.mark_failed(
                     order_id=order.order_id,
+                    account_id=account_id,
                     failure_type=FailureType.BROKER_REJECT,
                     error_code="contract_not_found",
                     error_message=f"no contract for {order.symbol!r}",
@@ -332,15 +357,31 @@ def _run_submit(
                 })
                 continue
 
-            # Update order spec with limit price and notional
+            # ── Step 2: Update order spec (BEFORE mark_submitted) ───
+            # update_order_spec requires INTENT or READY_FOR_SUBMISSION.
+            # Must be called before mark_submitted transitions to SUBMITTED.
             notional = limit_price * order.requested_lots * SHARES_PER_LOT
             order_journal.update_order_spec(
                 order_id=order.order_id,
+                account_id=account_id,
                 limit_price=limit_price,
                 notional=notional,
             )
 
-            # Place order via Shioaji
+            # ── Step 3: Mark SUBMITTED (optimistic, before broker call)
+            # If crash occurs after place_order but before confirm_submission,
+            # reconcile will surface SUBMITTED without broker_order_id as a
+            # manual-review warning. Two-phase SUBMITTED verification is
+            # deferred to #27.
+            now = datetime.now(tz=TAIPEI_TZ)
+            order_journal.mark_submitted(
+                order_id=order.order_id,
+                account_id=account_id,
+                broker_order_id=None,  # not yet known
+                submitted_at=now,
+            )
+
+            # ── Step 4: Place order via Shioaji ─────────────────────
             try:
                 sj_order = sj.order.StockOrder(
                     action=Action.Buy,
@@ -356,6 +397,7 @@ def _run_submit(
             except Exception as exc:
                 order_journal.mark_failed(
                     order_id=order.order_id,
+                    account_id=account_id,
                     failure_type=FailureType.TRANSPORT,
                     error_code="place_order_raised",
                     error_message=f"{type(exc).__name__}: {exc}",
@@ -366,29 +408,48 @@ def _run_submit(
                 })
                 logger.error(
                     "execution_submitter_place_order_failed",
-                    order_id=order.order_id, symbol=order.symbol,
-                    error=str(exc),
+                    order_id=order.order_id, account_id=account_id,
+                    symbol=order.symbol, error=str(exc),
                 )
                 continue
 
-            # Extract broker_order_id
+            # ── Step 5: Confirm submission ──────────────────────────
             broker_order_id = (
                 trade.order.id if trade and trade.order and trade.order.id
                 else None
             )
 
-            # Confirm submission: update broker_order_id, clear verification flag
-            with connect() as conn:
-                conn.execute(
-                    """
-                    UPDATE orders SET
-                        broker_order_id = ?,
-                        requires_broker_verification = FALSE,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE order_id = ?
-                    """,
-                    [broker_order_id if broker_order_id else None, order.order_id],
+            # Live account must receive broker_order_id; None indicates
+            # broker did not acknowledge. Sim mode tolerates None.
+            if broker_order_id is None and not account.is_simulation:
+                order_journal.mark_failed(
+                    order_id=order.order_id,
+                    account_id=account_id,
+                    failure_type=FailureType.TRANSPORT,
+                    error_code="broker_order_id_missing",
+                    error_message=(
+                        "Live broker returned no broker_order_id after "
+                        "place_order. Order may or may not have been "
+                        "received; requires manual verification."
+                    ),
                 )
+                summary["failed"].append({
+                    "order_id": order.order_id, "symbol": order.symbol,
+                    "reason": "broker_order_id_missing (live)",
+                })
+                logger.error(
+                    "execution_submitter_no_broker_order_id_live",
+                    order_id=order.order_id, account_id=account_id,
+                    symbol=order.symbol,
+                )
+                continue
+
+            order_journal.confirm_submission(
+                order_id=order.order_id,
+                account_id=account_id,
+                broker_order_id=broker_order_id,
+                confirmed_at=datetime.now(tz=TAIPEI_TZ),
+            )
 
             summary["submitted"].append({
                 "order_id": order.order_id,
@@ -398,11 +459,9 @@ def _run_submit(
             })
             logger.info(
                 "execution_submitter_order_submitted",
-                order_id=order.order_id,
-                symbol=order.symbol,
-                limit_price=limit_price,
-                broker_order_id=broker_order_id,
-                notional=notional,
+                order_id=order.order_id, account_id=account_id,
+                symbol=order.symbol, limit_price=limit_price,
+                broker_order_id=broker_order_id, notional=notional,
             )
 
     finally:
@@ -410,7 +469,7 @@ def _run_submit(
 
     # Telegram notification
     if notify_fn and (summary["submitted"] or summary["failed"] or summary["expired"]):
-        lines = [f"📤 Execution Submitter — {today}"]
+        lines = [f"📤 Execution Submitter — {today} ({account_id})"]
         if summary["submitted"]:
             lines.append(f"✅ Submitted: {len(summary['submitted'])}")
             for s in summary["submitted"]:
@@ -438,14 +497,18 @@ def _run_submit(
 
 def _run_cancel(
     today: date_type,
+    account: AccountConfig,
     cancel_after_minutes: int,
     dry_run: bool = False,
     notify_fn: Any = None,
 ) -> dict:
     """Cancel stale SUBMITTED orders and expire leftover READY_FOR_SUBMISSION.
 
+    v0.1.18: takes AccountConfig; all queries are account-scoped.
+
     Returns summary dict.
     """
+    account_id = account.account_id
     summary = {
         "cancelled": [],
         "expired_ready": [],
@@ -454,12 +517,13 @@ def _run_cancel(
     now = datetime.now(tz=TAIPEI_TZ)
     cutoff = now - timedelta(minutes=cancel_after_minutes)
 
-    # Find SUBMITTED orders older than cutoff
+    # Find SUBMITTED orders older than cutoff (account-scoped)
     with connect(read_only=True) as conn:
         rows = conn.execute(
             "SELECT order_id, symbol, broker_order_id, submitted_at "
-            "FROM orders WHERE status = 'SUBMITTED' AND submitted_at < ?",
-            [cutoff],
+            "FROM orders WHERE status = 'SUBMITTED' AND submitted_at < ? "
+            "AND account_id = ?",
+            [cutoff, account_id],
         ).fetchall()
 
     stale_submitted = [
@@ -468,10 +532,8 @@ def _run_cancel(
     ]
 
     if stale_submitted and not dry_run:
-        # Login for cancel
-        cfg = get_settings()
         try:
-            api, sj = _shioaji_login(cfg)
+            api, sj = _shioaji_login(account)
         except Exception as exc:
             logger.error("execution_submitter_cancel_login_failed", error=str(exc))
             for s in stale_submitted:
@@ -479,7 +541,6 @@ def _run_cancel(
                     "order_id": s["order_id"], "symbol": s["symbol"],
                     "reason": f"login_failed: {exc}",
                 })
-            # Still try to expire READY_FOR_SUBMISSION below
             api = None
     else:
         api = None
@@ -490,14 +551,10 @@ def _run_cancel(
                 print(f"  [dry-run cancel] {s['symbol']} order_id={s['order_id']}")
                 continue
 
-            # Attempt broker cancel
             if api is not None and s["broker_order_id"]:
                 try:
-                    # Shioaji cancel: need to find the trade object
-                    # In practice, cancel_order takes the trade object.
-                    # For v0.1.17, we mark as EXPIRED directly since
-                    # Shioaji cancel API semantics are [ASSUMED] (Q3 in design doc).
-                    # TODO: implement actual api.cancel_order when P-obs-2 confirms behavior
+                    # Shioaji cancel API semantics unverified (Q3).
+                    # Marking EXPIRED; reconcile will resolve.
                     logger.warning(
                         "execution_submitter_cancel_not_implemented",
                         order_id=s["order_id"],
@@ -511,10 +568,9 @@ def _run_cancel(
                         order_id=s["order_id"], error=str(exc),
                     )
 
-            # Mark expired regardless (conservative: if cancel fails,
-            # ROD expires at market close anyway)
             order_journal.mark_expired(
                 order_id=s["order_id"],
+                account_id=account_id,
                 reason=f"cancel_sweep: submitted_at={s['submitted_at']} "
                        f"< cutoff={cutoff} ({cancel_after_minutes}min)",
             )
@@ -523,25 +579,29 @@ def _run_cancel(
             })
             logger.info(
                 "execution_submitter_order_cancelled",
-                order_id=s["order_id"], symbol=s["symbol"],
+                order_id=s["order_id"], account_id=account_id,
+                symbol=s["symbol"],
             )
 
         # Expire leftover READY_FOR_SUBMISSION (missed submission window)
         leftover = order_journal.list_ready_for_submission(
             target_fill_date=today,
+            account_id=account_id,
         )
-        for order in leftover:
+        for lo in leftover:
             order_journal.mark_expired(
-                order_id=order.order_id,
+                order_id=lo.order_id,
+                account_id=account_id,
                 reason=f"cancel_sweep: READY_FOR_SUBMISSION still pending at "
                        f"{now.strftime('%H:%M')}; submission window missed",
             )
             summary["expired_ready"].append({
-                "order_id": order.order_id, "symbol": order.symbol,
+                "order_id": lo.order_id, "symbol": lo.symbol,
             })
             logger.warning(
                 "execution_submitter_ready_expired",
-                order_id=order.order_id, symbol=order.symbol,
+                order_id=lo.order_id, account_id=account_id,
+                symbol=lo.symbol,
             )
 
     finally:
@@ -550,7 +610,7 @@ def _run_cancel(
 
     # Telegram notification
     if notify_fn and (summary["cancelled"] or summary["expired_ready"] or summary["failed"]):
-        lines = [f"🧹 Cancel Sweep — {today}"]
+        lines = [f"🧹 Cancel Sweep — {today} ({account_id})"]
         if summary["cancelled"]:
             lines.append(f"⏱️ Cancelled: {len(summary['cancelled'])}")
             for c in summary["cancelled"]:
@@ -576,7 +636,7 @@ def _run_cancel(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="v0.1.17 execution submitter + cancel sweep",
+        description="v0.1.18 execution submitter + cancel sweep",
     )
     parser.add_argument(
         "--mode", choices=["submit", "cancel"], default="submit",
@@ -592,6 +652,11 @@ def main() -> int:
     parser.add_argument("--cancel-after-minutes", type=int,
                         default=DEFAULT_CANCEL_AFTER_MINUTES,
                         help=f"Cancel unfilled after N minutes (default: {DEFAULT_CANCEL_AFTER_MINUTES})")
+    parser.add_argument(
+        "--account", type=str, default=None,
+        metavar="ACCOUNT_ID",
+        help="Account ID from config/accounts.yaml (required).",
+    )
     args = parser.parse_args()
 
     init_schema()
@@ -600,6 +665,29 @@ def main() -> int:
     if not is_trading_day(today):
         print(f"{today} is not a trading day; exiting")
         return 0
+
+    # ── v0.1.18: account config loading ──────────────────────────────
+    # AccountConfig is the ONLY source of account_id AND broker credentials.
+    from config.account_config import load_accounts, get_account
+
+    if args.account == "all":
+        raise RuntimeError(
+            "--account all is not supported for execution_submitter. "
+            "Broker side-effect scripts must run single-account per invocation. "
+            "Use --account <id> and run separately per account."
+        )
+
+    if args.account:
+        _account = get_account(args.account)
+    else:
+        _accounts = load_accounts()
+        _account = _accounts[0]
+
+    logger.info(
+        "execution_submitter_account",
+        account_id=_account.account_id,
+        environment=_account.environment,
+    )
 
     # Acquire lock
     lock_fd = _acquire_lock()
@@ -617,6 +705,7 @@ def main() -> int:
         if args.mode == "submit":
             summary = _run_submit(
                 today=today,
+                account=_account,
                 max_entry_gap_pct=args.max_entry_gap_pct,
                 dry_run=args.dry_run,
                 notify_fn=notify_fn,
@@ -624,6 +713,7 @@ def main() -> int:
         else:
             summary = _run_cancel(
                 today=today,
+                account=_account,
                 cancel_after_minutes=args.cancel_after_minutes,
                 dry_run=args.dry_run,
                 notify_fn=notify_fn,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/daily_run.py
-"""Daily run orchestration — v0.1.17. Orchestration ONLY (no business logic).
+"""Daily run orchestration — v0.1.18. Orchestration ONLY (no business logic).
 
 Pipeline: prev-check → is_trading_day → T+1 readiness → freshness → expire →
 exits → entries → listener → reconcile. Each step = single module call.
@@ -8,6 +8,9 @@ exits → entries → listener → reconcile. Each step = single module call.
 c3: step reorder (calendar before data); PreflightDecline (no marker overwrite,
 no traceback); calendar consolidated to market.trading_calendar. See CHANGELOG
 for v0.1.14.3 stability instrumentation. ARCHITECTURE.md §6.5 + §9.
+
+v0.1.18: account_id passed to order_journal.record_intent and
+mark_ready_for_submission (multi-account isolation).
 """
 from __future__ import annotations
 
@@ -37,7 +40,7 @@ logger = get_logger(__name__)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="v0.1.17 daily paper-trading run")
+    parser = argparse.ArgumentParser(description="v0.1.18 daily paper-trading run")
     parser.add_argument("--as-of", type=str, default=None)
     parser.add_argument("--capital", type=float, default=1_000_000)
     parser.add_argument("--listener-minutes", type=int, default=30)
@@ -58,33 +61,33 @@ def main() -> int:
     as_of = date_type.fromisoformat(args.as_of) if args.as_of else date_type.today()
 
     # ── v0.1.17-A: account config loading ────────────────────────────
-    # Scope: notification + credential routing only.
-    # Live execution remains single-account until DB has account_id columns
-    # (backlog #23 v0.1.18). See docs/decision_records/CHANGELOG_v0_1_16_v1_to_v2.md.
+    # v0.1.18: account_id is now passed to all order_journal and
+    # positions calls. AccountConfig is the ONLY source of account_id.
     from config.account_config import load_accounts, get_account
     if args.account and args.account != "all":
         _account = get_account(args.account)
     else:
         _accounts = load_accounts()
         # Hard gate: --account all with execution enabled is not allowed
-        # until DB tables include account_id (would cause silent collision).
+        # until multi-account loop is implemented in v0.2.
         if args.account == "all" and len(_accounts) > 1:
             raise RuntimeError(
-                "Multi-account live execution requires account_id columns in "
-                "orders/positions tables. Complete backlog #23 v0.1.18 before "
-                "running --account all with execution enabled. "
-                "For dry-run observation, use --account <id> per account."
+                "Multi-account live execution requires per-account loop. "
+                "Use --account <id> for single-account runs."
             )
         _account = _accounts[0]
+
+    _account_id = _account.account_id
+
     logger.info(
         "daily_run_account_selected",
-        account_id=_account.account_id,
+        account_id=_account_id,
         owner=_account.owner,
         environment=_account.environment,
     )
 
     print(f"Helios daily_run — {datetime.now().isoformat(timespec='seconds')}  as_of={as_of}")
-    print(f"  account={_account.account_id} ({_account.owner}, {_account.environment})")
+    print(f"  account={_account_id} ({_account.owner}, {_account.environment})")
 
     # ── Telegram: account-aware routing (v0.1.17-A) ──────────────────
     _chat_id = _account.resolved_telegram_chat_id
@@ -108,14 +111,6 @@ def main() -> int:
     # ═══════════════════════════════════════════════════════════════════
     # Startup Recovery (pre-flight consistency restoration)
     # ═══════════════════════════════════════════════════════════════════
-    # NOT a daily pipeline stage. Restores journal consistency before
-    # shutdown_guard's prev_check evaluates state. Must run OUTSIDE
-    # shutdown_guard because:
-    #   1. shutdown_guard's prev_check assumes journal is consistent.
-    #   2. Orphan INTENT orders would otherwise pollute the check.
-    #
-    # Wrapped in top-level try/except because shutdown_guard has not yet
-    # been entered — observability must be self-contained here.
     print(f"=== Startup Recovery ===")
     from scripts.startup_recovery import recover_in_flight_orders
     from utils.trading_calendar import is_trading_day as _is_trading_day
@@ -124,6 +119,7 @@ def main() -> int:
             as_of=as_of,
             is_trading_day=_is_trading_day,
             notify=telegram_notify,
+            account_id=_account_id,
         )
         print(
             f"  orphan_intents_resolved={recovery_summary['orphan_intents_resolved']} "
@@ -131,7 +127,6 @@ def main() -> int:
             f"errors={len(recovery_summary['resolution_errors'])}"
         )
     except Exception as exc:
-        # Self-observability: shutdown_guard not yet active, must notify directly.
         import structlog
         structlog.get_logger(__name__).critical(
             "startup_recovery_fatal", error=str(exc), error_type=type(exc).__name__,
@@ -182,11 +177,6 @@ def main() -> int:
         print(f"[4] expired: timeout={n_to}, drift={len(n_dr)}")
 
         # ── Step 5: exit scan (auto-execute per ADR-004; T+1 fill) ──
-        # v0.1.16 v2: HELIOS_SKIP_EXIT_SCAN=1 bypasses scan_and_exit because
-        # paper_broker.py still writes legacy v0.1.14 schema (lowercase
-        # status/side, no fill_date). v0.1.17 P1 #2 will align paper_broker
-        # to v2 journal; until then, exit scan is gated behind env var.
-        # See docs/design/execution_model.md §9.2.
         import os as _os
         if _os.environ.get("HELIOS_SKIP_EXIT_SCAN", "").lower() in ("1", "true", "yes"):
             print("[5] HELIOS_SKIP_EXIT_SCAN=1, skipping exit scan "
@@ -219,6 +209,9 @@ def main() -> int:
         # recorded as ORDER_INTENT → READY_FOR_SUBMISSION. The new
         # execution_submitter (cron 08:30 T+1) reads these and submits
         # to broker. See docs/design/execution_submitter_design.md §1-§3.
+        #
+        # v0.1.18: account_id passed to record_intent and
+        # mark_ready_for_submission for multi-account isolation.
         from execution.order_types import OrderSide
         from storage import order_journal
         from storage.signals import get_signal as _get_signal
@@ -256,12 +249,12 @@ def main() -> int:
                     continue
 
                 try:
-                    # Record INTENT (no broker call)
                     from datetime import datetime
                     from zoneinfo import ZoneInfo
                     _now = datetime.now(tz=ZoneInfo("Asia/Taipei"))
 
                     order_id = order_journal.record_intent(
+                        account_id=_account_id,
                         symbol=symbol,
                         side=OrderSide.BUY,
                         requested_lots=1,
@@ -270,16 +263,17 @@ def main() -> int:
                         signal_id=signal_id,
                     )
 
-                    # Transition to READY_FOR_SUBMISSION
                     order_journal.mark_ready_for_submission(
                         order_id,
                         target_fill_date=fill_date,
+                        account_id=_account_id,
                         ready_at=_now,
                     )
 
                     exec_summary["queued"].append(symbol)
                     logger.info(
                         "daily_run_entry_queued",
+                        account_id=_account_id,
                         symbol=symbol,
                         order_id=order_id,
                         signal_id=signal_id,
@@ -289,6 +283,7 @@ def main() -> int:
                     exec_summary["failed"].append(symbol)
                     logger.error(
                         "daily_run_entry_queue_failed",
+                        account_id=_account_id,
                         symbol=symbol,
                         signal_id=signal_id,
                         error=str(exc),
@@ -307,9 +302,9 @@ def main() -> int:
         print(f"[8] reconciliation: {'skipped' if recon.skipped else 'ran'} "
               f"({recon.skip_reason or 'OK'})")
 
-        # ── Summary (v0.1.16 v2: + recovery + pending_reconcile + guard_mode) ──
+        # ── Summary ──────────────────────────────────────────────────
         guard.set_summary({
-            "account_id": _account.account_id,   # v0.1.17-A
+            "account_id": _account_id,
             "exits": exit_summary["exits_fired"],
             "pending_pushed": len(pending),
             "queued_for_submission": len(exec_summary["queued"]),
