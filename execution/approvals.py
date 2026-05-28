@@ -44,20 +44,14 @@ def approve_signal(
     fill_date: date_type,
     broker: PaperBroker,
     *,
+    account_id: str,
     approved_by: str = "telegram",
     drift_multiplier: float = DEFAULT_DRIFT_MULTIPLIER,
 ) -> tuple[bool, str, str | None]:
     """Handle /approve command.
 
-    Args:
-        signal_id_or_prefix: full signal_id or unique prefix (Telegram-friendly)
-        target_notional: NTD to deploy (precomputed at signal-gen time, passed by caller)
-        fill_date: trading day for the fill
-        broker: PaperBroker instance
-        approved_by: 'telegram' / 'cli' / etc. (audit trail)
-        drift_multiplier: re-check ATR drift at approval moment
-
-    Returns (success, human_message, position_id_if_opened).
+    v0.1.18: account_id required — passed to open_position_from_signal
+    for multi-account isolation.
     """
     sig = _resolve_signal(signal_id_or_prefix)
     if sig is None:
@@ -103,6 +97,7 @@ def approve_signal(
         target_notional=target_notional,
         fill_date=fill_date,
         broker=broker,
+        account_id=account_id,
     )
     if position_id is None:
         # Approval succeeded but fill failed. Signal status is APPROVED;
