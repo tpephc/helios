@@ -86,6 +86,10 @@ def _fmt_rvol(val: float | None) -> str:
     return "  N/A" if val is None else f"{val:>5.2f}x"
 
 
+def _fmt_rs(val: float | None) -> str:
+    return "    N/A" if val is None else f"{val:>+6.1f}%"
+
+
 # ── scoring engine ─────────────────────────────────────────────────────────────
 
 def _compute_score(r: dict) -> tuple[int, str]:
@@ -218,9 +222,11 @@ def find_bearish_stocks(
         "           (f.sma_20 - LAG(f.sma_20,  5) OVER w) AS sma_20_delta_5d,"
         "           (f.sma_50 - LAG(f.sma_50, 10) OVER w) AS sma_50_delta_10d,"
         "           (p.adj_close - f.sma_200) / NULLIF(f.sma_200, 0) * 100 AS dist_sma200_pct,"
+        "           bf.beta_adj_rs_20d,"
         "           COALESCE(cm.short_name, f.stock_id) AS name"
         "    FROM   daily_features f"
         "    JOIN   daily_price_adj p ON f.stock_id = p.stock_id AND f.date = p.date"
+        "    LEFT JOIN bearish_features bf ON f.stock_id = bf.stock_id AND f.date = bf.date"
         "    LEFT JOIN company_metadata cm ON f.stock_id = cm.stock_id"
         "    WHERE  f.stock_id IN (" + placeholders + ")"
         "      AND  f.sma_20  IS NOT NULL"
@@ -239,7 +245,8 @@ def find_bearish_stocks(
         "stock_id", "date", "close", "prev_close",
         "sma_20", "sma_50", "sma_200",
         "rsi_14", "roc_20", "rel_volume_20",
-        "sma_20_delta_5d", "sma_50_delta_10d", "dist_sma200_pct", "name",
+        "sma_20_delta_5d", "sma_50_delta_10d", "dist_sma200_pct",
+        "beta_adj_rs_20d", "name",
     ]
 
     results = []
@@ -303,12 +310,15 @@ def build_bearish_message(results: list[dict], as_of: date_type) -> str | None:
         omitted = len(group) - len(shown)
         lines.append(f"\n{e} {label_names[label]} ({len(group)})")
         for r in shown:
+            rs = r.get("beta_adj_rs_20d")
+            rs_str = f"RS{rs:+.0f}%" if rs is not None else ""
             lines.append(
                 f"  {r['stock_id']} {r['name']}"
                 f"  {r['close']:.2f}"
                 f"  ★{r['score']}"
                 f"  {(r['dist_sma200_pct'] or 0):+.1f}%"
                 f"  RSI{r['rsi_14'] or 0:.0f}"
+                f"  {rs_str}"
             )
         if omitted > 0:
             lines.append(f"  ...其餘 {omitted} 檔")
@@ -337,9 +347,9 @@ def _print_table(results: list[dict], as_of: date_type) -> None:
     _col_hdr = (
         f"  {'代號':<6} {'名稱':<8}  {'分數':>4}"
         f"  {'收盤':>8}  {'MA20':>8}  {'MA50':>8}  {'MA200':>8}"
-        f"  {'距MA200':>8}  {'RSI':>5}  {'ROC20':>7}  {'量比':>6}"
+        f"  {'距MA200':>8}  {'RSI':>5}  {'ROC20':>7}  {'量比':>6}  {'RS20':>7}"
     )
-    _divider = "  " + "─" * 98
+    _divider = "  " + "─" * 108
 
     print(f"\n📊 空頭篩選結果 ({as_of})\n")
 
@@ -363,6 +373,7 @@ def _print_table(results: list[dict], as_of: date_type) -> None:
             f"  {_fmt_rsi(r['rsi_14'])}"
             f"  {_fmt_roc(r['roc_20'])}"
             f"  {_fmt_rvol(r['rel_volume_20'])}"
+            f"  {_fmt_rs(r.get('beta_adj_rs_20d'))}"
         )
 
     by_label: dict[str, int] = {}
