@@ -42,11 +42,14 @@ logger = get_logger(__name__)
 # ─────────────────────────────────────────────────────────────
 
 
-def _account_equity(initial_capital: float, as_of: date_type) -> tuple[float, float, dict]:
+def _account_equity(
+    initial_capital: float,
+    as_of: date_type,
+    account_id: str,
+) -> tuple[float, float, dict]:
     """Returns (cash, equity, sector_exposures).
 
-    cash = initial_capital + sum(realized P&L from CLOSED positions) - sum(notional of OPEN)
-    equity = cash + sum(market value of OPEN positions at as_of close)
+    v0.1.18: account_id required for positions queries.
     """
     cash = initial_capital
     sector_value: dict[str, float] = {}
@@ -54,7 +57,7 @@ def _account_equity(initial_capital: float, as_of: date_type) -> tuple[float, fl
     positions_value = 0.0
 
     # Realized: CLOSED contribute net_pnl_ntd
-    for p in pos_store.get_closed_positions():
+    for p in pos_store.get_closed_positions(account_id=account_id):
         if p.exit_proceeds is None:
             continue
         # cash flow: -notional_at_entry (originally went out)
@@ -63,7 +66,7 @@ def _account_equity(initial_capital: float, as_of: date_type) -> tuple[float, fl
         cash += p.exit_proceeds - p.notional_at_entry - p.entry_commission - p.entry_slippage_cost
 
     # Open: cash decreased by notional+entry_costs; equity includes mark-to-market
-    for p in pos_store.get_open_positions():
+    for p in pos_store.get_open_positions(account_id=account_id):
         cash -= (p.notional_at_entry + p.entry_commission + p.entry_slippage_cost)
 
         # mark-to-market via latest adj_close
@@ -124,13 +127,13 @@ def _print_risk_preview(
 def _evaluate_constraints(
     candidates: list, *,
     cash: float, equity: float, exposures: dict, budget: RiskBudget,
+    account_id: str,
 ) -> list[tuple[Any, bool, str | None]]:
     """Return (signal, accepted, reject_reason) for each candidate.
 
-    Same constraint order as backtest/portfolio_simulator.py:
-      symbol_already_held → max_positions → cash_buffer → etf_cap → sector_cap
+    v0.1.18: account_id required for positions queries.
     """
-    open_symbols = {p.symbol for p in pos_store.get_open_positions()}
+    open_symbols = {p.symbol for p in pos_store.get_open_positions(account_id=account_id)}
     n_open = len(open_symbols)
     etf_value = exposures["etf"]
     sector_value = dict(exposures["sector"])
@@ -182,8 +185,12 @@ def _evaluate_constraints(
 def _auto_approve_and_fill(
     sig, signal_id: str, *,
     target_notional: float, as_of: date_type, fees: TransactionFees,
+    account_id: str,
 ) -> str | None:
-    """Approve + fill + open position. Returns position_id or None."""
+    """Approve + fill + open position. Returns position_id or None.
+
+    v0.1.18: account_id required for open_position.
+    """
     update_approval(signal_id, "AUTO_APPROVED", approved_by="auto")
     broker = PaperBroker(fees=fees)
     fill = broker.submit_buy(
@@ -194,6 +201,7 @@ def _auto_approve_and_fill(
         logger.warning("auto_approve_fill_failed", signal_id=signal_id, reason=fill.error)
         return None
     pos_id = pos_store.open_position(
+        account_id=account_id,
         symbol=sig.stock_id, strategy=sig.strategy,
         entry_date=as_of,
         entry_price=fill.fill_price or sig.entry_price,
@@ -249,13 +257,14 @@ def main() -> int:
         return 0
 
     # 2. Snapshot account state
-    cash, equity, exposures = _account_equity(args.capital, as_of)
+    cash, equity, exposures = _account_equity(args.capital, as_of, account_id="philip_sim")
     print(f"Account: cash NTD {cash:,.0f} / equity NTD {equity:,.0f} / "
           f"positions_value NTD {exposures['positions_value']:,.0f}\n")
 
     # 3. Apply constraints
     decisions = _evaluate_constraints(
         candidates, cash=cash, equity=equity, exposures=exposures, budget=budget,
+        account_id="philip_sim",
     )
     accepted = [(s, sid, r) for (s, ok, r), sid in zip(decisions, [None]*len(decisions), strict=False) if ok]
     # Re-zip with index
@@ -289,6 +298,7 @@ def main() -> int:
             pos_id = _auto_approve_and_fill(
                 sig, signal_id,
                 target_notional=per_pos_notional, as_of=as_of, fees=fees,
+                account_id="philip_sim",
             )
             if pos_id:
                 print(f"    ✓ auto-filled → position {pos_id}")
@@ -317,20 +327,11 @@ def generate_pending_signals(
     capital: float,
     bot=None,                              # TelegramBot | None
     budget: RiskBudget | None = None,
+    account_id: str = "philip_sim",
 ) -> tuple[list[str], dict[str, float]]:
     """Generate entry signals + filter + push to Telegram.
 
-    Returns (pending_signal_ids, notional_map). notional_map is used by listener
-    at approval time to call lifecycle.open_position_from_signal.
-
-    P0-3: if Telegram push fails (bot configured but push returns None), the
-    signal is immediately marked TIMEOUT with reason 'telegram_push_failed' and
-    NOT included in returned pending_ids. The user must not be left with stale
-    PENDING they didn't see ("missed signal > wrong trade").
-
-    P1-8: same-day idempotency — skip candidates that already have a non-terminal
-    signal for (symbol, strategy, signal_type, as_of). Prevents duplicate PENDING
-    on accidental re-run of daily_run.
+    v0.1.18: account_id parameter (default philip_sim for backward compat).
     """
     from storage.signals import update_approval
     budget = budget if budget is not None else DEFAULT_RISK_BUDGET
@@ -339,9 +340,10 @@ def generate_pending_signals(
     if not candidates:
         return [], {}
 
-    cash, equity, exposures = _account_equity(capital, as_of)
+    cash, equity, exposures = _account_equity(capital, as_of, account_id=account_id)
     decisions = _evaluate_constraints(
         candidates, cash=cash, equity=equity, exposures=exposures, budget=budget,
+        account_id=account_id,
     )
     per_pos_notional = budget.per_position_pct * equity
 

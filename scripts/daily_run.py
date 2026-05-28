@@ -5,12 +5,8 @@
 Pipeline: prev-check → is_trading_day → T+1 readiness → freshness → expire →
 exits → entries → listener → reconcile. Each step = single module call.
 
-c3: step reorder (calendar before data); PreflightDecline (no marker overwrite,
-no traceback); calendar consolidated to market.trading_calendar. See CHANGELOG
-for v0.1.14.3 stability instrumentation. ARCHITECTURE.md §6.5 + §9.
-
-v0.1.18: account_id passed to order_journal.record_intent and
-mark_ready_for_submission (multi-account isolation).
+v0.1.18: account_id passed to order_journal and positions calls.
+  --account all unconditionally rejected (side-effect script).
 """
 from __future__ import annotations
 
@@ -51,45 +47,44 @@ def main() -> int:
         "--account", type=str, default=None,
         metavar="ACCOUNT_ID",
         help="Account ID from config/accounts.yaml. "
-             "Default: first enabled account. "
-             "Multi-account execution (--account all) requires "
-             "DB account_id columns (backlog #23 v0.1.18).",
+             "Default: first enabled account.",
     )
     args = parser.parse_args()
 
     init_schema()
     as_of = date_type.fromisoformat(args.as_of) if args.as_of else date_type.today()
 
-    # ── v0.1.17-A: account config loading ────────────────────────────
-    # v0.1.18: account_id is now passed to all order_journal and
-    # positions calls. AccountConfig is the ONLY source of account_id.
+    # ── v0.1.18: account config loading ──────────────────────────────
+    # AccountConfig is the ONLY source of account_id.
+    # --account all unconditionally rejected (side-effect script).
     from config.account_config import load_accounts, get_account
-    if args.account and args.account != "all":
+
+    if args.account == "all":
+        raise RuntimeError(
+            "--account all is not supported for daily_run. "
+            "Side-effect scripts must run single-account per invocation. "
+            "Use --account <id> and run separately per account."
+        )
+
+    if args.account:
         _account = get_account(args.account)
     else:
         _accounts = load_accounts()
-        # Hard gate: --account all with execution enabled is not allowed
-        # until multi-account loop is implemented in v0.2.
-        if args.account == "all" and len(_accounts) > 1:
-            raise RuntimeError(
-                "Multi-account live execution requires per-account loop. "
-                "Use --account <id> for single-account runs."
-            )
         _account = _accounts[0]
 
-    _account_id = _account.account_id
+    account_id = _account.account_id
 
     logger.info(
         "daily_run_account_selected",
-        account_id=_account_id,
+        account_id=account_id,
         owner=_account.owner,
         environment=_account.environment,
     )
 
     print(f"Helios daily_run — {datetime.now().isoformat(timespec='seconds')}  as_of={as_of}")
-    print(f"  account={_account_id} ({_account.owner}, {_account.environment})")
+    print(f"  account={account_id} ({_account.owner}, {_account.environment})")
 
-    # ── Telegram: account-aware routing (v0.1.17-A) ──────────────────
+    # ── Telegram: account-aware routing ───────────────────────────────
     _chat_id = _account.resolved_telegram_chat_id
     if _chat_id:
         from config.settings import get_settings as _get_settings_for_tg
@@ -103,23 +98,22 @@ def main() -> int:
         else:
             bot = None
     else:
-        # Fall back to legacy single-account .env config
         tg_cfg = TelegramConfig.from_env()
         bot = TelegramBot(tg_cfg) if tg_cfg else None
     telegram_notify = partial(push_simple, bot) if bot else None
 
     # ═══════════════════════════════════════════════════════════════════
-    # Startup Recovery (pre-flight consistency restoration)
+    # Startup Recovery
     # ═══════════════════════════════════════════════════════════════════
     print(f"=== Startup Recovery ===")
     from scripts.startup_recovery import recover_in_flight_orders
     from utils.trading_calendar import is_trading_day as _is_trading_day
     try:
         recovery_summary = recover_in_flight_orders(
+            account_id=account_id,
             as_of=as_of,
             is_trading_day=_is_trading_day,
             notify=telegram_notify,
-            account_id=_account_id,
         )
         print(
             f"  orphan_intents_resolved={recovery_summary['orphan_intents_resolved']} "
@@ -150,7 +144,7 @@ def main() -> int:
             if not ok:
                 raise PreflightDecline(f"prev_check_failed: {msg}")
 
-        # ── Step 1: trading day (cheap, calendar-only) ───
+        # ── Step 1: trading day ───────────────────────────
         if not is_trading_day(as_of):
             print(f"[1] {as_of} not a trading day; declining")
             raise PreflightDecline(f"non_trading_day: {as_of}")
@@ -160,12 +154,11 @@ def main() -> int:
         fill_date = next_fillable_day(as_of)
         if fill_date is None:
             raise PreflightDecline(
-                f"t_plus_1_fill_unavailable: as_of={as_of} "
-                f"(next trading day's data not yet ingested)"
+                f"t_plus_1_fill_unavailable: as_of={as_of}"
             )
         print(f"[2] T+1 fill day = {fill_date} ✓")
 
-        # ── Step 3: data freshness (as_of itself) ─────────
+        # ── Step 3: data freshness ────────────────────────
         ok, msg = check_data_freshness(as_of)
         print(f"[3] {msg}")
         if not ok:
@@ -176,24 +169,23 @@ def main() -> int:
         n_dr = expiry.expire_by_drift(as_of)
         print(f"[4] expired: timeout={n_to}, drift={len(n_dr)}")
 
-        # ── Step 5: exit scan (auto-execute per ADR-004; T+1 fill) ──
+        # ── Step 5: exit scan ─────────────────────────────
         import os as _os
         if _os.environ.get("HELIOS_SKIP_EXIT_SCAN", "").lower() in ("1", "true", "yes"):
-            print("[5] HELIOS_SKIP_EXIT_SCAN=1, skipping exit scan "
-                  "(paper_broker schema mismatch; v0.1.17 will fix)")
+            print("[5] HELIOS_SKIP_EXIT_SCAN=1, skipping exit scan")
             exit_summary = {
-                "exits_fired": 0,
-                "exits_failed": 0,
+                "exits_fired": 0, "exits_failed": 0,
                 "exits_failed_symbols": [],
-                "skipped_no_data": 0,
-                "skipped_no_data_symbols": [],
+                "skipped_no_data": 0, "skipped_no_data_symbols": [],
                 "open_position_days": [],
-                "avg_position_days": 0,
-                "max_position_days": 0,
+                "avg_position_days": 0, "max_position_days": 0,
             }
         else:
             fees = TransactionFees()
-            exit_summary = scan_and_exit(as_of=as_of, fill_date=fill_date, fees=fees)
+            exit_summary = scan_and_exit(
+                as_of=as_of, fill_date=fill_date, fees=fees,
+                account_id=account_id,
+            )
             print(f"[5] exit scan: {exit_summary['exits_fired']} fired, "
                   f"{exit_summary['exits_failed']} failed")
 
@@ -201,60 +193,43 @@ def main() -> int:
         from scripts.process_entries import generate_pending_signals
         pending, notional_map = generate_pending_signals(
             as_of=as_of, capital=args.capital, bot=bot,
+            account_id=account_id,
         )
         print(f"[6] entry pipeline: {len(pending)} pending signals pushed")
 
-        # ── Step 7: queue entry intents for T+1 submission ─────────────
-        # v0.1.17: daily_run no longer calls broker APIs. Signals are
-        # recorded as ORDER_INTENT → READY_FOR_SUBMISSION. The new
-        # execution_submitter (cron 08:30 T+1) reads these and submits
-        # to broker. See docs/design/execution_submitter_design.md §1-§3.
-        #
-        # v0.1.18: account_id passed to record_intent and
-        # mark_ready_for_submission for multi-account isolation.
+        # ── Step 7: queue entry intents for T+1 submission ────────────
         from execution.order_types import OrderSide
         from storage import order_journal
         from storage.signals import get_signal as _get_signal
 
-        exec_summary = {
-            "queued": [],              # READY_FOR_SUBMISSION for T+1
-            "failed": [],              # validation failures at intent time
-        }
+        exec_summary = {"queued": [], "failed": []}
         if pending:
             for signal_id in pending:
                 sig_row = _get_signal(signal_id)
                 if sig_row is None:
-                    logger.warning(
-                        "daily_run_signal_not_found",
-                        signal_id=signal_id,
-                    )
+                    logger.warning("daily_run_signal_not_found", signal_id=signal_id)
                     exec_summary["failed"].append(signal_id)
                     continue
                 symbol = sig_row.symbol
                 if not symbol:
-                    logger.warning(
-                        "daily_run_skip_no_symbol",
-                        signal_id=signal_id,
-                    )
+                    logger.warning("daily_run_skip_no_symbol", signal_id=signal_id)
                     exec_summary["failed"].append(signal_id)
                     continue
                 if sig_row.signal_type != "buy":
                     logger.warning(
                         "daily_run_skip_non_buy_signal",
-                        signal_id=signal_id,
-                        signal_type=sig_row.signal_type,
+                        signal_id=signal_id, signal_type=sig_row.signal_type,
                         symbol=symbol,
                     )
                     exec_summary["failed"].append(symbol)
                     continue
 
                 try:
-                    from datetime import datetime
                     from zoneinfo import ZoneInfo
                     _now = datetime.now(tz=ZoneInfo("Asia/Taipei"))
 
                     order_id = order_journal.record_intent(
-                        account_id=_account_id,
+                        account_id=account_id,
                         symbol=symbol,
                         side=OrderSide.BUY,
                         requested_lots=1,
@@ -266,16 +241,15 @@ def main() -> int:
                     order_journal.mark_ready_for_submission(
                         order_id,
                         target_fill_date=fill_date,
-                        account_id=_account_id,
+                        account_id=account_id,
                         ready_at=_now,
                     )
 
                     exec_summary["queued"].append(symbol)
                     logger.info(
                         "daily_run_entry_queued",
-                        account_id=_account_id,
-                        symbol=symbol,
-                        order_id=order_id,
+                        account_id=account_id,
+                        symbol=symbol, order_id=order_id,
                         signal_id=signal_id,
                         target_fill_date=str(fill_date),
                     )
@@ -283,9 +257,8 @@ def main() -> int:
                     exec_summary["failed"].append(symbol)
                     logger.error(
                         "daily_run_entry_queue_failed",
-                        account_id=_account_id,
-                        symbol=symbol,
-                        signal_id=signal_id,
+                        account_id=account_id,
+                        symbol=symbol, signal_id=signal_id,
                         error=str(exc),
                     )
 
@@ -304,7 +277,7 @@ def main() -> int:
 
         # ── Summary ──────────────────────────────────────────────────
         guard.set_summary({
-            "account_id": _account_id,
+            "account_id": account_id,
             "exits": exit_summary["exits_fired"],
             "pending_pushed": len(pending),
             "queued_for_submission": len(exec_summary["queued"]),
