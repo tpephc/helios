@@ -1,9 +1,9 @@
 # Phase 0: Feature Outcome Baseline — Findings
 
-**Status:** Research checkpoint (updated with regime split + beta×RS)  
-**Date:** 2026-05-28 (updated from initial checkpoint)  
-**Scope:** Bullish + bearish temporal features → forward return baseline + interaction + regime conditioning  
-**Commit purpose:** Freeze baseline with regime-conditioned findings before Phase A feature engineering
+**Status:** Final (v4 — post per-horizon spacing fix)  
+**Date:** 2026-05-29  
+**Scope:** Bullish + bearish temporal features → forward return baseline + interaction + regime conditioning + Phase A trend quality  
+**Note:** Per-horizon spacing fix (v4) overturned several v3 findings. All results below are post-fix.
 
 ---
 
@@ -18,7 +18,7 @@
 
 ### Leakage Controls
 - **Expanding window quantile:** Bucket boundaries at row t use only data from rows < t (per-stock). Current row's value does not influence its own bucket assignment.
-- **Sample spacing:** Every `max(horizon)` rows per stock (per-stock sequence index, not calendar). Reduces forward return overlap but does not eliminate it.
+- **Sample spacing:** Per-horizon (5d→every 5th row, 10d→every 10th, 20d→every 20th). Bucket assignment runs on full data for better quantile estimation; sub-sampling applied per horizon inside stats computation. Prior versions used global spacing=20 which severely under-sampled 5d horizon and produced artifact findings.
 - **Point-in-time universe flag:** Uses `universe_snapshot` table (not `config/universe.yaml`). However, only 1 snapshot date exists (2026-05-20), making PIT top200 analysis currently unusable for historical periods.
 - **Integer features:** Fixed semantic buckets (not quantile) to avoid bucket collapse on sparse count distributions.
 
@@ -90,57 +90,70 @@ Cleanest monotonicity of any feature. Q1→Q5 spread ~2.3% with hit rate improve
 
 **Important caveat:** beta_60's edge may be beta exposure premium (high-beta stocks outperform in an upward-drifting market) rather than stock-specific alpha. Regime segmentation needed to disentangle.
 
-### 3.2 RS + Failed Breakdown Is the Only Genuine Positive Interaction
+### 3.2 RS_T3 + Pullback Entry Is the Strongest Confirmed Interaction
 
-**All-regime (20d):**
+**v4 update: absorption finding overturned, pullback entry confirmed.**
 
-| Metric           | Value  |
-|-----------------|--------|
-| Mean return      | +3.29% |
-| RS_T3 marginal   | +3.13% |
-| Interaction lift  | +0.25% |
-| Median           | +1.07% |
-| Hit rate         | 53.8%  |
+The per-horizon spacing fix (v4) overturned the absorption finding from v3. The v3 absorption bear lift (+0.94%) was a spacing artifact: absolute returns turned negative for both has_abs and no_abs groups when properly sampled. The relative advantage of absorption survives but is not actionable.
 
-This is the only interaction where lift, median, AND hit rate all improve simultaneously. The effect is small but consistent — not driven by tail outliers.
+The strongest confirmed interaction is now RS_T3 + Dist_T1 (pullback to MA20):
 
-**Regime-conditioned (20d):**
+| Cell (20d) | Mean | Lift | Hit% | n |
+|------------|------|------|------|---|
+| RS_T3 + Dist_T1 (close to MA20) | +4.32% | **+1.66%** | **62.3%** | 366 |
+| RS_T3 + Dist_T2 (mid distance) | +3.07% | +0.11% | 51.4% | 1024 |
+| RS_T3 + Dist_T3 (far extended) | +2.63% | -0.48% | 49.8% | 2580 |
 
-| Regime | RS_T3 + absorption mean | RS_T3 + no absorption mean | Lift |
-|--------|------------------------|---------------------------|------|
-| Bull   | +3.43%                 | +3.90%                    | +0.06% (negligible) |
-| Bear   | **+1.57%**             | **-0.70%**                | **+0.94%** |
+Lift is positive only for Dist_T1. Dist_T2/T3 are additive or slightly negative — no synergy.
 
-**Critical finding:** Absorption interaction is regime-dependent. In bull markets, absorption adds nothing (lift +0.06%). In bear markets, it is the difference between positive and negative returns (+1.57% vs -0.70%, lift +0.94%). High RS stocks WITHOUT absorption in bear markets have 42.7% hit rate — genuinely bearish.
+**Best triple cell: RS_T3 + Dist_T1 + Beta_T3 (20d):**
 
-**Absorption validation (bear regime, RS_T3 filtered):**
+| Metric | Value |
+|--------|-------|
+| Mean | +4.85% |
+| Trimmed mean | +4.11% |
+| Median | +3.10% |
+| Hit rate | 60.0% |
+| n | 215 |
+| Net (after 58.5 bps) | +4.26% |
 
-*Count granularity — abs=1 is the sweet spot:*
+Consistent across 5d (+1.74%, 58.0% hit) and 10d (+3.43%, 61.0% hit). All metrics aligned.
 
-| Cell (bear, 20d) | Mean | Trimmed | Hit% | n |
-|-------------------|------|---------|------|---|
-| abs=0 | -0.70% | -1.31% | 42.7% | 429 |
-| abs=1 | **+1.73%** | **+1.72%** | **55.1%** | 196 |
-| abs=2+ | +1.13% | +0.56% | 46.1% | 76 |
+**Regime-dependent (RS_T3 + Dist_T1, 20d):**
 
-One failed breakdown = clean demand absorption. Two or more = defense becoming strained under sustained selling pressure. abs=2+ decays in both hit rate and trimmed mean.
+| Regime | Mean | Hit% | n | Action |
+|--------|------|------|---|--------|
+| Crisis | +12.29% | 79.7% | 158 | Maximum conviction |
+| Bull | +4.68% | 61.2% | 206 | Normal entry |
+| Neutral | +0.13% | 54.0% | 161 | Reduced position |
+| Bear | **-2.30%** | **40.6%** | 212 | **Prohibited** |
 
-*Beta × absorption — absorption helps low/mid beta, HARMS high beta:*
+**Optimal ATR distance thresholds (RS_T3, 20d):**
 
-| Cell (bear, 20d) | Mean | Hit% | Lift |
-|-------------------|------|------|------|
-| Beta_T1 + no_abs | **-3.90%** | **31.1%** | -0.80% |
-| Beta_T1 + has_abs | +0.43% | 49.2% | **+1.27%** |
-| Beta_T2 + no_abs | -1.33% | 42.2% | -0.62% |
-| Beta_T2 + has_abs | **+2.51%** | **58.5%** | **+0.95%** |
-| Beta_T3 + no_abs | +1.66% | 49.7% | +0.96% |
-| Beta_T3 + has_abs | +1.43% | 49.6% | **-1.52%** |
+| Zone | Hit% | Median | Action |
+|------|------|--------|--------|
+| dist < -1 (below MA20) | 59.3% | +2.09% | Best entry |
+| -1 ≤ dist < 0 (just below) | 55.0% | +0.91% | Good entry |
+| 0 ≤ dist < 2 (above MA20) | 45-48% | negative | Dead zone — avoid |
+| dist ≥ 3 (far extended) | 54.3% | +1.08% | Momentum (high variance) |
 
-Best risk-adjusted cell: RS_T3 + Beta_T2 + has_absorption in bear (+2.51%, 58.5% hit, all metrics aligned). Worst cell: RS_T3 + Beta_T1 + no_absorption in bear (-3.90%, 31.1% hit — defensive leaders collapsing without demand support).
+**Production rule:**
 
-For high-beta stocks (Beta_T3), absorption has negative lift (-1.52%). Failed breakdown on a high-beta stock in bear may indicate overwhelming selling pressure rather than absorption.
+```
+IF  beta_adj_rs_20d ∈ top tercile (RS_T3)
+AND dist_above_ma20_atr < 0
+AND market_regime ≠ bear
+AND beta_60 ∈ T2 or T3
+THEN entry priority = HIGH
+```
 
-**Interpretation:** Failed breakdown in high-RS stocks proxies institutional demand absorption. In bull markets, all high-RS stocks do well regardless. In bear markets, absorption distinguishes stocks with genuine institutional support from those losing relative leadership. The effect is strongest for low-to-medium beta stocks (Beta_T1/T2) where institutional accumulation behavior is more detectable against a quieter order flow background.
+**Overturned v3 findings:**
+
+| Finding | v3 (spacing=20) | v4 (per-horizon) | Status |
+|---------|-----------------|-------------------|--------|
+| Absorption bear lift | +0.94% | Absolute returns negative | **Overturned** |
+| RS_T3+Slope_T1 "trap" | lift -1.29% | lift +0.64% | **Reversed** |
+| Beta_T1+has_abs "rescue" | lift +1.27% | lift +0.13% | **Much weaker** |
 
 ### 3.3 Bearish Features Mostly Capture Exhaustion/Rebound, Not Continuation
 
@@ -223,18 +236,19 @@ The baseline study reveals that the original bullish/bearish classification is m
 | **Trend persistence**  | beta_adj_rs_20d, beta_60, above_ma50_streak     | Positive continuation       |
 | **Inactivity**         | atr_compression, tight_range, vol_contraction   | No edge / neutral           |
 | **Exhaustion/rebound** | below_ma streak, atr_expansion, weak_rebound    | Mean reversion (positive)   |
-| **Absorption**         | failed_breakdown (conditioned on high RS)        | Weak positive interaction (bear regime only) |
+| **Absorption**         | failed_breakdown (conditioned on high RS)        | **Overturned** — v3 bear lift was spacing artifact |
 | **Continuation failure**| new_low_after_rebound, high_vol_down            | Weak negative (still positive in Taiwan) |
+| **Trend quality**      | dist_above_ma20_atr, sma20_slope_10d, spread    | Mostly RS proxy; distance useful for entry timing |
 
 ### Regime-Dependent Behavior
 
 | Feature / Interaction | Bull Regime | Bear Regime |
 |----------------------|-------------|-------------|
 | RS persistence (Q5) | Strong continuation (+3.74% marginal) | Weak (+0.18% marginal) |
-| RS + absorption | No additional lift | **+0.94% lift** (regime-specific alpha) |
+| RS_T3 + Dist_T1 (pullback) | +4.68%, 61.2% hit | **-2.30%, 40.6% hit (AVOID)** |
+| RS_T3 + Dist_T1 (crisis) | N/A | **+12.29%, 79.7% hit** |
 | Beta_T3 + RS_T3 | Strongest cell (+5.56%) | Modest (+1.57%) |
-| Beta_T1 + RS_T3 | Trap (-0.65% lift) | **Severe trap** (-1.54% lift, 38.1% hit) |
-| RS_T3 + no absorption | Still positive (+3.90%) | **Genuinely bearish** (-0.70%) |
+| Beta_T1 + RS_T3 | Trap (-0.65% lift) | Severe trap |
 
 ---
 
@@ -242,18 +256,20 @@ The baseline study reveals that the original bullish/bearish classification is m
 
 ### Completed Since Initial Checkpoint
 
-1. **Geometric RS fix** — `prod(1+r)-1` replaces `sum(r)`. Baseline robust to change (Q5 w.mean +2.83%→+2.85%). Commit `61a6174`.
+1. **Geometric RS fix** — `prod(1+r)-1` replaces `sum(r)`. Baseline robust to change. Commit `61a6174`.
 2. **Beta × RS interaction** — Confirms additive (not synergistic). Beta_T1+RS_T3 identified as trap. Commit `d869893`.
-3. **Regime-conditioned analysis** — Absorption interaction only works in bear regime. RS_T3+no_absorption in bear is genuinely bearish (-0.70%).
-4. **Absorption validation pack** — abs=1 is sweet spot. Absorption helps Beta_T1/T2, harms Beta_T3. Best cell: RS_T3+Beta_T2+has_abs in bear (+2.51%, 58.5% hit). Commit `5c71bad`.
+3. **Regime-conditioned analysis** — Initial absorption finding in bear regime.
+4. **Absorption validation pack** — Initial findings (v3). Commit `5c71bad`.
+5. **Phase A features** — 6 new columns (distance/slope/spread). Commit `0c837e9`.
+6. **Phase A interactions** — RS × distance/slope/spread. Slope/spread mostly RS proxy. Commit `7576bd7`.
+7. **Per-horizon spacing fix (v4)** — Overturned absorption finding, reversed slope trap, strengthened pullback entry.
+8. **Distance refinement** — Optimal entry zone (dist < 0), regime dependence, Beta_T3 best triple.
 
 ### What Should Come Next
 
-**Phase A: Continuous distance features** — `dist_above/below_ma_atr`, `ma_slope`. Streak features have limited discriminative power; continuous distance may improve. Lower priority than regime findings suggest, but still worth testing.
+**Production integration** — Implement the confirmed entry rule: RS_T3 + dist_above_ma20_atr < 0 + regime ≠ bear + Beta T2/T3. This is the single most actionable finding from Phase 0/A research.
 
-**Phase A: Absorption refinement** — The bear-regime RS+absorption interaction (+0.94% lift) is the strongest genuine alpha signal found. Worth investigating: what defines "absorption quality"? Failed breakdown count vs severity vs recency?
-
-**Do NOT prioritize:** More standalone features (compression, volume), bearish continuation clusters, or complex multi-factor models. The baseline shows single-factor RS dominance with regime-dependent absorption as the only confirmed interaction.
+**Do NOT prioritize:** Absorption refinement (overturned), more standalone features, complex multi-factor models. The research shows RS dominance with pullback entry timing and regime gating as the only confirmed interaction effects.
 
 ---
 
@@ -262,16 +278,16 @@ The baseline study reveals that the original bullish/bearish classification is m
 | File | Purpose |
 |------|---------|
 | `research/feature_outcome_study.py` | Per-feature quantile bucket → forward return baseline |
-| `research/feature_interaction_study.py` | 2-feature cross-bucket → interaction lift + regime filter |
+| `research/feature_interaction_study.py` | 2-feature cross-bucket → interaction lift + regime filter (v4, per-horizon) |
+| `research/absorption_validation.py` | Absorption validation (v3, per-horizon — findings overturned) |
+| `research/distance_refinement.py` | RS_T3 pullback entry refinement (regime, beta cross, ATR thresholds) |
 | `research/outputs/bullish_features_outcome_baseline.csv` | 197 bucket-horizon combinations |
 | `research/outputs/bearish_features_outcome_baseline.csv` | 184 bucket-horizon combinations |
-| `research/outputs/feature_interaction_baseline.csv` | 144 cell-horizon combinations (all regimes, includes beta×RS) |
-| `research/outputs/feature_interaction_baseline_bull.csv` | 144 cell-horizon combinations (bull regime only) |
-| `research/outputs/feature_interaction_baseline_bear.csv` | 144 cell-horizon combinations (bear regime only) |
-| `research/absorption_validation.py` | Focused absorption validation (bear regime, beta cross, count granularity) |
-| `research/outputs/absorption_validation_bear.csv` | 75 cell-horizon combinations (bear regime) |
-| `research/outputs/absorption_validation_bull.csv` | 75 cell-horizon combinations (bull regime) |
+| `research/outputs/feature_interaction_baseline.csv` | 252 cell-horizon combinations (v4, 8 interactions) |
+| `research/outputs/absorption_validation_bear.csv` | 75 rows (overturned — kept for reference) |
+| `research/outputs/absorption_validation_bull.csv` | 75 rows |
+| `research/outputs/distance_refinement.csv` | 75 rows (current best findings) |
 
 ---
 
-*This document is a research checkpoint, not a production specification. Findings are observational patterns from a single study with known limitations. They should be validated with out-of-sample testing and proper statistical inference before informing any production signal logic.*
+*This document is the final Phase 0/A research summary (v4, post spacing fix). Several v3 findings were overturned by the per-horizon spacing correction. The pullback entry rule (RS_T3 + dist < 0 + regime ≠ bear) is ready for production integration. All other findings should be treated as observational patterns requiring out-of-sample validation.*
