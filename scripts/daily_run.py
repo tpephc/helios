@@ -8,7 +8,7 @@ Each step = single module call.
 
 v0.1.18: account_id passed to order_journal and positions calls.
   --account all unconditionally rejected (side-effect script).
-  Step 4: feature recompute (bullish + bearish) for pullback screener.
+  Step 4: regime (TAIEX) + feature recompute (bullish + bearish) for pullback screener.
 """
 from __future__ import annotations
 
@@ -166,17 +166,33 @@ def main() -> int:
         if not ok:
             raise PreflightDecline(f"data_freshness_failed: {msg}")
 
-        # ── Step 4: recompute strategy features ──────────
-        # Required for trend_pullback_v1 screener (reads bullish_features).
-        # Bearish features recomputed for parity + future bearish strategies.
-        # Non-blocking: feature compute failure logs warning but does NOT
-        # abort pipeline (breakout strategy does not depend on these tables).
+        # ── Step 4: recompute regime + strategy features ──────────
+        # 4a: market_regime (TAIEX-based) — required by pullback screener
+        #     AND by bullish/bearish feature RS computation (load_taiex_series
+        #     reads from market_regime).
+        # 4b: bullish + bearish features — required by pullback screener.
+        # Non-blocking: failure logs warning but does NOT abort pipeline
+        # (breakout strategy does not depend on these tables).
         import os as _os
         if _os.environ.get("HELIOS_SKIP_FEATURE_COMPUTE", "").lower() in ("1", "true", "yes"):
-            print("[4] HELIOS_SKIP_FEATURE_COMPUTE=1, skipping feature recompute")
+            print("[4] HELIOS_SKIP_FEATURE_COMPUTE=1, skipping regime + feature recompute")
         else:
             try:
                 from datetime import datetime as _dt_cls
+
+                # 4a: regime
+                from scripts.compute_features import compute_phase_regime
+                _regime_result = compute_phase_regime()
+                if _regime_result['n_err'] > 0:
+                    logger.warning(
+                        "daily_run_regime_compute_failed",
+                        error_count=_regime_result['n_err'],
+                    )
+                    print(f"[4a] ⚠ regime compute failed (TAIEX data missing?)")
+                else:
+                    print(f"[4a] regime recomputed: {_regime_result['n_ok']} rows ({_regime_result['elapsed']:.1f}s)")
+
+                # 4b: bullish + bearish features
                 from scripts.compute_bullish_features import (
                     compute_phase_bullish, ensure_schema as _ensure_bullish,
                     get_all_symbols as _get_symbols, load_taiex_series as _load_taiex,
@@ -194,7 +210,7 @@ def main() -> int:
                 _bear = compute_phase_bearish(_feat_symbols, _taiex, _feat_at)
 
                 print(
-                    f"[4] features recomputed: "
+                    f"[4b] features recomputed: "
                     f"bullish ok={_bull['n_ok']} err={_bull['n_err']} "
                     f"({_bull['elapsed']:.0f}s) / "
                     f"bearish ok={_bear['n_ok']} err={_bear['n_err']} "
@@ -212,7 +228,7 @@ def main() -> int:
                     error=str(_feat_exc),
                     error_type=type(_feat_exc).__name__,
                 )
-                print(f"[4] ⚠ feature compute failed: {_feat_exc} (non-blocking)")
+                print(f"[4] ⚠ regime + feature compute failed: {_feat_exc} (non-blocking)")
 
         # ── Step 5: expire stale pending ──────────────────
         n_to = expiry.expire_by_timeout()
