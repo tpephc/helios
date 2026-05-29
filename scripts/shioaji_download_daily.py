@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 # scripts/shioaji_download_daily.py
-"""下載日 K 資料到 DuckDB — Shioaji daily_quotes 版本 — v0.1.0.
+"""下載日 K 資料到 DuckDB — Shioaji daily_quotes 版本 — v0.1.18.
 
 取代 download_daily.py 的 FinMind raw OHLCV 下載。
 設計與 download_daily.py 完全相同（watermark、incremental、schema）。
+
+v0.1.18: TAIEX index fetch added via Shioaji snapshot (Indexs.TSE.TSE001).
+  Runs after stock download with separate login (fetch_contract=True).
+  No longer depends on FinMind for TAIEX data.
 
 驗證記錄 (2026-05-26):
   - daily_quotes(date) 回傳全市場 1975 筆，一次 call 完成
@@ -249,8 +253,9 @@ def fetch_daily_quotes(target_date: date) -> pl.DataFrame:
 def get_universe_symbols() -> list[str]:
     """Return all stock_ids currently tracked in daily_price (excl. TAIEX).
 
-    TAIEX is excluded because Shioaji daily_quotes does not include index
-    data. TAIEX ingestion remains via download_daily.py (FinMind).
+    TAIEX is excluded from daily_quotes universe because Shioaji
+    daily_quotes does not include index data. TAIEX is fetched
+    separately via snapshot at the end of main() (v0.1.18).
     """
     with connect(read_only=True) as conn:
         rows = conn.execute(
@@ -258,6 +263,115 @@ def get_universe_symbols() -> list[str]:
             "WHERE stock_id != 'TAIEX' ORDER BY stock_id"
         ).fetchall()
     return [r[0] for r in rows]
+
+
+# ── TAIEX index fetch (v0.1.18) ───────────────────────────────────────
+
+
+def _fetch_and_write_taiex(target_date: date, dry_run: bool = False) -> bool:
+    """Fetch TAIEX close via Shioaji snapshot and write to daily_price.
+
+    Uses Indexs.TSE.TSE001 contract (requires fetch_contract=True).
+    Separate login from daily_quotes because index contracts need
+    fetch_contract=True while daily_quotes uses False for speed.
+
+    Returns True on success, False on failure (non-blocking).
+    """
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    try:
+        import shioaji as sj
+    except ImportError:
+        logger.error("shioaji_not_installed_taiex")
+        return False
+
+    from config.settings import get_settings
+    cfg = get_settings()
+
+    try:
+        api = sj.Shioaji(simulation=True)
+        api.login(
+            api_key=cfg.shioaji_api_key.get_secret_value(),
+            secret_key=cfg.shioaji_secret_key.get_secret_value(),
+            fetch_contract=True,
+            contracts_timeout=30_000,
+        )
+    except Exception as exc:
+        logger.error("taiex_login_failed", error=str(exc))
+        return False
+
+    try:
+        contract = api.Contracts.Indexs.TSE.TSE001
+        snaps = api.snapshots([contract])
+
+        if not snaps:
+            logger.warning("taiex_snapshot_empty", date=str(target_date))
+            return False
+
+        snap = snaps[0]
+
+        # Verify snapshot is for the target date
+        snap_dt = _dt.fromtimestamp(
+            snap.ts / 1_000_000_000,
+            tz=ZoneInfo("Asia/Taipei"),
+        )
+        snap_date = snap_dt.date()
+
+        if snap_date != target_date:
+            logger.warning(
+                "taiex_snapshot_date_mismatch",
+                expected=str(target_date),
+                got=str(snap_date),
+                note="Snapshot may be stale (market not yet open or closed).",
+            )
+            # Still write — snapshot date may differ on weekends/holidays
+            # when cron fires but market was closed. The date we write
+            # should be the actual trading date from the snapshot.
+
+        if snap.close <= 0:
+            logger.warning("taiex_snapshot_invalid_close", close=snap.close)
+            return False
+
+        if dry_run:
+            print(f"  [TAIEX DRY RUN] {snap_date}: O={snap.open:.2f} "
+                  f"H={snap.high:.2f} L={snap.low:.2f} C={snap.close:.2f} "
+                  f"V={snap.volume}")
+            return True
+
+        # Write to daily_price (upsert)
+        with connect() as conn:
+            conn.execute(
+                "DELETE FROM daily_price WHERE stock_id = 'TAIEX' AND date = ?",
+                [snap_date],
+            )
+            conn.execute(
+                "INSERT INTO daily_price "
+                "(stock_id, date, open, high, low, close, volume, "
+                " turnover, transactions, spread) "
+                "VALUES ('TAIEX', ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)",
+                [snap_date, snap.open, snap.high, snap.low,
+                 snap.close, snap.volume],
+            )
+
+        logger.info(
+            "taiex_snapshot_written",
+            date=str(snap_date),
+            close=snap.close,
+            volume=snap.volume,
+        )
+        print(f"  TAIEX {snap_date}: close={snap.close:.2f} ✓")
+        return True
+
+    except Exception as exc:
+        logger.error("taiex_fetch_failed", error=str(exc))
+        return False
+
+    finally:
+        try:
+            api.logout()
+        except Exception:
+            pass
 
 
 # ── Main ──────────────────────────────────────────────────────────────
@@ -361,6 +475,15 @@ def main() -> int:
     if n_err > 0:
         print(f"WARNING: {n_err} symbols failed — check logs")
         return 1
+
+    # ── TAIEX index (v0.1.18) ─────────────────────────────
+    # Shioaji daily_quotes does not include index data.
+    # Fetch TAIEX via snapshot (separate login with fetch_contract=True).
+    print(f"\n  Fetching TAIEX index ...")
+    taiex_ok = _fetch_and_write_taiex(target, dry_run=args.dry_run)
+    if not taiex_ok:
+        print("  ⚠ TAIEX fetch failed (non-blocking)")
+        logger.warning("taiex_fetch_non_blocking_failure", date=str(target))
 
     return 0
 
