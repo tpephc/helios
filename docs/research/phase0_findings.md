@@ -113,7 +113,34 @@ This is the only interaction where lift, median, AND hit rate all improve simult
 
 **Critical finding:** Absorption interaction is regime-dependent. In bull markets, absorption adds nothing (lift +0.06%). In bear markets, it is the difference between positive and negative returns (+1.57% vs -0.70%, lift +0.94%). High RS stocks WITHOUT absorption in bear markets have 42.7% hit rate — genuinely bearish.
 
-**Interpretation:** Failed breakdown in high-RS stocks proxies institutional demand absorption. In bull markets, all high-RS stocks do well regardless. In bear markets, absorption distinguishes stocks with genuine institutional support from those losing relative leadership.
+**Absorption validation (bear regime, RS_T3 filtered):**
+
+*Count granularity — abs=1 is the sweet spot:*
+
+| Cell (bear, 20d) | Mean | Trimmed | Hit% | n |
+|-------------------|------|---------|------|---|
+| abs=0 | -0.70% | -1.31% | 42.7% | 429 |
+| abs=1 | **+1.73%** | **+1.72%** | **55.1%** | 196 |
+| abs=2+ | +1.13% | +0.56% | 46.1% | 76 |
+
+One failed breakdown = clean demand absorption. Two or more = defense becoming strained under sustained selling pressure. abs=2+ decays in both hit rate and trimmed mean.
+
+*Beta × absorption — absorption helps low/mid beta, HARMS high beta:*
+
+| Cell (bear, 20d) | Mean | Hit% | Lift |
+|-------------------|------|------|------|
+| Beta_T1 + no_abs | **-3.90%** | **31.1%** | -0.80% |
+| Beta_T1 + has_abs | +0.43% | 49.2% | **+1.27%** |
+| Beta_T2 + no_abs | -1.33% | 42.2% | -0.62% |
+| Beta_T2 + has_abs | **+2.51%** | **58.5%** | **+0.95%** |
+| Beta_T3 + no_abs | +1.66% | 49.7% | +0.96% |
+| Beta_T3 + has_abs | +1.43% | 49.6% | **-1.52%** |
+
+Best risk-adjusted cell: RS_T3 + Beta_T2 + has_absorption in bear (+2.51%, 58.5% hit, all metrics aligned). Worst cell: RS_T3 + Beta_T1 + no_absorption in bear (-3.90%, 31.1% hit — defensive leaders collapsing without demand support).
+
+For high-beta stocks (Beta_T3), absorption has negative lift (-1.52%). Failed breakdown on a high-beta stock in bear may indicate overwhelming selling pressure rather than absorption.
+
+**Interpretation:** Failed breakdown in high-RS stocks proxies institutional demand absorption. In bull markets, all high-RS stocks do well regardless. In bear markets, absorption distinguishes stocks with genuine institutional support from those losing relative leadership. The effect is strongest for low-to-medium beta stocks (Beta_T1/T2) where institutional accumulation behavior is more detectable against a quieter order flow background.
 
 ### 3.3 Bearish Features Mostly Capture Exhaustion/Rebound, Not Continuation
 
@@ -218,6 +245,7 @@ The baseline study reveals that the original bullish/bearish classification is m
 1. **Geometric RS fix** — `prod(1+r)-1` replaces `sum(r)`. Baseline robust to change (Q5 w.mean +2.83%→+2.85%). Commit `61a6174`.
 2. **Beta × RS interaction** — Confirms additive (not synergistic). Beta_T1+RS_T3 identified as trap. Commit `d869893`.
 3. **Regime-conditioned analysis** — Absorption interaction only works in bear regime. RS_T3+no_absorption in bear is genuinely bearish (-0.70%).
+4. **Absorption validation pack** — abs=1 is sweet spot. Absorption helps Beta_T1/T2, harms Beta_T3. Best cell: RS_T3+Beta_T2+has_abs in bear (+2.51%, 58.5% hit). Commit `5c71bad`.
 
 ### What Should Come Next
 
@@ -240,6 +268,9 @@ The baseline study reveals that the original bullish/bearish classification is m
 | `research/outputs/feature_interaction_baseline.csv` | 144 cell-horizon combinations (all regimes, includes beta×RS) |
 | `research/outputs/feature_interaction_baseline_bull.csv` | 144 cell-horizon combinations (bull regime only) |
 | `research/outputs/feature_interaction_baseline_bear.csv` | 144 cell-horizon combinations (bear regime only) |
+| `research/absorption_validation.py` | Focused absorption validation (bear regime, beta cross, count granularity) |
+| `research/outputs/absorption_validation_bear.csv` | 75 cell-horizon combinations (bear regime) |
+| `research/outputs/absorption_validation_bull.csv` | 75 cell-horizon combinations (bull regime) |
 
 ---
 
