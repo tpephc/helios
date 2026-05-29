@@ -276,12 +276,22 @@ def _apply_sample_spacing(df: pl.DataFrame, spacing: int) -> pl.DataFrame:
     return (
         df
         .with_columns(
-            (pl.arange(0, pl.count()).over("stock_id") % spacing)
+            (pl.arange(0, pl.len()).over("stock_id") % spacing)
             .alias("_spacing_mod")
         )
         .filter(pl.col("_spacing_mod") == 0)
         .drop("_spacing_mod")
     )
+
+
+def _subsample_for_horizon(df: pl.DataFrame, h: int) -> pl.DataFrame:
+    """Per-stock spacing = h for non-overlapping forward returns.
+
+    Applied per horizon inside stats, not globally.
+    5d → every 5th row, 10d → every 10th, 20d → every 20th.
+    More samples for short horizons, less overlap for all.
+    """
+    return _apply_sample_spacing(df, h)
 
 
 # ── Rolling percentile RS bucket (P0-1 fix) ──────────────────────────────
@@ -466,6 +476,8 @@ def _compute_interaction_stats(
             continue
 
         h_valid = valid.filter(pl.col(ret_col).is_not_null())
+        # Per-horizon spacing: 5d→every 5th, 10d→every 10th, 20d→every 20th
+        h_valid = _subsample_for_horizon(h_valid, h)
         if h_valid.is_empty():
             continue
 
@@ -681,11 +693,12 @@ def run_interaction_study(
             print(f"    Computing forward returns...")
             df = _compute_forward_metrics(df, price_df, horizons)
 
-            pre = df.height
-            df = _apply_sample_spacing(df, sample_spacing)
-            print(f"    Spacing: {pre} → {df.height}")
+            # v2: per-horizon spacing replaces global spacing.
+            # Bucket assignment runs on full data (better quantile estimation).
+            # Sub-sampling happens inside stats functions per horizon.
+            print(f"    rows after forward returns: {df.height}")
 
-            # Regime filter (apply after spacing, before bucket computation)
+            # Regime filter
             if regime and regime_df is not None:
                 pre_regime = df.height
                 df = _apply_regime_filter(df, regime_df, regime)
@@ -792,16 +805,15 @@ def main() -> int:
     start = date_type.fromisoformat(args.start) if args.start else None
     end = date_type.fromisoformat(args.end) if args.end else None
 
-    print(f"Feature Interaction Study — Phase 0 v3")
+    print(f"Feature Interaction Study — Phase 0 v4")
     print(f"  horizons:        {horizons}")
     print(f"  RS bucket:       rolling {RS_LOOKBACK_TRADING_DAYS}d percentile tercile")
-    print(f"  sample_spacing:  {args.sample_spacing or f'auto ({max(horizons)})'}")
+    print(f"  sample_spacing:  per-horizon (5d→5, 10d→10, 20d→20)")
     print(f"  regime:          {args.regime or 'all (no filter)'}")
     print(f"  cost:            {ROUND_TRIP_COST_BPS:.1f} bps")
     print(f"  min_cell_n:      {MIN_CELL_N}")
     print(f"  trim_pct:        {TRIM_PCT * 100:.0f}%")
     print(f"  interactions:    {len(INTERACTIONS)}")
-    print(f"  CAVEAT: spacing={args.sample_spacing or max(horizons)} does not eliminate overlap.")
     print()
 
     stats = run_interaction_study(

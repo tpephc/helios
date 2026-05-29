@@ -19,9 +19,10 @@ happens to positions OPENED during bear regime", NOT "returns while
 market stays bearish". This is intentional: it matches the operational
 decision point (enter or not on day T).
 
-Sample spacing: max(horizons) per stock, consistent with Phase 0
-baseline studies. Known limitation: 5d horizon is over-spaced.
-Changing would break comparability with existing baselines.
+Sample spacing: per-horizon (5d→5, 10d→10, 20d→20) applied inside
+stats computation. Bucket assignment runs on full data for better
+quantile estimation. This gives ~4x more samples for 5d horizon
+compared to the previous global spacing=20 approach.
 
 Usage:
   uv run python research/absorption_validation.py
@@ -236,6 +237,23 @@ def _trimmed_mean(s: pl.Series) -> float | None:
     return vals[trim:n - trim].mean()
 
 
+# ── Per-horizon spacing helper ────────────────────────────────────────────
+
+
+def _subsample_for_horizon(df: pl.DataFrame, h: int) -> pl.DataFrame:
+    """Per-stock spacing = h for non-overlapping forward returns."""
+    if h <= 1:
+        return df
+    return (
+        df
+        .with_columns(
+            (pl.arange(0, pl.len()).over("stock_id") % h).alias("_h_mod")
+        )
+        .filter(pl.col("_h_mod") == 0)
+        .drop("_h_mod")
+    )
+
+
 # ── Cell statistics ───────────────────────────────────────────────────────
 
 
@@ -248,7 +266,9 @@ def _cell_stats(df: pl.DataFrame, label: str) -> list[dict]:
         net_col = f"net_{h}d"
         if ret_col not in df.columns:
             continue
-        valid = df.filter(pl.col(ret_col).is_not_null())
+        # Per-horizon spacing: 5d→5, 10d→10, 20d→20
+        spaced = _subsample_for_horizon(df, h)
+        valid = spaced.filter(pl.col(ret_col).is_not_null())
         n = valid.height
         if n == 0:
             continue
@@ -358,6 +378,8 @@ def _compute_cells_with_lift(
             continue
 
         h_valid = df.filter(pl.col(ret_col).is_not_null())
+        # Per-horizon spacing
+        h_valid = _subsample_for_horizon(h_valid, h)
         if h_valid.is_empty():
             continue
 
@@ -450,17 +472,9 @@ def run_validation(
     print("Computing forward returns...")
     df = _compute_forward_metrics(df, price_df)
 
-    # Sample spacing (consistent with Phase 0 baselines)
-    spacing = max(HORIZONS)
-    pre = df.height
-    df = (
-        df.with_columns(
-            (pl.arange(0, pl.len()).over("stock_id") % spacing).alias("_mod")
-        )
-        .filter(pl.col("_mod") == 0)
-        .drop("_mod")
-    )
-    print(f"  spacing {spacing}: {pre} → {df.height}")
+    # Per-horizon spacing (5d→5, 10d→10, 20d→20) applied in stats, not here.
+    # Bucket assignment runs on full data for better quantile estimation.
+    print(f"  rows after forward returns: {df.height}")
 
     # Regime filter
     if regime:
@@ -599,10 +613,10 @@ def main() -> int:
     start = date_type.fromisoformat(args.start) if args.start else None
     end = date_type.fromisoformat(args.end) if args.end else None
 
-    print(f"Absorption Validation Pack v2")
+    print(f"Absorption Validation Pack v3")
     print(f"  regime:  {args.regime or 'all (entry-date filter only)'}")
     print(f"  cost:    {ROUND_TRIP_COST_BPS:.1f} bps")
-    print(f"  spacing: {max(HORIZONS)} (consistent with Phase 0)")
+    print(f"  spacing: per-horizon (5d→5, 10d→10, 20d→20)")
     print()
 
     run_validation(
