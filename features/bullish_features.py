@@ -49,6 +49,8 @@ Changelog:
 """
 from __future__ import annotations
 
+from math import prod as _prod
+
 import polars as pl
 
 
@@ -365,8 +367,10 @@ def compute_relative_strength_features(
         beta_adj_rs_60d: float, percentage points
 
     [BACKLOG P1-2]: vectorize with Polars rolling_cov for O(N) vs O(N²).
-    [BACKLOG P1-3]: arithmetic sum approximation — replace with geometric
-        return (prod(1+r)-1) before production calibration.
+    v0.1.18: geometric compounding (prod(1+r)-1) replaces arithmetic sum.
+        Previously used sum(daily_returns) which understates cumulative
+        return for volatile stocks. Beta calculation unchanged (cov/var
+        is scale-invariant).
     """
     _validate(df)
     if "taiex_close" not in taiex_df.columns or "date" not in taiex_df.columns:
@@ -407,8 +411,9 @@ def compute_relative_strength_features(
                         for s, t in zip(s_rets, t_rets)) / nv
             var_t = sum((t - t_mean) ** 2 for t in t_rets) / nv
 
-            total_s = sum(s_rets)
-            total_t = sum(t_rets)
+            # Geometric compounding (v0.1.18 fix: was arithmetic sum)
+            total_s = (_prod(1 + r / 100 for r in s_rets) - 1) * 100
+            total_t = (_prod(1 + r / 100 for r in t_rets) - 1) * 100
 
             if var_t < 1e-10:
                 rs_vals[i] = total_s - total_t

@@ -32,6 +32,8 @@ Version: v0.1.0 (2026-05-26)
 """
 from __future__ import annotations
 
+from math import prod as _prod
+
 import polars as pl
 
 
@@ -316,11 +318,10 @@ def compute_relative_weakness_features(
     # expands or nightly pipeline time grows, vectorize using Polars
     # rolling_cov / rolling_var expressions instead of Python loops.
 
-    # [BACKLOG P1-3]: sum(daily_returns) is an arithmetic approximation of
-    # cumulative return, not geometric (prod(1+r)-1). For volatile regimes
-    # the difference can be material. Current implementation is adequate
-    # for cross-sectional ranking but understates true drawdown magnitude.
-    # Fix: replace total_s/total_t with prod(1+r/100)-1 * 100.
+    # v0.1.18: geometric compounding (prod(1+r)-1) replaces arithmetic sum.
+    # Previously used sum(daily_returns) which understates cumulative
+    # return for volatile stocks. Beta calculation unchanged (cov/var
+    # is scale-invariant).
 
     new_cols: dict[str, list] = {}
     beta_60_vals: list[float | None] = [None] * n  # stored separately
@@ -351,8 +352,9 @@ def compute_relative_weakness_features(
                         for s, t in zip(s_rets, t_rets)) / nv
             var_t = sum((t - t_mean) ** 2 for t in t_rets) / nv
 
-            total_s = sum(s_rets)
-            total_t = sum(t_rets)
+            # Geometric compounding (v0.1.18 fix: was arithmetic sum)
+            total_s = (_prod(1 + r / 100 for r in s_rets) - 1) * 100
+            total_t = (_prod(1 + r / 100 for r in t_rets) - 1) * 100
 
             if var_t < 1e-10:
                 rs_vals[i] = total_s - total_t
