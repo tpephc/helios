@@ -111,6 +111,31 @@ INTERACTIONS = [
         "feature_b": "beta_adj_rs_20d",
         "buckets_b": "rolling_percentile",  # special marker: use rolling tercile
     },
+    # ── Phase A: Trend Quality × RS ────────────────────────
+    {
+        "name": "rs_x_distance",
+        "hypothesis": "Does distance from MA20 add info beyond RS? Or is it redundant?",
+        "table": "bullish_features",
+        "feature_a": "beta_adj_rs_20d",
+        "feature_b": "dist_above_ma20_atr",
+        "buckets_b": "rolling_percentile",
+    },
+    {
+        "name": "rs_x_slope",
+        "hypothesis": "RS = who is strong. Slope = accelerating? Independent info source?",
+        "table": "bullish_features",
+        "feature_a": "beta_adj_rs_20d",
+        "feature_b": "sma20_slope_10d",
+        "buckets_b": "rolling_percentile",
+    },
+    {
+        "name": "rs_x_spread",
+        "hypothesis": "Do strong stocks need trend structure (MA separation) to continue?",
+        "table": "bullish_features",
+        "feature_a": "beta_adj_rs_20d",
+        "feature_b": "ma20_ma50_spread_atr",
+        "buckets_b": "rolling_percentile",
+    },
 ]
 
 
@@ -347,6 +372,9 @@ def _assign_rolling_percentile_tercile(
             "beta_adj_rs_20d": "RS",
             "beta_adj_rs_60d": "RS60",
             "beta_60": "Beta",
+            "dist_above_ma20_atr": "Dist",
+            "sma20_slope_10d": "Slope",
+            "ma20_ma50_spread_atr": "Spread",
         }
         prefix = _prefix_map.get(feature, feature[:8])
 
