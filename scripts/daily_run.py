@@ -170,24 +170,16 @@ def main() -> int:
         print(f"[4] expired: timeout={n_to}, drift={len(n_dr)}")
 
         # ── Step 5: exit scan ─────────────────────────────
-        import os as _os
-        if _os.environ.get("HELIOS_SKIP_EXIT_SCAN", "").lower() in ("1", "true", "yes"):
-            print("[5] HELIOS_SKIP_EXIT_SCAN=1, skipping exit scan")
-            exit_summary = {
-                "exits_fired": 0, "exits_failed": 0,
-                "exits_failed_symbols": [],
-                "skipped_no_data": 0, "skipped_no_data_symbols": [],
-                "open_position_days": [],
-                "avg_position_days": 0, "max_position_days": 0,
-            }
-        else:
-            fees = TransactionFees()
-            exit_summary = scan_and_exit(
-                as_of=as_of, fill_date=fill_date, fees=fees,
-                account_id=account_id,
-            )
-            print(f"[5] exit scan: {exit_summary['exits_fired']} fired, "
-                  f"{exit_summary['exits_failed']} failed")
+        # v0.1.18: HELIOS_SKIP_EXIT_SCAN gate removed.
+        # paper_broker._record_order now uses v0.1.18 schema
+        # (account_id, uppercase side/status, correct column names).
+        fees = TransactionFees()
+        exit_summary = scan_and_exit(
+            as_of=as_of, fill_date=fill_date, fees=fees,
+            account_id=account_id,
+        )
+        print(f"[5] exit scan: {exit_summary['exits_fired']} fired, "
+              f"{exit_summary['exits_failed']} failed")
 
         # ── Step 6: entry signal generation ───────────────
         from scripts.process_entries import generate_pending_signals

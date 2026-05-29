@@ -192,7 +192,7 @@ def _auto_approve_and_fill(
     v0.1.18: account_id required for open_position.
     """
     update_approval(signal_id, "AUTO_APPROVED", approved_by="auto")
-    broker = PaperBroker(fees=fees)
+    broker = PaperBroker(fees=fees, account_id=account_id)
     fill = broker.submit_buy(
         symbol=sig.stock_id, target_notional=target_notional,
         fill_date=as_of, signal_id=signal_id,

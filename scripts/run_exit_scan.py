@@ -121,7 +121,7 @@ def scan_and_exit(
     """
 
     fees = fees if fees is not None else DEFAULT_TW_FEES
-    broker = PaperBroker(fees=fees)
+    broker = PaperBroker(fees=fees, account_id=account_id)
     open_positions = get_open_positions(account_id=account_id)
     # Exclude synthetic bootstrap positions from execution workflow.
     open_positions = [p for p in open_positions

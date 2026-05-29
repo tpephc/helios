@@ -129,9 +129,11 @@ class PaperBroker:
         self,
         fees: TransactionFees | None = None,
         broker_name: str = "paper",
+        account_id: str | None = None,
     ) -> None:
         self.fees = fees if fees is not None else DEFAULT_TW_FEES
         self.broker_name = broker_name
+        self.account_id = account_id
 
     # ── Public API ─────────────────────────────────────────
 
@@ -182,6 +184,7 @@ class PaperBroker:
             signal_id=signal_id, symbol=symbol, side="buy",
             quantity=shares, price=fill_price, status="filled",
             commission=commission, tax=0.0,
+            fill_date=fill_date, notional=notional,
         )
 
         result = FillResult(
@@ -236,6 +239,7 @@ class PaperBroker:
             signal_id=signal_id, symbol=symbol, side="sell",
             quantity=shares, price=fill_price, status="filled",
             commission=commission, tax=tax,
+            fill_date=fill_date, notional=notional,
         )
 
         result = FillResult(
@@ -317,23 +321,48 @@ class PaperBroker:
         signal_id: str | None, symbol: str, side: str,
         quantity: int, price: float, status: str,
         commission: float, tax: float,
+        fill_date: date_type,
+        notional: float = 0.0,
     ) -> str:
-        order_id = f"ord_{uuid.uuid4().hex[:12]}"
+        """Record a paper-trade order using v0.1.18 schema.
+
+        v0.1.18: writes to orders table with correct column names,
+        uppercase side/status, account_id, fill_date, and notional.
+        Raises RuntimeError if account_id is not set on the broker.
+        """
+        if self.account_id is None:
+            raise RuntimeError(
+                "PaperBroker.account_id is required for _record_order in v0.1.18. "
+                "Pass account_id to PaperBroker constructor."
+            )
+        order_id = f"paper_{uuid.uuid4().hex[:12]}"
+        now = datetime.now()
         with connect() as conn:
             conn.execute(
                 """
                 INSERT INTO orders (
-                    order_id, signal_id, timestamp, symbol, side, order_type,
-                    quantity, price, status, filled_qty, avg_price,
-                    commission, tax, broker
-                ) VALUES (?, ?, ?, ?, ?, 'market', ?, ?, ?, ?, ?, ?, ?, ?)
+                    order_id, account_id, signal_id, symbol, side,
+                    requested_lots, filled_shares, avg_fill_price,
+                    status, broker, fill_date, notional,
+                    commission, tax, intent_at, finalized_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
-                    order_id, signal_id, datetime.now(), symbol, side,
-                    quantity, price, status,
-                    quantity if status == "filled" else 0,
-                    price if status == "filled" else None,
-                    commission, tax, self.broker_name,
+                    order_id, self.account_id, signal_id, symbol,
+                    side.upper(),       # BUY / SELL
+                    quantity,           # requested_lots
+                    quantity if status == "filled" else 0,  # filled_shares
+                    price if status == "filled" else None,  # avg_fill_price
+                    status.upper(),     # FILLED / FAILED
+                    self.broker_name,
+                    fill_date,
+                    notional,
+                    commission, tax,
+                    now,                # intent_at
+                    now if status == "filled" else None,  # finalized_at
+                    now,                # created_at
+                    now,                # updated_at
                 ],
             )
         return order_id
