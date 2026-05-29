@@ -462,7 +462,45 @@ def compute_all_bearish_features(
 
     df = compute_volatility_features(df)
 
+    # Phase A: continuous distance, slope, spread features
+    df = _compute_distance_features_below(df)
+    df = _compute_trend_velocity_features(df)
+
     return df
+
+
+def _compute_distance_features_below(df: pl.DataFrame) -> pl.DataFrame:
+    """Distance below MA in ATR units (Phase A).
+
+    dist_below_ma20_atr = (sma_20 - close) / atr_14
+    dist_below_ma50_atr = (sma_50 - close) / atr_14
+
+    Positive = below MA (bearish), negative = above.
+    """
+    return df.with_columns([
+        ((pl.col("sma_20") - pl.col("adj_close")) / pl.col("atr_14"))
+            .alias("dist_below_ma20_atr"),
+        ((pl.col("sma_50") - pl.col("adj_close")) / pl.col("atr_14"))
+            .alias("dist_below_ma50_atr"),
+    ])
+
+
+def _compute_trend_velocity_features(df: pl.DataFrame) -> pl.DataFrame:
+    """Trend velocity: MA slope + MA spread (shared bullish/bearish).
+
+    Same computation as bullish — slope and spread are directionally
+    neutral (positive slope = MA rising in both contexts).
+    """
+    return df.with_columns([
+        (pl.col("sma_20") / pl.col("sma_20").shift(10) - 1)
+            .alias("sma20_slope_10d"),
+        (pl.col("sma_50") / pl.col("sma_50").shift(20) - 1)
+            .alias("sma50_slope_20d"),
+        ((pl.col("sma_20") - pl.col("sma_50")) / pl.col("atr_14"))
+            .alias("ma20_ma50_spread_atr"),
+        ((pl.col("sma_50") - pl.col("sma_200")) / pl.col("atr_14"))
+            .alias("ma50_ma200_spread_atr"),
+    ])
 
 
 # ── Schema metadata (consumed by data/database.py and migration) ──────
@@ -487,6 +525,14 @@ BEARISH_FEATURE_COLUMNS: list[tuple[str, str]] = [
     # Family 5: Volatility clustering
     ("atr_expansion_ratio",            "DOUBLE"),
     ("atr_expansion_days_5d",          "INTEGER"),
+    # Family 6: Distance from MA (Phase A)
+    ("dist_below_ma20_atr",            "DOUBLE"),
+    ("dist_below_ma50_atr",            "DOUBLE"),
+    # Family 7: Trend velocity (Phase A)
+    ("sma20_slope_10d",                "DOUBLE"),
+    ("sma50_slope_20d",                "DOUBLE"),
+    ("ma20_ma50_spread_atr",           "DOUBLE"),
+    ("ma50_ma200_spread_atr",          "DOUBLE"),
 ]
 
 BEARISH_FEATURE_COLUMN_NAMES: list[str] = [c for c, _ in BEARISH_FEATURE_COLUMNS]

@@ -526,7 +526,79 @@ def compute_all_bullish_features(
 
     df = compute_volatility_compression_features(df)
 
+    # Phase A: continuous distance, slope, spread features
+    df = compute_distance_features(df, direction="above")
+    df = compute_trend_velocity_features(df)
+
     return df
+
+
+# ── Phase A: Distance from MA (ATR-normalized) ───────────────────────
+
+
+def compute_distance_features(
+    df: pl.DataFrame,
+    direction: str = "above",
+) -> pl.DataFrame:
+    """Distance from MA in ATR units.
+
+    Phase A addition (per Phase 0 finding: streak features have limited
+    discriminative power; continuous distance captures "how far" not just
+    "how many days").
+
+    For bullish (direction="above"):
+      dist_above_ma20_atr = (close - sma_20) / atr_14
+      dist_above_ma50_atr = (close - sma_50) / atr_14
+      Positive = above MA (bullish), negative = below.
+
+    For bearish (direction="below"):
+      dist_below_ma20_atr = (sma_20 - close) / atr_14
+      dist_below_ma50_atr = (sma_50 - close) / atr_14
+      Positive = below MA (bearish), negative = above.
+    """
+    close = pl.col("adj_close")
+    ma20 = pl.col("sma_20")
+    ma50 = pl.col("sma_50")
+    atr = pl.col("atr_14")
+
+    if direction == "above":
+        prefix = "dist_above"
+        sign = 1
+    else:
+        prefix = "dist_below"
+        sign = -1
+
+    return df.with_columns([
+        (sign * (close - ma20) / atr).alias(f"{prefix}_ma20_atr"),
+        (sign * (close - ma50) / atr).alias(f"{prefix}_ma50_atr"),
+    ])
+
+
+def compute_trend_velocity_features(df: pl.DataFrame) -> pl.DataFrame:
+    """Trend velocity: MA slope + MA spread (shared bullish/bearish).
+
+    Slope: rate of change of MA over lookback window.
+      sma20_slope_10d = sma_20[t] / sma_20[t-10] - 1
+      sma50_slope_20d = sma_50[t] / sma_50[t-20] - 1
+
+    Spread: distance between MAs in ATR units (trend separation).
+      ma20_ma50_spread_atr = (sma_20 - sma_50) / atr_14
+      ma50_ma200_spread_atr = (sma_50 - sma_200) / atr_14
+
+    Positive slope = MA rising. Positive spread = faster MA above slower.
+    """
+    return df.with_columns([
+        # Slope
+        (pl.col("sma_20") / pl.col("sma_20").shift(10) - 1)
+            .alias("sma20_slope_10d"),
+        (pl.col("sma_50") / pl.col("sma_50").shift(20) - 1)
+            .alias("sma50_slope_20d"),
+        # Spread
+        ((pl.col("sma_20") - pl.col("sma_50")) / pl.col("atr_14"))
+            .alias("ma20_ma50_spread_atr"),
+        ((pl.col("sma_50") - pl.col("sma_200")) / pl.col("atr_14"))
+            .alias("ma50_ma200_spread_atr"),
+    ])
 
 
 # ── Schema metadata ───────────────────────────────────────────────────
@@ -551,6 +623,14 @@ BULLISH_FEATURE_COLUMNS: list[tuple[str, str]] = [
     # Family 6: Volatility compression
     ("atr_compression_ratio",          "DOUBLE"),
     ("atr_compression_days_10d",       "INTEGER"),
+    # Family 7: Distance from MA (Phase A)
+    ("dist_above_ma20_atr",            "DOUBLE"),
+    ("dist_above_ma50_atr",            "DOUBLE"),
+    # Family 8: Trend velocity (Phase A)
+    ("sma20_slope_10d",                "DOUBLE"),
+    ("sma50_slope_20d",                "DOUBLE"),
+    ("ma20_ma50_spread_atr",           "DOUBLE"),
+    ("ma50_ma200_spread_atr",          "DOUBLE"),
 ]
 
 BULLISH_FEATURE_COLUMN_NAMES: list[str] = [c for c, _ in BULLISH_FEATURE_COLUMNS]
