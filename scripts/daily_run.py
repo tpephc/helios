@@ -2,11 +2,13 @@
 # scripts/daily_run.py
 """Daily run orchestration — v0.1.18. Orchestration ONLY (no business logic).
 
-Pipeline: prev-check → is_trading_day → T+1 readiness → freshness → expire →
-exits → entries → listener → reconcile. Each step = single module call.
+Pipeline: prev-check → is_trading_day → T+1 readiness → freshness →
+feature_compute → expire → exits → entries → queue → reconcile.
+Each step = single module call.
 
 v0.1.18: account_id passed to order_journal and positions calls.
   --account all unconditionally rejected (side-effect script).
+  Step 4: feature recompute (bullish + bearish) for pullback screener.
 """
 from __future__ import annotations
 
@@ -164,12 +166,60 @@ def main() -> int:
         if not ok:
             raise PreflightDecline(f"data_freshness_failed: {msg}")
 
-        # ── Step 4: expire stale pending ──────────────────
+        # ── Step 4: recompute strategy features ──────────
+        # Required for trend_pullback_v1 screener (reads bullish_features).
+        # Bearish features recomputed for parity + future bearish strategies.
+        # Non-blocking: feature compute failure logs warning but does NOT
+        # abort pipeline (breakout strategy does not depend on these tables).
+        import os as _os
+        if _os.environ.get("HELIOS_SKIP_FEATURE_COMPUTE", "").lower() in ("1", "true", "yes"):
+            print("[4] HELIOS_SKIP_FEATURE_COMPUTE=1, skipping feature recompute")
+        else:
+            try:
+                from datetime import datetime as _dt_cls
+                from scripts.compute_bullish_features import (
+                    compute_phase_bullish, ensure_schema as _ensure_bullish,
+                    get_all_symbols as _get_symbols, load_taiex_series as _load_taiex,
+                )
+                from scripts.compute_bearish_features import (
+                    compute_phase_bearish, ensure_schema as _ensure_bearish,
+                )
+                _ensure_bullish()
+                _ensure_bearish()
+                _feat_symbols = _get_symbols()
+                _taiex = _load_taiex()
+                _feat_at = _dt_cls.now()
+
+                _bull = compute_phase_bullish(_feat_symbols, _taiex, _feat_at)
+                _bear = compute_phase_bearish(_feat_symbols, _taiex, _feat_at)
+
+                print(
+                    f"[4] features recomputed: "
+                    f"bullish ok={_bull['n_ok']} err={_bull['n_err']} "
+                    f"({_bull['elapsed']:.0f}s) / "
+                    f"bearish ok={_bear['n_ok']} err={_bear['n_err']} "
+                    f"({_bear['elapsed']:.0f}s)"
+                )
+                if _bull['n_err'] > 0 or _bear['n_err'] > 0:
+                    logger.warning(
+                        "daily_run_feature_compute_partial_failure",
+                        bullish_errors=_bull['n_err'],
+                        bearish_errors=_bear['n_err'],
+                    )
+            except Exception as _feat_exc:
+                logger.error(
+                    "daily_run_feature_compute_failed",
+                    error=str(_feat_exc),
+                    error_type=type(_feat_exc).__name__,
+                )
+                print(f"[4] ⚠ feature compute failed: {_feat_exc} (non-blocking)")
+
+        # ── Step 5: expire stale pending ──────────────────
         n_to = expiry.expire_by_timeout()
         n_dr = expiry.expire_by_drift(as_of)
-        print(f"[4] expired: timeout={n_to}, drift={len(n_dr)}")
+        print(f"[5] expired: timeout={n_to}, drift={len(n_dr)}")
 
-        # ── Step 5: exit scan ─────────────────────────────
+        # ── Step 6: exit scan ─────────────────────────────
         # v0.1.18: HELIOS_SKIP_EXIT_SCAN gate removed.
         # paper_broker._record_order now uses v0.1.18 schema
         # (account_id, uppercase side/status, correct column names).
@@ -178,18 +228,18 @@ def main() -> int:
             as_of=as_of, fill_date=fill_date, fees=fees,
             account_id=account_id,
         )
-        print(f"[5] exit scan: {exit_summary['exits_fired']} fired, "
+        print(f"[6] exit scan: {exit_summary['exits_fired']} fired, "
               f"{exit_summary['exits_failed']} failed")
 
-        # ── Step 6: entry signal generation ───────────────
+        # ── Step 7: entry signal generation ───────────────
         from scripts.process_entries import generate_pending_signals
         pending, notional_map = generate_pending_signals(
             as_of=as_of, capital=args.capital, bot=bot,
             account_id=account_id,
         )
-        print(f"[6] entry pipeline: {len(pending)} pending signals pushed")
+        print(f"[7] entry pipeline: {len(pending)} pending signals pushed")
 
-        # ── Step 7: queue entry intents for T+1 submission ────────────
+        # ── Step 8: queue entry intents for T+1 submission ────────────
         from execution.order_types import OrderSide
         from storage import order_journal
         from storage.signals import get_signal as _get_signal
@@ -255,16 +305,16 @@ def main() -> int:
                     )
 
             print(
-                f"[7] queued={len(exec_summary['queued'])} "
+                f"[8] queued={len(exec_summary['queued'])} "
                 f"failed={len(exec_summary['failed'])} "
                 f"(target_fill_date={fill_date})"
             )
         else:
-            print(f"[7] no pending signals, skip intent queue")
+            print(f"[8] no pending signals, skip intent queue")
 
-        # ── Step 8: reconciliation (stub) ─────────────────
+        # ── Step 9: reconciliation (stub) ─────────────────
         recon = reconciliation.reconcile(as_of)
-        print(f"[8] reconciliation: {'skipped' if recon.skipped else 'ran'} "
+        print(f"[9] reconciliation: {'skipped' if recon.skipped else 'ran'} "
               f"({recon.skip_reason or 'OK'})")
 
         # ── Summary ──────────────────────────────────────────────────

@@ -4,18 +4,20 @@
 
 Flow:
   1. Run TrendBreakoutStrategy.generate_signals for as_of date
-  2. Apply portfolio constraints (selector logic, considering currently-OPEN positions)
-  3. Write accepted signals to signals table with status PENDING
-  4. If --auto-approve: also call PaperBroker.submit_buy + open positions (FOR TESTING)
-     Otherwise: leave PENDING for Telegram approval flow (Round 2)
-  5. Print summary including risk preview per review #4 (portfolio context for informed approval)
+  2. Run trend_pullback_v1 screener (parallel strategy, v0.1.18)
+  3. Apply portfolio constraints (shared budget, considering OPEN positions)
+  4. Conflict resolution: breakout vs pullback same symbol -> higher score wins
+  5. Write accepted signals to signals table with status PENDING
+  6. If --auto-approve: also call PaperBroker.submit_buy + open positions
+     Otherwise: leave PENDING for Telegram approval flow
 
-Per ADR-004: entries require human approval. --auto-approve bypasses this for testing only.
+Per ADR-004: entries require human approval. --auto-approve bypasses this.
 
-Per review #4: Telegram message format should include "if approved, exposure goes from X% → Y%"
-risk preview. This script computes that preview for each candidate signal.
+v0.1.18: account_id threading + trend_pullback_v1 parallel strategy.
+  Pullback runs as second pass after breakout, sharing portfolio budget.
+  Pullback signal_generator handles breakout conflict resolution.
 
-Version: v0.1.0 (2026-05-17)
+Version: v0.1.18 (2026-05-28)
 """
 from __future__ import annotations
 
@@ -37,9 +39,9 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Portfolio snapshot (for risk preview)
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 
 def _account_equity(
@@ -56,20 +58,14 @@ def _account_equity(
     etf_value = 0.0
     positions_value = 0.0
 
-    # Realized: CLOSED contribute net_pnl_ntd
     for p in pos_store.get_closed_positions(account_id=account_id):
         if p.exit_proceeds is None:
             continue
-        # cash flow: -notional_at_entry (originally went out)
-        #            -entry_costs (already in notional? no, additional)
-        #            +exit_proceeds (came back, net of exit costs)
         cash += p.exit_proceeds - p.notional_at_entry - p.entry_commission - p.entry_slippage_cost
 
-    # Open: cash decreased by notional+entry_costs; equity includes mark-to-market
     for p in pos_store.get_open_positions(account_id=account_id):
         cash -= (p.notional_at_entry + p.entry_commission + p.entry_slippage_cost)
 
-        # mark-to-market via latest adj_close
         with connect(read_only=True) as conn:
             row = conn.execute(
                 "SELECT adj_close FROM daily_price_adj WHERE stock_id=? AND date <= ? ORDER BY date DESC LIMIT 1",
@@ -105,23 +101,23 @@ def _print_risk_preview(
     sec_new_pct = (sec_new / equity * 100) if equity > 0 else 0
 
     print("    Risk preview if approved:")
-    print(f"      Portfolio exposure:  {cur_exposure:>5.1f}% → {new_exposure:>5.1f}%  "
+    print(f"      Portfolio exposure:  {cur_exposure:>5.1f}% -> {new_exposure:>5.1f}%  "
           f"(cap none, per-position {budget.per_position_pct*100:.0f}%)")
-    print(f"      Cash buffer:         {cur_cash_pct:>5.1f}% → {new_cash_pct:>5.1f}%  "
+    print(f"      Cash buffer:         {cur_cash_pct:>5.1f}% -> {new_cash_pct:>5.1f}%  "
           f"(min {budget.cash_buffer_pct*100:.0f}%)")
-    print(f"      Sector {sym_sector!r:<12s} {sec_cur_pct:>5.1f}% → {sec_new_pct:>5.1f}%  "
+    print(f"      Sector {sym_sector!r:<12s} {sec_cur_pct:>5.1f}% -> {sec_new_pct:>5.1f}%  "
           f"(cap {budget.max_sector_exposure_pct*100:.0f}%)")
     if is_etf(candidate_symbol):
         etf_v = exposures["etf"]
         etf_cur = (etf_v / equity * 100) if equity > 0 else 0
         etf_new = ((etf_v + candidate_notional) / equity * 100) if equity > 0 else 0
-        print(f"      ETF total:           {etf_cur:>5.1f}% → {etf_new:>5.1f}%  "
+        print(f"      ETF total:           {etf_cur:>5.1f}% -> {etf_new:>5.1f}%  "
               f"(cap {budget.max_etf_exposure_pct*100:.0f}%)")
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Constraints (live version of portfolio_simulator's logic)
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 
 def _evaluate_constraints(
@@ -139,7 +135,6 @@ def _evaluate_constraints(
     sector_value = dict(exposures["sector"])
     results = []
 
-    # Sort by score DESC
     sorted_cands = sorted(candidates, key=lambda s: -s.score)
     per_pos_notional = budget.per_position_pct * equity
     cash_floor = budget.cash_buffer_pct * equity
@@ -165,7 +160,6 @@ def _evaluate_constraints(
             results.append((sig, False, f"sector_cap_{sym_sector}"))
             continue
 
-        # Accepted — update running tallies
         results.append((sig, True, None))
         open_symbols.add(sig.stock_id)
         n_open += 1
@@ -177,9 +171,9 @@ def _evaluate_constraints(
     return results
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Auto-approve helper (for testing without Telegram)
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 
 def _auto_approve_and_fill(
@@ -220,13 +214,13 @@ def _auto_approve_and_fill(
     return pos_id
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # Main
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="v0.1.14.2 entry signal processing")
+    parser = argparse.ArgumentParser(description="v0.1.18 entry signal processing")
     parser.add_argument("--as-of", type=str, default=None)
     parser.add_argument("--capital", type=float, default=1_000_000)
     parser.add_argument("--auto-approve", action="store_true",
@@ -242,187 +236,364 @@ def main() -> int:
     fees = TransactionFees(slippage_rate=args.slippage)
     budget = DEFAULT_RISK_BUDGET
 
-    print(f"Helios process_entries — {datetime.now().isoformat(timespec='seconds')}")
+    print(f"Helios process_entries -- {datetime.now().isoformat(timespec='seconds')}")
     print(f"As-of: {as_of}  /  Capital: NTD {args.capital:,.0f}  /  Budget: {budget.describe()}")
     if args.auto_approve:
-        print("⚠ AUTO-APPROVE MODE (testing only — bypasses ADR-004)\n")
+        print("!! AUTO-APPROVE MODE (testing only -- bypasses ADR-004)\n")
     print()
 
-    # 1. Generate signals
+    # 1. Generate breakout signals
     strategy = TrendBreakoutStrategy()
     candidates = strategy.generate_signals(as_of=as_of)
-    print(f"Strategy fired: {len(candidates)} candidate signals")
-    if not candidates:
-        print("(no candidates today)")
-        return 0
+    print(f"[breakout] fired: {len(candidates)} candidate signals")
 
     # 2. Snapshot account state
     cash, equity, exposures = _account_equity(args.capital, as_of, account_id="philip_sim")
     print(f"Account: cash NTD {cash:,.0f} / equity NTD {equity:,.0f} / "
           f"positions_value NTD {exposures['positions_value']:,.0f}\n")
 
-    # 3. Apply constraints
-    decisions = _evaluate_constraints(
-        candidates, cash=cash, equity=equity, exposures=exposures, budget=budget,
-        account_id="philip_sim",
-    )
-    accepted = [(s, sid, r) for (s, ok, r), sid in zip(decisions, [None]*len(decisions), strict=False) if ok]
-    # Re-zip with index
-    accepted = [(s, r) for s, ok, r in decisions if ok]
-    rejected = [(s, r) for s, ok, r in decisions if not ok]
+    # 3. Apply constraints (breakout)
+    if candidates:
+        decisions = _evaluate_constraints(
+            candidates, cash=cash, equity=equity, exposures=exposures, budget=budget,
+            account_id="philip_sim",
+        )
+        accepted = [(s, r) for s, ok, r in decisions if ok]
+        rejected = [(s, r) for s, ok, r in decisions if not ok]
+    else:
+        accepted = []
+        rejected = []
 
     per_pos_notional = budget.per_position_pct * equity
 
-    # 4. Save signals + (optional) fill
-    print("=== Accepted signals ===")
-    for sig, _ in accepted:
-        signal_id = save_signal(
-            symbol=sig.stock_id, strategy=sig.strategy,
-            signal_type=sig.side, score=sig.score, price=sig.entry_price,
-            signal_date=as_of,
-            reason=sig.reason, entry_atr=sig.entry_atr,
-            regime=sig.regime, metadata=sig.metadata,
-            approval_status=("AUTO_APPROVED" if args.auto_approve else "PENDING"),
-        )
-        print(f"\n  {sig.stock_id} ({get_sector(sig.stock_id)})  "
-              f"score={sig.score:.2f}  px={sig.entry_price:.2f}  "
-              f"ATR={sig.entry_atr:.2f}")
-        print(f"    signal_id: {signal_id}")
-        for r in sig.reason[:4]:
-            print(f"    • {r}")
-        _print_risk_preview(
-            sig.stock_id, per_pos_notional, budget, cash, equity, exposures,
-        )
-
-        if args.auto_approve:
-            pos_id = _auto_approve_and_fill(
-                sig, signal_id,
-                target_notional=per_pos_notional, as_of=as_of, fees=fees,
-                account_id="philip_sim",
+    # 4. Print breakout results
+    if accepted:
+        print("=== Accepted breakout signals ===")
+        for sig, _ in accepted:
+            signal_id = save_signal(
+                symbol=sig.stock_id, strategy=sig.strategy,
+                signal_type=sig.side, score=sig.score, price=sig.entry_price,
+                signal_date=as_of,
+                reason=sig.reason, entry_atr=sig.entry_atr,
+                regime=sig.regime, metadata=sig.metadata,
+                approval_status=("AUTO_APPROVED" if args.auto_approve else "PENDING"),
             )
-            if pos_id:
-                print(f"    ✓ auto-filled → position {pos_id}")
+            print(f"\n  {sig.stock_id} ({get_sector(sig.stock_id)})  "
+                  f"score={sig.score:.2f}  px={sig.entry_price:.2f}  "
+                  f"ATR={sig.entry_atr:.2f}")
+            print(f"    signal_id: {signal_id}")
+            for r in sig.reason[:4]:
+                print(f"    * {r}")
+            _print_risk_preview(
+                sig.stock_id, per_pos_notional, budget, cash, equity, exposures,
+            )
+
+            if args.auto_approve:
+                pos_id = _auto_approve_and_fill(
+                    sig, signal_id,
+                    target_notional=per_pos_notional, as_of=as_of, fees=fees,
+                    account_id="philip_sim",
+                )
+                if pos_id:
+                    print(f"    ok auto-filled -> position {pos_id}")
+                else:
+                    print("    x fill failed")
             else:
-                print("    ✗ fill failed")
-        else:
-            print(f"    [PENDING approval — Round 2 telegram /approve {signal_id[:8]}]")
+                print(f"    [PENDING approval -- telegram /approve {signal_id[:8]}]")
+    else:
+        print("(no breakout candidates accepted)")
 
     if rejected:
-        print(f"\n=== Rejected signals ({len(rejected)}) ===")
+        print(f"\n=== Rejected breakout signals ({len(rejected)}) ===")
         for sig, reason in rejected:
             print(f"  {sig.stock_id:<8s}  score={sig.score:.2f}  reason: {reason}")
 
+    # 5. Pullback strategy (parallel, v0.1.18)
+    from strategies.trend_pullback import find_pullback_candidates
+    pullback_cands = find_pullback_candidates(as_of)
+    print(f"\n[pullback] fired: {len(pullback_cands)} candidate signals")
+
+    if pullback_cands:
+        from strategies.trend_pullback import generate_signals as pullback_gen
+        open_syms = {p.symbol for p in pos_store.get_open_positions(account_id="philip_sim")}
+        breakout_accepted = {s.stock_id: s.score for s, _ in accepted}
+        open_for_dedup = open_syms | set(breakout_accepted.keys())
+
+        pb_signals = pullback_gen(
+            pullback_cands,
+            open_symbols=open_for_dedup,
+            pending_symbols=breakout_accepted,
+        )
+
+        if pb_signals:
+            print(f"\n=== Accepted pullback signals ({len(pb_signals)}) ===")
+            for pb in pb_signals:
+                signal_id = save_signal(
+                    symbol=pb.symbol, strategy=pb.strategy,
+                    signal_type=pb.signal_type, score=pb.score,
+                    price=pb.price, signal_date=as_of,
+                    reason=[
+                        f"pullback: dist={pb.metadata['dist_above_ma20_atr']:.2f} ATR",
+                        f"RS={pb.metadata['beta_adj_rs_20d']:.1f}",
+                        f"beta={pb.metadata['beta_60']:.2f}",
+                        f"priority={pb.priority.value}",
+                    ],
+                    entry_atr=pb.entry_atr,
+                    regime=pb.regime, metadata=pb.metadata,
+                    approval_status=("AUTO_APPROVED" if args.auto_approve else "PENDING"),
+                )
+                print(f"\n  {pb.symbol} ({get_sector(pb.symbol)})  "
+                      f"score={pb.score:.2f}  px={pb.price:.2f}  "
+                      f"ATR={pb.entry_atr:.2f}  dist={pb.metadata['dist_above_ma20_atr']:.2f}  "
+                      f"priority={pb.priority.value}")
+                print(f"    signal_id: {signal_id}")
+        else:
+            print("(all pullback candidates filtered out)")
+
     print(f"\n{'='*60}")
-    print(f"Summary: {len(accepted)} accepted, {len(rejected)} rejected")
+    print(f"Summary: breakout={len(accepted)}, pullback={len(pullback_cands) if pullback_cands else 0}")
     return 0
 
 
-# ─────────────────────────────────────────────────────────────
-# Callable API (used by daily_run.py Step 5)
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
+# Callable API (used by daily_run.py Step 6)
+# -------------------------------------------------------------
 
 
 def generate_pending_signals(
     as_of: date_type,
     capital: float,
-    bot=None,                              # TelegramBot | None
+    bot=None,
     budget: RiskBudget | None = None,
     account_id: str = "philip_sim",
 ) -> tuple[list[str], dict[str, float]]:
     """Generate entry signals + filter + push to Telegram.
 
-    v0.1.18: account_id parameter (default philip_sim for backward compat).
+    v0.1.18: runs breakout + pullback strategies in sequence.
+    Pullback is second pass, sharing portfolio budget with breakout.
+    Conflict resolution: breakout accepted symbols are passed to
+    pullback signal_generator as pending_symbols.
     """
     from storage.signals import update_approval
     budget = budget if budget is not None else DEFAULT_RISK_BUDGET
-    strategy = TrendBreakoutStrategy()
-    candidates = strategy.generate_signals(as_of=as_of)
-    if not candidates:
-        return [], {}
 
     cash, equity, exposures = _account_equity(capital, as_of, account_id=account_id)
-    decisions = _evaluate_constraints(
-        candidates, cash=cash, equity=equity, exposures=exposures, budget=budget,
-        account_id=account_id,
-    )
     per_pos_notional = budget.per_position_pct * equity
+    fees = DEFAULT_TW_FEES
+    buy_cost = per_pos_notional * (1 + fees.commission_rate + fees.slippage_rate)
 
     pending_ids: list[str] = []
     notional_map: dict[str, float] = {}
 
-    for sig, ok, _reason in decisions:
-        if not ok:
-            continue
+    # -- Pass 1: Breakout strategy ---------------------------------
+    strategy = TrendBreakoutStrategy()
+    breakout_candidates = strategy.generate_signals(as_of=as_of)
 
-        # P1-8: idempotency — skip if non-terminal duplicate exists for as_of
-        if _has_active_signal_for(
-            symbol=sig.stock_id, strategy=sig.strategy,
-            signal_type=sig.side, signal_date=as_of,
-        ):
-            logger.info(
-                "skip_duplicate_signal",
-                symbol=sig.stock_id, strategy=sig.strategy, as_of=str(as_of),
-            )
-            continue
+    breakout_accepted_symbols: dict[str, float] = {}
 
-        signal_id = save_signal(
-            symbol=sig.stock_id, strategy=sig.strategy,
-            signal_type=sig.side, score=sig.score, price=sig.entry_price,
-            signal_date=as_of,
-            reason=sig.reason, entry_atr=sig.entry_atr,
-            regime=sig.regime, metadata=sig.metadata,
-            approval_status="PENDING",
+    if breakout_candidates:
+        decisions = _evaluate_constraints(
+            breakout_candidates, cash=cash, equity=equity,
+            exposures=exposures, budget=budget, account_id=account_id,
         )
 
-        # P0-3: try push; if push fails, mark expired (don't leak stale PENDING)
-        push_ok = True
-        if bot is not None:
-            from communication.telegram.sender import push_entry_request
-            from storage.signals import get_signal as _get_signal
-            sig_row = _get_signal(signal_id)
-            msg_id = None
-            if sig_row:
-                msg_id = push_entry_request(
-                    bot, sig_row,
-                    target_notional=per_pos_notional,
-                    cash=cash, equity=equity,
-                    sector_value=exposures["sector"].get(get_sector(sig.stock_id), 0.0),
-                    etf_value=exposures["etf"],
-                    pos_value=exposures["positions_value"],
-                    budget=budget,
-                )
-            if msg_id is None:
-                # Push failed — operator did not receive this. Mark expired.
-                update_approval(
-                    signal_id, "TIMEOUT",
-                    expired_reason="telegram_push_failed",
-                )
-                logger.warning(
-                    "entry_push_failed_marked_expired",
-                    signal_id=signal_id, symbol=sig.stock_id,
-                )
-                push_ok = False
+        for sig, ok, _reason in decisions:
+            if not ok:
+                continue
 
-        if push_ok:
-            pending_ids.append(signal_id)
-            notional_map[signal_id] = per_pos_notional
+            if _has_active_signal_for(
+                symbol=sig.stock_id, strategy=sig.strategy,
+                signal_type=sig.side, signal_date=as_of,
+            ):
+                logger.info(
+                    "skip_duplicate_signal",
+                    symbol=sig.stock_id, strategy=sig.strategy,
+                    as_of=str(as_of),
+                )
+                continue
+
+            signal_id = save_signal(
+                symbol=sig.stock_id, strategy=sig.strategy,
+                signal_type=sig.side, score=sig.score, price=sig.entry_price,
+                signal_date=as_of,
+                reason=sig.reason, entry_atr=sig.entry_atr,
+                regime=sig.regime, metadata=sig.metadata,
+                approval_status="PENDING",
+            )
+
+            push_ok = _push_to_telegram(
+                bot, signal_id, sig, per_pos_notional,
+                cash, equity, exposures, budget,
+            )
+
+            if push_ok:
+                pending_ids.append(signal_id)
+                notional_map[signal_id] = per_pos_notional
+                breakout_accepted_symbols[sig.stock_id] = sig.score
+
+    logger.info(
+        "process_entries_breakout_complete",
+        as_of=str(as_of),
+        candidates=len(breakout_candidates) if breakout_candidates else 0,
+        accepted=len(breakout_accepted_symbols),
+    )
+
+    # -- Pass 2: Pullback strategy ---------------------------------
+    from strategies.trend_pullback import (
+        find_pullback_candidates,
+        generate_signals as pullback_generate,
+    )
+
+    pullback_candidates = find_pullback_candidates(as_of)
+    pullback_accepted = 0
+
+    if pullback_candidates:
+        open_symbols = {
+            p.symbol for p in pos_store.get_open_positions(account_id=account_id)
+        }
+        open_for_dedup = open_symbols | set(breakout_accepted_symbols.keys())
+
+        pullback_signals = pullback_generate(
+            pullback_candidates,
+            open_symbols=open_for_dedup,
+            pending_symbols=breakout_accepted_symbols,
+        )
+
+        # Apply remaining portfolio constraints for pullback signals.
+        n_open = len(open_symbols) + len(breakout_accepted_symbols)
+        remaining_cash = cash - len(breakout_accepted_symbols) * buy_cost
+        cash_floor = budget.cash_buffer_pct * equity
+
+        for pb_sig in pullback_signals:
+            if n_open >= budget.max_positions:
+                logger.info(
+                    "pullback_reject_max_positions",
+                    symbol=pb_sig.symbol, n_open=n_open,
+                )
+                break
+
+            if remaining_cash - buy_cost < cash_floor:
+                logger.info(
+                    "pullback_reject_cash_buffer",
+                    symbol=pb_sig.symbol,
+                    remaining_cash=round(remaining_cash, 0),
+                )
+                break
+
+            sym_sector = get_sector(pb_sig.symbol)
+            sec_val = exposures["sector"].get(sym_sector, 0.0)
+            if (sec_val + per_pos_notional) > budget.max_sector_exposure_pct * equity:
+                logger.info(
+                    "pullback_reject_sector_cap",
+                    symbol=pb_sig.symbol, sector=sym_sector,
+                )
+                continue
+
+            if is_etf(pb_sig.symbol):
+                etf_val = exposures["etf"]
+                if (etf_val + per_pos_notional) > budget.max_etf_exposure_pct * equity:
+                    logger.info(
+                        "pullback_reject_etf_cap",
+                        symbol=pb_sig.symbol,
+                    )
+                    continue
+
+            if _has_active_signal_for(
+                symbol=pb_sig.symbol, strategy=pb_sig.strategy,
+                signal_type=pb_sig.signal_type, signal_date=as_of,
+            ):
+                logger.info(
+                    "skip_duplicate_signal",
+                    symbol=pb_sig.symbol, strategy=pb_sig.strategy,
+                    as_of=str(as_of),
+                )
+                continue
+
+            signal_id = save_signal(
+                symbol=pb_sig.symbol, strategy=pb_sig.strategy,
+                signal_type=pb_sig.signal_type, score=pb_sig.score,
+                price=pb_sig.price,
+                signal_date=as_of,
+                reason=[
+                    f"pullback: dist={pb_sig.metadata['dist_above_ma20_atr']:.2f} ATR",
+                    f"RS={pb_sig.metadata['beta_adj_rs_20d']:.1f} (pctl {pb_sig.metadata['rs_percentile']:.0%})",
+                    f"beta={pb_sig.metadata['beta_60']:.2f} (pctl {pb_sig.metadata['beta_percentile']:.0%})",
+                    f"priority={pb_sig.priority.value}",
+                ],
+                entry_atr=pb_sig.entry_atr,
+                regime=pb_sig.regime,
+                metadata=pb_sig.metadata,
+                approval_status="PENDING",
+            )
+
+            push_ok = _push_to_telegram(
+                bot, signal_id, pb_sig, per_pos_notional,
+                remaining_cash, equity, exposures, budget,
+            )
+
+            if push_ok:
+                pending_ids.append(signal_id)
+                notional_map[signal_id] = per_pos_notional
+                pullback_accepted += 1
+                n_open += 1
+                remaining_cash -= buy_cost
+
+    logger.info(
+        "process_entries_pullback_complete",
+        as_of=str(as_of),
+        candidates=len(pullback_candidates) if pullback_candidates else 0,
+        accepted=pullback_accepted,
+    )
 
     return pending_ids, notional_map
+
+
+def _push_to_telegram(
+    bot, signal_id: str, sig, per_pos_notional: float,
+    cash: float, equity: float, exposures: dict, budget: RiskBudget,
+) -> bool:
+    """Push signal to Telegram. Returns True if OK (or no bot).
+
+    On failure, marks signal as TIMEOUT to prevent stale PENDING.
+    Handles both breakout (sig.stock_id) and pullback (sig.symbol)
+    candidate types via getattr.
+    """
+    if bot is None:
+        return True
+
+    from communication.telegram.sender import push_entry_request
+    from storage.signals import get_signal as _get_signal
+
+    sig_row = _get_signal(signal_id)
+    msg_id = None
+    if sig_row:
+        symbol = getattr(sig, 'stock_id', None) or getattr(sig, 'symbol', None)
+        msg_id = push_entry_request(
+            bot, sig_row,
+            target_notional=per_pos_notional,
+            cash=cash, equity=equity,
+            sector_value=exposures["sector"].get(get_sector(symbol), 0.0),
+            etf_value=exposures["etf"],
+            pos_value=exposures["positions_value"],
+            budget=budget,
+        )
+    if msg_id is None:
+        update_approval(
+            signal_id, "TIMEOUT",
+            expired_reason="telegram_push_failed",
+        )
+        logger.warning(
+            "entry_push_failed_marked_expired",
+            signal_id=signal_id,
+        )
+        return False
+    return True
 
 
 def _has_active_signal_for(
     *, symbol: str, strategy: str, signal_type: str, signal_date: date_type,
 ) -> bool:
-    """P1-8 helper: check for non-terminal duplicate signal for given trading day.
-
-    Active = PENDING or APPROVED (in-flight). Terminal statuses
-    (REJECTED, TIMEOUT, EXPIRED_DRIFT, AUTO_APPROVED+filled) are OK to skip past.
-
-    v0.1.14.2-c3: queries `signal_date` column directly (market semantic date),
-    NOT `CAST(created_at AS DATE)` (which was the pre-c3 bug). With this fix
-    cross-day reruns of the same as_of are correctly deduplicated regardless
-    of when the row was originally inserted.
-    """
+    """P1-8 helper: check for non-terminal duplicate signal for given trading day."""
     with connect(read_only=True) as conn:
         row = conn.execute(
             """
