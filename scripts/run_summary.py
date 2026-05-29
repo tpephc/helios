@@ -94,17 +94,29 @@ def query_order_flow(since: date_type) -> list[tuple]:
     return [(r[0], r[1], r[2], int(r[3])) for r in rows]
 
 
-def query_open_positions(as_of: date_type) -> list[tuple]:
-    """(position_id, symbol, entry_date, age_days) for every currently OPEN position."""
+def query_open_positions(as_of: date_type, account_id: str | None = None) -> list[tuple]:
+    """(position_id, symbol, entry_date, age_days, account_id) for OPEN positions.
+
+    v0.1.18: optional account_id filter. If None, returns all accounts
+    (backward compatible for ad-hoc reporting).
+    """
     with connect(read_only=True) as conn:
-        rows = conn.execute(
-            "SELECT position_id, symbol, entry_date FROM positions "
-            "WHERE status = 'OPEN' ORDER BY entry_date",
-        ).fetchall()
+        if account_id:
+            rows = conn.execute(
+                "SELECT position_id, symbol, entry_date, account_id FROM positions "
+                "WHERE status = 'OPEN' AND account_id = ? ORDER BY entry_date",
+                [account_id],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT position_id, symbol, entry_date, account_id FROM positions "
+                "WHERE status = 'OPEN' ORDER BY entry_date",
+            ).fetchall()
     out = []
-    for pid, sym, ent in rows:
+    for row in rows:
+        pid, sym, ent, acct = row[0], row[1], row[2], row[3]
         age = (as_of - ent).days if ent else None
-        out.append((pid, sym, ent, age))
+        out.append((pid, sym, ent, age, acct))
     return out
 
 
@@ -173,9 +185,9 @@ def _render_order_flow(rows: list[tuple]) -> str:
 def _render_open_positions(rows: list[tuple]) -> str:
     if not rows:
         return "  (no open positions)"
-    lines = ["  position_id           symbol   entry_date    age_days"]
-    for pid, sym, ent, age in rows:
-        lines.append(f"  {pid:<22s} {sym:<8s} {ent}    {age}")
+    lines = ["  position_id           symbol   entry_date    age   account"]
+    for pid, sym, ent, age, acct in rows:
+        lines.append(f"  {pid:<22s} {sym:<8s} {ent}    {age:>4}  {acct}")
     return "\n".join(lines)
 
 
@@ -202,6 +214,8 @@ def main() -> int:
                         help="window size in calendar days (default 5)")
     parser.add_argument("--as-of", type=str, default=None,
                         help="anchor date (default today) for age computation")
+    parser.add_argument("--account", type=str, default=None,
+                        help="filter positions by account_id (default: all accounts)")
     args = parser.parse_args()
 
     as_of = (
@@ -228,7 +242,7 @@ def main() -> int:
     print()
 
     print("Open positions:")
-    print(_render_open_positions(query_open_positions(as_of)))
+    print(_render_open_positions(query_open_positions(as_of, account_id=args.account)))
     print()
 
     streaks = compute_failure_streaks(history)

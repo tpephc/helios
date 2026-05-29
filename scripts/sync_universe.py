@@ -170,7 +170,13 @@ def _fetch_market_cap(
 
 
 def _open_position_symbols() -> set[str]:
-    """Return set of symbols with currently OPEN positions."""
+    """Return set of symbols with currently OPEN positions (any account).
+
+    v0.1.18 note: intentionally NOT filtered by account_id. Universe
+    membership is shared across all accounts. If ANY account has an open
+    position in a symbol, it must remain in the universe for data
+    continuity and exit-scan coverage.
+    """
     with connect(read_only=True) as conn:
         rows = conn.execute(
             "SELECT DISTINCT symbol FROM positions WHERE status = 'OPEN'"
