@@ -49,7 +49,9 @@ ROUND_TRIP_COST_BPS: float = COMMISSION_BPS + TAX_BPS
 
 MIN_CELL_N = 30
 TRIM_PCT = 0.05
-RS_ROLLING_WINDOW = 252  # trading days for percentile baseline
+# Rolling percentile lookback: target ~252 trading days, implemented as
+# calendar-day approximation (×1.5 ≈ 378 calendar days). Not exact.
+RS_LOOKBACK_TRADING_DAYS = 252
 
 
 # ── Interaction definitions ───────────────────────────────────────────────
@@ -100,6 +102,14 @@ INTERACTIONS = [
             ("no_new_low",  lambda v: v is not None and v == 0),
             ("has_new_low", lambda v: v is not None and v >= 1),
         ],
+    },
+    {
+        "name": "beta_x_rs",
+        "hypothesis": "Convexity: high beta + high RS → momentum persistence with leverage",
+        "table": "bullish_features",
+        "feature_a": "beta_60",
+        "feature_b": "beta_adj_rs_20d",
+        "buckets_b": "rolling_percentile",  # special marker: use rolling tercile
     },
 ]
 
@@ -152,6 +162,31 @@ def _load_price_series() -> pl.DataFrame:
         "date": [r[1] for r in result],
         "adj_close": [r[2] for r in result],
     })
+
+
+def _load_market_regime() -> pl.DataFrame:
+    """Load market_regime table for regime-conditioned analysis."""
+    with connect(read_only=True) as conn:
+        result = conn.execute(
+            "SELECT date, regime FROM market_regime ORDER BY date"
+        ).fetchall()
+    return pl.DataFrame({
+        "date": [r[0] for r in result],
+        "market_regime": [r[1] for r in result],
+    })
+
+
+def _apply_regime_filter(
+    df: pl.DataFrame,
+    regime_df: pl.DataFrame,
+    regime: str,
+) -> pl.DataFrame:
+    """Filter df to rows where market_regime matches.
+
+    Join on date, then filter. Rows without regime data are dropped.
+    """
+    joined = df.join(regime_df, on="date", how="left")
+    return joined.filter(pl.col("market_regime") == regime)
 
 
 # ── Forward return (vectorized) ───────────────────────────────────────────
@@ -230,7 +265,7 @@ def _apply_sample_spacing(df: pl.DataFrame, spacing: int) -> pl.DataFrame:
 def _assign_rolling_percentile_tercile(
     df: pl.DataFrame,
     feature: str,
-    window: int = RS_ROLLING_WINDOW,
+    window: int = RS_LOOKBACK_TRADING_DAYS,
 ) -> pl.Series:
     """Assign RS tercile using rolling percentile (regime-invariant).
 
@@ -249,15 +284,12 @@ def _assign_rolling_percentile_tercile(
     percentile with a lookback filter, not a true per-observation
     rolling window over all stocks × dates.
     """
-    stock_ids = df["stock_id"].to_list()
     dates = df["date"].to_list()
     values = df[feature].to_list()
     n = len(values)
 
-    # Build date → list of (value) for cross-sectional percentile
-    # Group by date first, then use expanding cross-sectional distribution
     from collections import defaultdict
-    date_to_values: dict = defaultdict(list)
+    from datetime import timedelta
 
     # Collect all (date, value) pairs sorted by date
     date_value_pairs = sorted(
@@ -265,16 +297,13 @@ def _assign_rolling_percentile_tercile(
         key=lambda x: x[0],
     )
 
-    # Build expanding cross-sectional value pool per date
-    # For each unique date, the pool is all values from dates within
-    # [date - window_days, date) across all stocks
     unique_dates = sorted(set(dates))
-    date_to_idx = {d: i for i, d in enumerate(unique_dates)}
 
-    # Precompute: for each date, collect all feature values from the
-    # lookback window (cross-sectional, not per-stock)
-    from datetime import timedelta
-    lookback_days = timedelta(days=int(window * 1.5))  # calendar days ≈ 252 trading
+    # Lookback: ~252 trading days ≈ 378 calendar days.
+    # This is a calendar-day approximation, not exact trading sessions.
+    # Holiday density / market halts cause ±10% variation in actual
+    # trading sessions covered. Acceptable for cross-sectional tercile.
+    lookback_days = timedelta(days=int(window * 1.5))
 
     # Accumulate values by date
     values_by_date: dict = defaultdict(list)
@@ -313,12 +342,20 @@ def _assign_rolling_percentile_tercile(
         rank = bisect.bisect_right(sorted_pool, v)
         pctile = rank / len(sorted_pool)
 
+        # Short prefix for labels (e.g. "RS" for beta_adj_rs_20d, "Beta" for beta_60)
+        _prefix_map = {
+            "beta_adj_rs_20d": "RS",
+            "beta_adj_rs_60d": "RS60",
+            "beta_60": "Beta",
+        }
+        prefix = _prefix_map.get(feature, feature[:8])
+
         if pctile < 1 / 3:
-            labels[i] = "RS_T1_low"
+            labels[i] = f"{prefix}_T1_low"
         elif pctile < 2 / 3:
-            labels[i] = "RS_T2_mid"
+            labels[i] = f"{prefix}_T2_mid"
         else:
-            labels[i] = "RS_T3_high"
+            labels[i] = f"{prefix}_T3_high"
 
     return pl.Series(f"{feature}_bucket", labels, dtype=pl.Utf8)
 
@@ -329,7 +366,7 @@ def _assign_rolling_percentile_tercile(
 def _assign_semantic_buckets(
     df: pl.DataFrame,
     feature: str,
-    bucket_defs: list[tuple[str, callable]],
+    bucket_defs: list[tuple[str, object]],
 ) -> pl.Series:
     values = df[feature].to_list()
     labels = []
@@ -520,7 +557,7 @@ def _print_interaction(
     print(f"  {name}")
     print(f"  Hypothesis: {interaction['hypothesis']}")
     print(f"  Features: {interaction['feature_a']} × {interaction['feature_b']}")
-    print(f"  RS buckets: rolling {RS_ROLLING_WINDOW}d percentile tercile")
+    print(f"  RS buckets: rolling {RS_LOOKBACK_TRADING_DAYS}d percentile tercile")
     print(f"{'═' * 95}")
 
     print(f"  {'cell':<30} {'hz':>4} {'n':>6} {'⚡':>2} "
@@ -563,7 +600,19 @@ def run_interaction_study(
     end: date_type | None = None,
     sample_spacing: int | None = None,
     output_dir: Path | None = None,
+    regime: str | None = None,
 ) -> list[dict]:
+    """Run all interaction studies.
+
+    IMPORTANT — `end` semantics:
+      `end` filters feature observation dates, NOT price availability.
+      Forward returns for observations near `end` use post-end prices
+      from the full price series. This is correct for computing forward
+      returns but means `end` is NOT a hard information boundary.
+
+      For train/test split: set end = actual_cutoff - max(horizon) to
+      ensure no observation's forward return reaches into the test period.
+    """
     if output_dir is None:
         output_dir = Path("research/outputs")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -576,6 +625,13 @@ def run_interaction_study(
     print("Loading price series...")
     price_df = _load_price_series()
     print(f"  price rows: {price_df.height}")
+
+    # Regime filter (optional)
+    regime_df = None
+    if regime:
+        regime_df = _load_market_regime()
+        n_regime = regime_df.filter(pl.col("market_regime") == regime).height
+        print(f"  regime filter: '{regime}' ({n_regime} trading days)")
 
     all_stats: list[dict] = []
 
@@ -601,17 +657,11 @@ def run_interaction_study(
             df = _apply_sample_spacing(df, sample_spacing)
             print(f"    Spacing: {pre} → {df.height}")
 
-            # Compute rolling percentile RS bucket once per table
-            if fa in df.columns:
-                print(f"    Computing rolling {RS_ROLLING_WINDOW}d percentile for {fa}...")
-                rs_bucket = _assign_rolling_percentile_tercile(df, fa)
-                df = df.with_columns(rs_bucket)
-
-                # Log distribution
-                counts = df[f"{fa}_bucket"].value_counts().sort("count", descending=True)
-                print(f"    RS tercile distribution:")
-                for row in counts.iter_rows(named=True):
-                    print(f"      {row[f'{fa}_bucket']}: {row['count']}")
+            # Regime filter (apply after spacing, before bucket computation)
+            if regime and regime_df is not None:
+                pre_regime = df.height
+                df = _apply_regime_filter(df, regime_df, regime)
+                print(f"    Regime filter '{regime}': {pre_regime} → {df.height}")
 
             table_cache[table] = df
         else:
@@ -626,9 +676,30 @@ def run_interaction_study(
             print(f"  ⚠ {fb} not in table, skipping")
             continue
 
-        # Feature B: semantic bucket
-        bucket_b = _assign_semantic_buckets(df, fb, interaction["buckets_b"])
-        df_work = df.with_columns(bucket_b)
+        # Feature A: rolling percentile tercile (computed once per feature, cached)
+        if f"{fa}_bucket" not in df.columns:
+            print(f"    Computing rolling {RS_LOOKBACK_TRADING_DAYS}d percentile for {fa}...")
+            bucket_a = _assign_rolling_percentile_tercile(df, fa)
+            df = df.with_columns(bucket_a)
+            table_cache[table] = df
+
+            counts = df[f"{fa}_bucket"].value_counts().sort("count", descending=True)
+            print(f"    {fa} tercile distribution:")
+            for row in counts.iter_rows(named=True):
+                print(f"      {row[f'{fa}_bucket']}: {row['count']}")
+
+        # Feature B: semantic bucket or rolling percentile
+        if interaction["buckets_b"] == "rolling_percentile":
+            # Both features use rolling percentile (e.g. beta × RS)
+            if f"{fb}_bucket" not in df.columns:
+                print(f"    Computing rolling {RS_LOOKBACK_TRADING_DAYS}d percentile for {fb}...")
+                bucket_b = _assign_rolling_percentile_tercile(df, fb)
+                df = df.with_columns(bucket_b)
+                table_cache[table] = df  # update cache
+            df_work = df
+        else:
+            bucket_b = _assign_semantic_buckets(df, fb, interaction["buckets_b"])
+            df_work = df.with_columns(bucket_b)
 
         # Log B distribution
         counts_b = df_work[f"{fb}_bucket"].value_counts().sort("count", descending=True)
@@ -649,7 +720,8 @@ def run_interaction_study(
 
     if all_stats:
         stats_df = pl.DataFrame(all_stats)
-        csv_path = output_dir / "feature_interaction_baseline.csv"
+        suffix = f"_{regime}" if regime else ""
+        csv_path = output_dir / f"feature_interaction_baseline{suffix}.csv"
         stats_df.write_csv(csv_path)
         print(f"\nCSV written: {csv_path} ({len(all_stats)} rows)")
 
@@ -681,16 +753,22 @@ def main() -> int:
     parser.add_argument("--end", type=str, default=None)
     parser.add_argument("--sample-spacing", type=int, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument(
+        "--regime", type=str, default=None,
+        choices=["bull", "bear", "crisis", "neutral"],
+        help="Filter to specific market regime (from market_regime table)",
+    )
     args = parser.parse_args()
 
     horizons = [int(h.strip()) for h in args.horizons.split(",")]
     start = date_type.fromisoformat(args.start) if args.start else None
     end = date_type.fromisoformat(args.end) if args.end else None
 
-    print(f"Feature Interaction Study — Phase 0 v2")
+    print(f"Feature Interaction Study — Phase 0 v3")
     print(f"  horizons:        {horizons}")
-    print(f"  RS bucket:       rolling {RS_ROLLING_WINDOW}d percentile tercile")
+    print(f"  RS bucket:       rolling {RS_LOOKBACK_TRADING_DAYS}d percentile tercile")
     print(f"  sample_spacing:  {args.sample_spacing or f'auto ({max(horizons)})'}")
+    print(f"  regime:          {args.regime or 'all (no filter)'}")
     print(f"  cost:            {ROUND_TRIP_COST_BPS:.1f} bps")
     print(f"  min_cell_n:      {MIN_CELL_N}")
     print(f"  trim_pct:        {TRIM_PCT * 100:.0f}%")
@@ -704,6 +782,7 @@ def main() -> int:
         end=end,
         sample_spacing=args.sample_spacing,
         output_dir=Path(args.output_dir) if args.output_dir else None,
+        regime=args.regime,
     )
 
     print(f"\nTotal rows: {len(stats)}")
