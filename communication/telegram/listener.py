@@ -205,13 +205,14 @@ def listen_for_approvals(
     *,
     fill_date: date_type,
     target_notional_for: Callable[[str], float],
+    account_id: str,
     duration_seconds: int = 1800,
     poll_timeout: int = 25,
 ) -> dict:
     """Listen for /approve and /reject commands for `duration_seconds`.
 
-    `target_notional_for(signal_id)` lets daily_run pass in the position-sizer
-    result computed at signal-generation time (single source of truth).
+    v0.1.18: account_id required — passed to approve_signal for
+    multi-account position isolation.
 
     Returns summary dict:
         approved: list of (signal_id, position_id)
@@ -312,6 +313,7 @@ def _handle_command(
         _do_approve(
             action.sig_ref, bot, broker, fill_date,
             target_notional_for, summary,
+            account_id=account_id,
         )
     elif action.kind == "reject":
         assert action.sig_ref is not None
@@ -362,6 +364,8 @@ def _do_approve(
     fill_date: date_type,
     target_notional_for: Callable[[str], float],
     summary: dict,
+    *,
+    account_id: str,
 ) -> None:
     notional = target_notional_for(sig_ref)
     if notional <= 0:
@@ -369,7 +373,7 @@ def _do_approve(
         return
     ok, msg, pos_id = approve_signal(
         sig_ref, target_notional=notional, fill_date=fill_date,
-        broker=broker, approved_by="telegram",
+        broker=broker, account_id=account_id, approved_by="telegram",
     )
     bot.send_message(("✅ " if ok else "❌ ") + msg)
     if ok:
