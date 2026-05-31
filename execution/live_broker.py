@@ -264,7 +264,12 @@ class LiveBroker:
         )
         self.fees = fees or DEFAULT_TW_FEES
         self.bot = bot
-        self.guard = guard or PreTradeGuard()
+        if guard is not None:
+            self.guard = guard
+        elif self._simulation:
+            self.guard = PreTradeGuard.sim_relaxed()
+        else:
+            self.guard = PreTradeGuard()
         self.whitelist = whitelist
         self.poll_sleep_sec = (
             poll_sleep_sec if poll_sleep_sec is not None

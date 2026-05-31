@@ -83,9 +83,9 @@ class PreTradeGuard:
         See execution_model.md §6 for production deployment checklist.
         """
         return cls(
-            max_daily_orders=3,
-            max_daily_notional=3_000_000.0,
-            max_order_notional=1_000_000.0,
+            max_daily_orders=20,
+            max_daily_notional=15_000_000.0,
+            max_order_notional=5_000_000.0,
             price_range_min_frac=0.5,
             price_range_max_frac=1.5,
         )
