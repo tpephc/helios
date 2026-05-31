@@ -45,6 +45,8 @@ def main() -> int:
     parser.add_argument("--no-listener", action="store_true",
                         help="skip telegram listener (CI / smoke test)")
     parser.add_argument("--ignore-prev-check", action="store_true")
+    parser.add_argument("--auto-approve", action="store_true",
+                        help="auto-approve entry signals + PaperBroker fill (simulation only)")
     parser.add_argument(
         "--account", type=str, default=None,
         metavar="ACCOUNT_ID",
@@ -252,16 +254,23 @@ def main() -> int:
         pending, notional_map = generate_pending_signals(
             as_of=as_of, capital=args.capital, bot=bot,
             account_id=account_id,
+            auto_approve=args.auto_approve,
         )
-        print(f"[7] entry pipeline: {len(pending)} pending signals pushed")
+        if args.auto_approve:
+            print(f"[7] entry pipeline: {len(pending)} signals auto-approved + PaperBroker filled")
+        else:
+            print(f"[7] entry pipeline: {len(pending)} pending signals pushed")
 
         # ── Step 8: queue entry intents for T+1 submission ────────────
+        # Skipped when --auto-approve: signals already filled via PaperBroker.
         from execution.order_types import OrderSide
         from storage import order_journal
         from storage.signals import get_signal as _get_signal
 
         exec_summary = {"queued": [], "failed": []}
-        if pending:
+        if args.auto_approve:
+            print(f"[8] skipped (--auto-approve: entries filled in step 7)")
+        elif pending:
             for signal_id in pending:
                 sig_row = _get_signal(signal_id)
                 if sig_row is None:

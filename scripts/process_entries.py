@@ -184,11 +184,18 @@ def _auto_approve_and_fill(
     """Approve + fill + open position. Returns position_id or None.
 
     v0.1.18: account_id required for open_position.
+    v0.1.19: supports both breakout (.stock_id/.entry_price) and
+             pullback (.symbol/.price) signal objects via getattr.
     """
+    # Resolve field names: breakout sig uses stock_id/entry_price,
+    # pullback sig uses symbol/price.
+    symbol: str = getattr(sig, "stock_id", None) or sig.symbol
+    entry_price: float = getattr(sig, "entry_price", None) or sig.price
+
     update_approval(signal_id, "AUTO_APPROVED", approved_by="auto")
     broker = PaperBroker(fees=fees, account_id=account_id)
     fill = broker.submit_buy(
-        symbol=sig.stock_id, target_notional=target_notional,
+        symbol=symbol, target_notional=target_notional,
         fill_date=as_of, signal_id=signal_id,
     )
     if not fill.success:
@@ -196,13 +203,13 @@ def _auto_approve_and_fill(
         return None
     pos_id = pos_store.open_position(
         account_id=account_id,
-        symbol=sig.stock_id, strategy=sig.strategy,
+        symbol=symbol, strategy=sig.strategy,
         entry_date=as_of,
-        entry_price=fill.fill_price or sig.entry_price,
+        entry_price=fill.fill_price or entry_price,
         entry_atr=sig.entry_atr,
         regime_at_entry=sig.regime,
-        sector=get_sector(sig.stock_id),
-        is_etf=is_etf(sig.stock_id),
+        sector=get_sector(symbol),
+        is_etf=is_etf(symbol),
         shares=fill.shares,
         notional_at_entry=fill.notional,
         entry_commission=fill.commission,
@@ -220,12 +227,18 @@ def _auto_approve_and_fill(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="v0.1.18 entry signal processing")
+    parser = argparse.ArgumentParser(description="v0.1.19 entry signal processing")
     parser.add_argument("--as-of", type=str, default=None)
     parser.add_argument("--capital", type=float, default=1_000_000)
     parser.add_argument("--auto-approve", action="store_true",
-                        help="(TESTING ONLY) bypass approval; immediately fill + open")
+                        help="bypass approval; immediately fill + open (paper/sim only)")
     parser.add_argument("--slippage", type=float, default=0.001)
+    parser.add_argument(
+        "--account", type=str, default=None,
+        metavar="ACCOUNT_ID",
+        help="Account ID from config/accounts.yaml. "
+             "Default: first enabled account.",
+    )
     args = parser.parse_args()
 
     init_schema()
@@ -236,10 +249,34 @@ def main() -> int:
     fees = TransactionFees(slippage_rate=args.slippage)
     budget = DEFAULT_RISK_BUDGET
 
+    # ── Account resolution (v0.1.19: no more hardcoded philip_sim) ──
+    from config.account_config import load_accounts, get_account
+
+    if args.account:
+        _account = get_account(args.account)
+    else:
+        _accounts = load_accounts()
+        _account = _accounts[0]
+
+    account_id = _account.account_id
+
+    # ── Paper-only guard for --auto-approve ──
+    _SAFE_ENVS = {"paper", "simulation", "dev", "sim"}
+    if args.auto_approve:
+        env = getattr(_account, "environment", "unknown")
+        if env.lower() not in _SAFE_ENVS:
+            print(
+                f"❌  --auto-approve blocked: account {account_id!r} "
+                f"environment={env!r} is not in {_SAFE_ENVS}.\n"
+                f"    Auto-approve is only allowed for paper/simulation accounts."
+            )
+            return 1
+
     print(f"Helios process_entries -- {datetime.now().isoformat(timespec='seconds')}")
     print(f"As-of: {as_of}  /  Capital: NTD {args.capital:,.0f}  /  Budget: {budget.describe()}")
+    print(f"Account: {account_id} ({_account.environment})")
     if args.auto_approve:
-        print("!! AUTO-APPROVE MODE (testing only -- bypasses ADR-004)\n")
+        print("!! AUTO-APPROVE MODE (paper/sim only -- bypasses ADR-004)\n")
     print()
 
     # 1. Generate breakout signals
@@ -248,7 +285,7 @@ def main() -> int:
     print(f"[breakout] fired: {len(candidates)} candidate signals")
 
     # 2. Snapshot account state
-    cash, equity, exposures = _account_equity(args.capital, as_of, account_id="philip_sim")
+    cash, equity, exposures = _account_equity(args.capital, as_of, account_id=account_id)
     print(f"Account: cash NTD {cash:,.0f} / equity NTD {equity:,.0f} / "
           f"positions_value NTD {exposures['positions_value']:,.0f}\n")
 
@@ -256,7 +293,7 @@ def main() -> int:
     if candidates:
         decisions = _evaluate_constraints(
             candidates, cash=cash, equity=equity, exposures=exposures, budget=budget,
-            account_id="philip_sim",
+            account_id=account_id,
         )
         accepted = [(s, r) for s, ok, r in decisions if ok]
         rejected = [(s, r) for s, ok, r in decisions if not ok]
@@ -292,7 +329,7 @@ def main() -> int:
                 pos_id = _auto_approve_and_fill(
                     sig, signal_id,
                     target_notional=per_pos_notional, as_of=as_of, fees=fees,
-                    account_id="philip_sim",
+                    account_id=account_id,
                 )
                 if pos_id:
                     print(f"    ok auto-filled -> position {pos_id}")
@@ -315,7 +352,7 @@ def main() -> int:
 
     if pullback_cands:
         from strategies.trend_pullback import generate_signals as pullback_gen
-        open_syms = {p.symbol for p in pos_store.get_open_positions(account_id="philip_sim")}
+        open_syms = {p.symbol for p in pos_store.get_open_positions(account_id=account_id)}
         breakout_accepted = {s.stock_id: s.score for s, _ in accepted}
         open_for_dedup = open_syms | set(breakout_accepted.keys())
 
@@ -347,6 +384,19 @@ def main() -> int:
                       f"ATR={pb.entry_atr:.2f}  dist={pb.metadata['dist_above_ma20_atr']:.2f}  "
                       f"priority={pb.priority.value}")
                 print(f"    signal_id: {signal_id}")
+
+                if args.auto_approve:
+                    pos_id = _auto_approve_and_fill(
+                        pb, signal_id,
+                        target_notional=per_pos_notional, as_of=as_of,
+                        fees=fees, account_id=account_id,
+                    )
+                    if pos_id:
+                        print(f"    ok auto-filled -> position {pos_id}")
+                    else:
+                        print("    x fill failed")
+                else:
+                    print(f"    [PENDING approval -- telegram /approve {signal_id[:8]}]")
         else:
             print("(all pullback candidates filtered out)")
 
@@ -365,7 +415,8 @@ def generate_pending_signals(
     capital: float,
     bot=None,
     budget: RiskBudget | None = None,
-    account_id: str = "philip_sim",
+    account_id: str | None = None,
+    auto_approve: bool = False,
 ) -> tuple[list[str], dict[str, float]]:
     """Generate entry signals + filter + push to Telegram.
 
@@ -373,7 +424,13 @@ def generate_pending_signals(
     Pullback is second pass, sharing portfolio budget with breakout.
     Conflict resolution: breakout accepted symbols are passed to
     pullback signal_generator as pending_symbols.
+
+    v0.1.19: account_id required (no implicit fallback).
     """
+    if account_id is None:
+        raise ValueError(
+            "account_id is required. Pass explicitly from daily_run or CLI."
+        )
     from storage.signals import update_approval
     budget = budget if budget is not None else DEFAULT_RISK_BUDGET
 
@@ -418,15 +475,24 @@ def generate_pending_signals(
                 signal_date=as_of,
                 reason=sig.reason, entry_atr=sig.entry_atr,
                 regime=sig.regime, metadata=sig.metadata,
-                approval_status="PENDING",
+                approval_status="AUTO_APPROVED" if auto_approve else "PENDING",
             )
 
-            push_ok = _push_to_telegram(
-                bot, signal_id, sig, per_pos_notional,
-                cash, equity, exposures, budget,
-            )
+            accepted = False
+            if auto_approve:
+                pos_id = _auto_approve_and_fill(
+                    sig, signal_id,
+                    target_notional=per_pos_notional, as_of=as_of,
+                    fees=fees, account_id=account_id,
+                )
+                accepted = pos_id is not None
+            else:
+                accepted = _push_to_telegram(
+                    bot, signal_id, sig, per_pos_notional,
+                    cash, equity, exposures, budget,
+                )
 
-            if push_ok:
+            if accepted:
                 pending_ids.append(signal_id)
                 notional_map[signal_id] = per_pos_notional
                 breakout_accepted_symbols[sig.stock_id] = sig.score
@@ -523,15 +589,24 @@ def generate_pending_signals(
                 entry_atr=pb_sig.entry_atr,
                 regime=pb_sig.regime,
                 metadata=pb_sig.metadata,
-                approval_status="PENDING",
+                approval_status="AUTO_APPROVED" if auto_approve else "PENDING",
             )
 
-            push_ok = _push_to_telegram(
-                bot, signal_id, pb_sig, per_pos_notional,
-                remaining_cash, equity, exposures, budget,
-            )
+            accepted = False
+            if auto_approve:
+                pos_id = _auto_approve_and_fill(
+                    pb_sig, signal_id,
+                    target_notional=per_pos_notional, as_of=as_of,
+                    fees=fees, account_id=account_id,
+                )
+                accepted = pos_id is not None
+            else:
+                accepted = _push_to_telegram(
+                    bot, signal_id, pb_sig, per_pos_notional,
+                    remaining_cash, equity, exposures, budget,
+                )
 
-            if push_ok:
+            if accepted:
                 pending_ids.append(signal_id)
                 notional_map[signal_id] = per_pos_notional
                 pullback_accepted += 1
@@ -600,7 +675,7 @@ def _has_active_signal_for(
             SELECT COUNT(*) FROM signals
             WHERE symbol = ? AND strategy = ? AND signal_type = ?
               AND signal_date = ?
-              AND approval_status IN ('PENDING', 'APPROVED')
+              AND approval_status IN ('PENDING', 'APPROVED', 'AUTO_APPROVED')
             """,
             [symbol, strategy, signal_type, signal_date],
         ).fetchone()
