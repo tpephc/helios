@@ -158,6 +158,9 @@ def find_bullish_setups(
         results.append(r)
 
     # Sort: symbols matching more profiles first, then by above_ma20_streak
+    # NOTE: above_ma20_streak is NOT forward-return validated (R5 Section C,
+    # 2026-05). Spearman mildly negative, CI spans zero. Current sort is a
+    # heuristic, not evidence-backed. Consider volume_contraction_days_10d.
     results.sort(
         key=lambda x: (len(x["profiles"]), x["above_ma20_streak"] or 0),
         reverse=True,
