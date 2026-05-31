@@ -55,6 +55,8 @@ from datetime import datetime
 from data.database import connect
 from utils.logger import get_logger
 
+SHARES_PER_LOT = 1000  # Taiwan Common lot
+
 logger = get_logger(__name__)
 
 
@@ -144,11 +146,11 @@ class PaperBroker:
         fill_date: date_type,
         signal_id: str | None = None,
     ) -> FillResult:
-        """Buy as many shares as target_notional affords (in lots of 1).
+        """Buy as many shares as target_notional affords.
 
-        台股: integer shares; smallest unit = 1 share for our purposes
-        (1 lot = 1000 shares in reality, but we use 1-share resolution
-        for paper trade flexibility).
+        台股: supports both Common lot (≥ 1000 shares, rounded to lot
+        boundary) and Odd lot (< 1000 shares, individual shares).
+        v0.1.19: lot-type-aware to satisfy orders table CHECK constraint.
         """
         data = self._lookup_fill_data(symbol, fill_date)
         if data is None:
@@ -161,12 +163,25 @@ class PaperBroker:
         per_share_buy_cost = fill_price * (1.0 + self.fees.commission_rate)
         if per_share_buy_cost <= 0:
             return self._fail(symbol, fill_date, "invalid_price", "buy", signal_id)
-        shares = int(target_notional // per_share_buy_cost)
-        if shares <= 0:
+        raw_shares = int(target_notional // per_share_buy_cost)
+        if raw_shares <= 0:
             return self._fail(
-                symbol, fill_date, "insufficient_notional_for_one_share",
+                symbol, fill_date, "insufficient_notional",
                 "buy", signal_id,
             )
+
+        # Determine lot type and final share count
+        lots = raw_shares // SHARES_PER_LOT
+        if lots >= 1:
+            # Common lot path: round to lot boundary
+            order_lot_type = "COMMON"
+            shares = lots * SHARES_PER_LOT
+            requested_qty = lots
+        else:
+            # Odd lot path: use exact shares
+            order_lot_type = "ODD"
+            shares = raw_shares
+            requested_qty = shares
 
         # v0.1.14.3: liquidity sanity gate (after share-count is known)
         liq_err = self._liquidity_check(symbol, fill_date, shares, volume, "buy", signal_id)
@@ -182,7 +197,9 @@ class PaperBroker:
 
         order_id = self._record_order(
             signal_id=signal_id, symbol=symbol, side="buy",
-            quantity=shares, price=fill_price, status="filled",
+            requested_qty=requested_qty, filled_shares=shares,
+            order_lot_type=order_lot_type,
+            price=fill_price, status="filled",
             commission=commission, tax=0.0,
             fill_date=fill_date, notional=notional,
         )
@@ -235,9 +252,19 @@ class PaperBroker:
         cash_in = notional - commission - tax  # cash actually arriving
         participation_rate = shares / volume if volume > 0 else None
 
+        # Determine lot type from share count
+        if shares >= SHARES_PER_LOT and shares % SHARES_PER_LOT == 0:
+            order_lot_type = "COMMON"
+            requested_qty = shares // SHARES_PER_LOT
+        else:
+            order_lot_type = "ODD"
+            requested_qty = shares
+
         order_id = self._record_order(
             signal_id=signal_id, symbol=symbol, side="sell",
-            quantity=shares, price=fill_price, status="filled",
+            requested_qty=requested_qty, filled_shares=shares,
+            order_lot_type=order_lot_type,
+            price=fill_price, status="filled",
             commission=commission, tax=tax,
             fill_date=fill_date, notional=notional,
         )
@@ -319,16 +346,19 @@ class PaperBroker:
     def _record_order(
         self, *,
         signal_id: str | None, symbol: str, side: str,
-        quantity: int, price: float, status: str,
+        requested_qty: int, filled_shares: int,
+        order_lot_type: str,
+        price: float, status: str,
         commission: float, tax: float,
         fill_date: date_type,
         notional: float = 0.0,
     ) -> str:
-        """Record a paper-trade order using v0.1.18 schema.
+        """Record a paper-trade order using v0.1.19 schema.
 
-        v0.1.18: writes to orders table with correct column names,
-        uppercase side/status, account_id, fill_date, and notional.
-        Raises RuntimeError if account_id is not set on the broker.
+        v0.1.19: order_lot_type (COMMON/ODD) determines semantics of
+        requested_lots column:
+          COMMON: requested_lots = number of lots, filled_shares = lots × 1000
+          ODD:    requested_lots = number of shares, filled_shares = shares
         """
         if self.account_id is None:
             raise RuntimeError(
@@ -342,17 +372,19 @@ class PaperBroker:
                 """
                 INSERT INTO orders (
                     order_id, account_id, signal_id, symbol, side,
-                    requested_lots, filled_shares, avg_fill_price,
+                    order_lot_type, requested_lots, filled_shares,
+                    avg_fill_price,
                     status, broker, fill_date, notional,
                     commission, tax, intent_at, finalized_at,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     order_id, self.account_id, signal_id, symbol,
                     side.upper(),       # BUY / SELL
-                    quantity,           # requested_lots
-                    quantity if status == "filled" else 0,  # filled_shares
+                    order_lot_type,     # COMMON / ODD
+                    requested_qty,      # lots (COMMON) or shares (ODD)
+                    filled_shares if status == "filled" else 0,
                     price if status == "filled" else None,  # avg_fill_price
                     status.upper(),     # FILLED / FAILED
                     self.broker_name,
