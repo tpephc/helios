@@ -78,6 +78,16 @@ def _build_sections(
         logger.exception("digest_approach_message_failed", as_of=str(as_of))
         sections.append("⚠️ 接近停損\n⚠️ 取得失敗，請查閱 logs/evening_digest.log")
 
+
+    # 4. Tracker forward return summary
+    try:
+        from research.tracker_digest import build_tracker_message
+        msg = build_tracker_message(as_of=as_of)
+        if msg:
+            sections.append(msg)
+    except Exception:  # noqa: BLE001
+        logger.exception("digest_tracker_message_failed", as_of=str(as_of))
+
     return sections
 
 
