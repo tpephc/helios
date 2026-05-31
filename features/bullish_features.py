@@ -280,11 +280,12 @@ def compute_breakout_quality_features(
         High volume on up days signals demand reappearance. Contrasts
         with bearish high_vol_down_days which signals supply.
 
-    failed_breakdown_count_{window}d: count of days where price dipped
-        below MA20 intraday (approximated: open or prior close was below)
-        but closed above MA20. This is demand absorption — buyers stepped
-        in to defend the level. It is the bullish analog of bearish
-        failed_ma20_reclaim.
+    failed_breakdown_count_{window}d: trailing count of MA20 close reclaims,
+        where a reclaim is close[t-1] < MA20[t-1] AND close[t] > MA20[t].
+        This measures MA20 cross-back FREQUENCY, not demand absorption.
+        High values may reflect recovery OR repeated whipsaw / chop.
+        Treat as a reclaim/whipsaw counter, NOT a bullish-quality score.
+        See research/failed_breakdown_quality.py (R2, 2026-05).
 
     Temporal semantics for failed_breakdown:
         We approximate intraday breakdown as: prev_close < sma_20 on day t-1
