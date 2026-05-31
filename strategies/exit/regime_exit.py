@@ -1,18 +1,23 @@
 # strategies/exit/regime_exit.py
-"""Regime-collapse exit (Priority 1 — higher than ATR stop, per reviewer §43).
+"""Regime-collapse exit — v0.2.0.
 
-理由 (reviewer §44-46):
-- 真正大虧通常來自 market regime collapse (2022 升息 / COVID / flash crash)
-- ATR trailing stop 在 regime collapse 時往往「來不及」(ATR 跟漲, 暴跌反應慢)
-- regime gate exit 直接斷頭, 是 Helios 的核心 risk protection
+Priority 1 (highest). Exits when TAIEX market regime enters bear.
 
-規則:
-  if regime != 'bull':  → EXIT
+v0.2.0 change: trigger narrowed from ``regime != "bull"`` to
+``regime == "bear"``.  Rationale: crisis regime is intentionally
+allowed at entry (V-recovery thesis; screener config
+``prohibited_regimes = {"bear"}``).  Exiting on crisis would
+immediately reverse V-recovery entries, defeating the entry thesis.
+Bear is the only structurally adverse regime for a long momentum
+strategy; crisis and neutral are transient states where the
+trailing stop and time stop provide sufficient protection.
 
-不要做 condition expansion (例如 regime != bull AND atr_spike); 保持簡單.
-Reviewer §35-38: interpretability 比 sophistication 重要.
+Design:
+  - Single condition: regime == "bear" → EXIT.
+  - No condition expansion (no ATR spike, no multi-day confirm).
+  - Interpretability > sophistication (reviewer §35-38).
 
-Version: v0.1.0 (2026-05-17)
+Version: v0.2.0 (2026-05-31)
 """
 from __future__ import annotations
 
@@ -23,7 +28,7 @@ from strategies.exit.base import ExitDecision, ExitRule, Position
 
 class RegimeExit(ExitRule):
     name = "regime_exit"
-    priority = 1  # 最高優先, 先檢查
+    priority = 1  # highest — checked first
 
     def check(
         self,
@@ -33,10 +38,13 @@ class RegimeExit(ExitRule):
         atr: float | None,
         regime: str,
     ) -> ExitDecision:
-        if regime != "bull":
+        if regime == "bear":
             return ExitDecision(
                 should_exit=True,
-                reason=f"{self.name} (regime={regime}, was bull at entry)",
+                reason=(
+                    f"{self.name} (regime=bear, "
+                    f"entry_regime={position.regime_at_entry})"
+                ),
                 metadata={
                     "regime_at_exit": regime,
                     "regime_at_entry": position.regime_at_entry,

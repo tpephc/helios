@@ -1,19 +1,23 @@
 # strategies/exit/base.py
-"""Exit framework abstractions.
+"""Exit framework abstractions — v0.2.0.
 
-Per reviewer §40: exit signal 必須帶 exit_reason / stop_price / MFE / MAE
-                  / holding_days / regime_at_exit (揭露 strategy risk profile)
+Per reviewer §40: exit signal must carry exit_reason / stop_price /
+MFE / MAE / holding_days / regime_at_exit (discloses strategy risk
+profile).
 
-設計:
-- Position dataclass — mutable lifecycle 物件 (entry → 持倉 → exit)
-- ExitDecision dataclass — exit rule 回傳的判斷結果
-- ExitRule ABC — 每個 rule 一個 class, 透過 priority 排序
+Design:
+  - Position dataclass — mutable lifecycle object (entry → hold → exit).
+  - ExitDecision dataclass — exit rule return value.
+  - ExitRule ABC — one class per rule, sorted by priority.
 
-Priority 越小越優先 (reviewer §43: regime_exit > trailing_stop).
+Priority: lower number = higher priority (regime_exit < trailing_stop
+< time_stop).
 
-Version: v0.1.0 (2026-05-17)
-Changelog:
-  v0.1.0 (2026-05-17): Initial — ExitRule + Position + ExitDecision
+v0.2.0 change: added ``holding_trading_days`` field to Position.
+  Set by run_exit_scan.py before rule evaluation.  Used by TimeStop
+  to enforce max holding period in trading days (not calendar days).
+
+Version: v0.2.0 (2026-05-31)
 """
 from __future__ import annotations
 
@@ -29,11 +33,11 @@ from typing import Any
 
 @dataclass
 class Position:
-    """單一 trade lifecycle (entry → 持倉 → exit), 包含完整 audit 欄位.
+    """Single trade lifecycle (entry → hold → exit) with full audit fields.
 
-    Mutable: max/min_close 跟隨每日收盤更新.
-    Reviewer §40 必需欄位都在.
+    Mutable: max/min_close updated daily with close prices.
     """
+
     # Entry (immutable after open)
     stock_id: str
     entry_date: date_type
@@ -42,15 +46,19 @@ class Position:
     regime_at_entry: str
     strategy: str
     score: float
-    signal_id: str | None = None  # 對應 signals.signal_id (若有)
+    signal_id: str | None = None
 
-    # 持倉中 running stats (每天 update)
+    # Running stats (updated daily by run_exit_scan)
     max_close_since_entry: float = 0.0
     max_close_date: date_type | None = None
     min_close_since_entry: float = 0.0
     min_close_date: date_type | None = None
 
-    # Exit (None 表示還開倉中)
+    # Holding duration in market trading days (set by run_exit_scan
+    # before rule evaluation; None if not yet computed).
+    holding_trading_days: int | None = None
+
+    # Exit (None = still open)
     exit_date: date_type | None = None
     exit_price: float | None = None
     exit_reason: str | None = None
@@ -58,7 +66,6 @@ class Position:
     exit_metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # Initialize running stats from entry
         if self.max_close_since_entry == 0.0:
             self.max_close_since_entry = self.entry_price
             self.max_close_date = self.entry_date
@@ -71,8 +78,8 @@ class Position:
         return self.exit_date is None
 
     @property
-    def holding_days(self) -> int | None:
-        """Calendar days from entry → exit (不是 trading days)."""
+    def holding_calendar_days(self) -> int | None:
+        """Calendar days from entry to exit (not trading days)."""
         if self.exit_date is None:
             return None
         return (self.exit_date - self.entry_date).days
@@ -85,20 +92,20 @@ class Position:
 
     @property
     def mfe_pct(self) -> float:
-        """Max Favorable Excursion — 最大未實現獲利% (reviewer §40)."""
+        """Max Favorable Excursion (reviewer §40)."""
         if self.entry_price <= 0:
             return 0.0
         return (self.max_close_since_entry / self.entry_price - 1.0) * 100.0
 
     @property
     def mae_pct(self) -> float:
-        """Max Adverse Excursion — 最大未實現虧損% (reviewer §40, 通常為負)."""
+        """Max Adverse Excursion (reviewer §40, typically negative)."""
         if self.entry_price <= 0:
             return 0.0
         return (self.min_close_since_entry / self.entry_price - 1.0) * 100.0
 
     def update_running_stats(self, close: float, d: date_type) -> None:
-        """每日收盤後 update max/min close."""
+        """Daily close update for max/min tracking."""
         if close > self.max_close_since_entry:
             self.max_close_since_entry = close
             self.max_close_date = d
@@ -114,9 +121,10 @@ class Position:
 
 @dataclass
 class ExitDecision:
-    """Single exit rule 的判斷結果."""
+    """Return value from a single exit rule evaluation."""
+
     should_exit: bool
-    reason: str               # human-readable, 例: 'trailing_stop (close=98 < stop=99.5)'
+    reason: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -126,14 +134,15 @@ class ExitDecision:
 
 
 class ExitRule(ABC):
-    """Exit rule 抽象基類.
+    """Exit rule base class.
 
-    子類必須設定:
-      - name: rule 識別 (寫進 exit_reason)
-      - priority: int, 越小越優先 (reviewer §43: regime_exit < trailing_stop)
+    Subclasses must set:
+      - name: rule identifier (written into exit_reason).
+      - priority: int, lower = higher priority.
     """
+
     name: str
-    priority: int = 999  # default 最低優先
+    priority: int = 999
 
     @abstractmethod
     def check(
@@ -144,16 +153,18 @@ class ExitRule(ABC):
         atr: float | None,
         regime: str,
     ) -> ExitDecision:
-        """檢查是否應該 exit 這個 position.
+        """Evaluate whether this position should exit.
 
         Args:
-            position: 開倉部位 (running stats 已 update 至 as_of)
-            as_of: today 的日期
-            close: today 的 adj_close
-            atr: today 的 atr_14 (可能 None)
-            regime: today 的 market_regime
+            position: open position with running stats current as of
+                today (updated by caller before this method is called).
+            as_of: evaluation date.
+            close: today's adj_close for this symbol.
+            atr: today's ATR(14) for this symbol (may be None).
+            regime: today's TAIEX market regime.
 
         Returns:
-            ExitDecision (should_exit + reason + metadata)
+            ExitDecision with should_exit flag, human-readable reason,
+            and optional metadata dict.
         """
         raise NotImplementedError

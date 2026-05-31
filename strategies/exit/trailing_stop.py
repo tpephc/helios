@@ -1,22 +1,33 @@
 # strategies/exit/trailing_stop.py
-"""ATR Trailing Stop (Priority 2, after RegimeExit).
+"""ATR trailing stop — v0.2.0.
 
-公式 (reviewer §36, fixed multiplier 2.0):
-  stop_price = max_close_since_entry - 2 * ATR14_current
-  exit if close < stop_price
+Priority 2 (after RegimeExit).
 
-設計選擇:
-- ATR14 用 **current** (每日重算), 不是 entry 當下 fixed
-- Multiplier 固定 2.0 (reviewer §37 禁止 adaptive)
-- 不做 chandelier 變種、ML-based、volatility-aware
-- 收盤觸發 (close-based), 不看盤中 high/low
+Formula:
+    stop_price = max_close_since_entry - 2 * entry_atr
+    exit if close <= stop_price
 
-不會：
-- 砍掉最好 winners (max_close trailing 跟漲)
-- 在 sideways 中過早被洗 (2*ATR 是寬 buffer)
-- 在 regime collapse 時保命 (那是 RegimeExit 的工作)
+v0.2.0 changes:
+  1. ATR basis changed from current (daily recalculated) to entry_atr
+     (fixed at position open).  Rationale: with RegimeExit narrowed to
+     bear-only (v0.2.0), crisis periods no longer trigger forced exit.
+     Using current ATR during crisis would widen the stop (high vol →
+     high ATR → lower stop) exactly when risk protection is most
+     needed.  Fixed entry_atr ensures deterministic, auditable stop
+     levels that do not weaken during volatility expansion.
+  2. Trigger changed from ``close < stop`` to ``close <= stop`` to
+     match the exit contract specification.
 
-Version: v0.1.0 (2026-05-17)
+Design:
+  - Multiplier fixed at 2.0 (reviewer §37: no adaptive).
+  - Close-based trigger (no intraday high/low).
+  - max_close trails upward only (updated by run_exit_scan before
+    this rule is evaluated).
+  - The ``atr`` parameter in check() is still received per the
+    ExitRule interface but is NOT used for stop calculation.
+    entry_atr is read from the position object.
+
+Version: v0.2.0 (2026-05-31)
 """
 from __future__ import annotations
 
@@ -29,7 +40,7 @@ ATR_STOP_MULTIPLIER = 2.0
 
 class TrailingStop(ExitRule):
     name = "trailing_stop"
-    priority = 2  # 在 regime_exit 之後
+    priority = 2  # after regime_exit
 
     def __init__(self, multiplier: float = ATR_STOP_MULTIPLIER) -> None:
         self.multiplier = multiplier
@@ -42,24 +53,27 @@ class TrailingStop(ExitRule):
         atr: float | None,
         regime: str,
     ) -> ExitDecision:
-        if atr is None or atr <= 0:
+        if position.entry_atr <= 0:
             return ExitDecision(should_exit=False, reason="")
 
-        stop_price = position.max_close_since_entry - self.multiplier * atr
+        stop_price = (
+            position.max_close_since_entry
+            - self.multiplier * position.entry_atr
+        )
 
-        if close < stop_price:
+        if close <= stop_price:
             return ExitDecision(
                 should_exit=True,
                 reason=(
-                    f"{self.name} (close={close:.2f} < stop={stop_price:.2f}, "
+                    f"{self.name} (close={close:.2f} <= stop={stop_price:.2f}, "
                     f"max_close={position.max_close_since_entry:.2f}, "
-                    f"atr={atr:.2f}, mult={self.multiplier})"
+                    f"entry_atr={position.entry_atr:.2f}, mult={self.multiplier})"
                 ),
                 metadata={
                     "exit_price": close,
                     "stop_price": stop_price,
                     "max_close_since_entry": position.max_close_since_entry,
-                    "atr_at_exit": atr,
+                    "entry_atr": position.entry_atr,
                     "multiplier": self.multiplier,
                 },
             )
