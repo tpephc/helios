@@ -121,7 +121,7 @@ def _load_tracker_state(conn) -> list[dict]:
         SELECT
             c.signal_id,
             c.symbol,
-            COALESCE(si.stock_name, '') AS stock_name,
+            COALESCE(si.short_name, '') AS stock_name,
             c.strategy,
             c.signal_date,
             c.approval_status,
@@ -130,7 +130,7 @@ def _load_tracker_state(conn) -> list[dict]:
             olr.net_return_t1,
             COALESCE(os.is_resolved, false)  AS is_resolved
         FROM canonical c
-        LEFT JOIN stock_info         si  ON si.stock_id   = c.symbol
+        LEFT JOIN company_metadata   si  ON si.stock_id   = c.symbol
         LEFT JOIN obs_state          os  ON os.signal_id  = c.signal_id
         LEFT JOIN obs_latest_return  olr ON olr.signal_id = c.signal_id
         ORDER BY c.strategy, c.signal_date, c.symbol
@@ -212,7 +212,7 @@ def _signal_table(signals: list[dict]) -> str:
     rows = []
     for s in signals:
         symbol   = str(s["symbol"])
-        name     = str(s.get("stock_name", ""))[:4]
+        name     = str(s.get("stock_name", ""))[:5]
         date_s   = str(s["signal_date"])[5:10]   # MM-DD
         max_day  = s["max_day"]
         day_num  = max_day + 1 if max_day >= 0 else 0
