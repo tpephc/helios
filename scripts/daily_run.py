@@ -40,7 +40,8 @@ logger = get_logger(__name__)
 def main() -> int:
     parser = argparse.ArgumentParser(description="v0.1.18 daily paper-trading run")
     parser.add_argument("--as-of", type=str, default=None)
-    parser.add_argument("--capital", type=float, default=1_000_000)
+    parser.add_argument("--capital", type=float, default=None,
+                        help="Override trading_capital from account config.")
     parser.add_argument("--listener-minutes", type=int, default=30)
     parser.add_argument("--no-listener", action="store_true",
                         help="skip telegram listener (CI / smoke test)")
@@ -77,6 +78,7 @@ def main() -> int:
         _account = _accounts[0]
 
     account_id = _account.account_id
+    capital = args.capital if args.capital is not None else _account.trading_capital
 
     logger.info(
         "daily_run_account_selected",
@@ -252,7 +254,7 @@ def main() -> int:
         # ── Step 7: entry signal generation ───────────────
         from scripts.process_entries import generate_pending_signals
         pending, notional_map = generate_pending_signals(
-            as_of=as_of, capital=args.capital, bot=bot,
+            as_of=as_of, capital=capital, bot=bot,
             account_id=account_id,
             auto_approve=args.auto_approve,
         )

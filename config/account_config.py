@@ -35,6 +35,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import date as date_type
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,8 @@ class AccountConfig:
     ca_cert_path: Path | None
     enabled: bool
     use_legacy_env: bool = False      # backward compat for single-account setups
+    trading_capital: float = 1_000_000   # available capital for position sizing
+    equity_reset_date: date_type | None = None  # if set, ignore PnL before this date
 
     def __post_init__(self) -> None:
         """Validate account_id format at construction time."""
@@ -218,6 +221,9 @@ def load_accounts(
             ca_cert_path=ca_cert_path,
             enabled=enabled,
             use_legacy_env=bool(entry.get("use_legacy_env", False)),
+            trading_capital=float(entry.get("trading_capital", 1_000_000)),
+            equity_reset_date=date_type.fromisoformat(entry["equity_reset_date"])
+                if entry.get("equity_reset_date") else None,
         )
         configs.append(cfg)
         logger.debug("account_loaded", account_id=account_id,

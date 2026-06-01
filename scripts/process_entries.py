@@ -48,10 +48,13 @@ def _account_equity(
     initial_capital: float,
     as_of: date_type,
     account_id: str,
+    equity_reset_date: date_type | None = None,
 ) -> tuple[float, float, dict]:
     """Returns (cash, equity, sector_exposures).
 
     v0.1.18: account_id required for positions queries.
+    equity_reset_date: if set, closed positions before this date are excluded
+    from PnL calculation; initial_capital is treated as the reset balance.
     """
     cash = initial_capital
     sector_value: dict[str, float] = {}
@@ -60,6 +63,8 @@ def _account_equity(
 
     for p in pos_store.get_closed_positions(account_id=account_id):
         if p.exit_proceeds is None:
+            continue
+        if equity_reset_date and p.exit_date <= equity_reset_date:
             continue
         cash += p.exit_proceeds - p.notional_at_entry - p.entry_commission - p.entry_slippage_cost
 
@@ -229,7 +234,8 @@ def _auto_approve_and_fill(
 def main() -> int:
     parser = argparse.ArgumentParser(description="v0.1.19 entry signal processing")
     parser.add_argument("--as-of", type=str, default=None)
-    parser.add_argument("--capital", type=float, default=1_000_000)
+    parser.add_argument("--capital", type=float, default=None,
+                        help="Override trading_capital from account config.")
     parser.add_argument("--auto-approve", action="store_true",
                         help="bypass approval; immediately fill + open (paper/sim only)")
     parser.add_argument("--slippage", type=float, default=0.001)
@@ -259,6 +265,8 @@ def main() -> int:
         _account = _accounts[0]
 
     account_id = _account.account_id
+    capital = args.capital if args.capital is not None else _account.trading_capital
+    equity_reset_date = _account.equity_reset_date
 
     # ── Paper-only guard for --auto-approve ──
     _SAFE_ENVS = {"paper", "simulation", "dev", "sim"}
@@ -273,7 +281,7 @@ def main() -> int:
             return 1
 
     print(f"Helios process_entries -- {datetime.now().isoformat(timespec='seconds')}")
-    print(f"As-of: {as_of}  /  Capital: NTD {args.capital:,.0f}  /  Budget: {budget.describe()}")
+    print(f"As-of: {as_of}  /  Capital: NTD {capital:,.0f}  /  Budget: {budget.describe()}")
     print(f"Account: {account_id} ({_account.environment})")
     if args.auto_approve:
         print("!! AUTO-APPROVE MODE (paper/sim only -- bypasses ADR-004)\n")
@@ -285,7 +293,10 @@ def main() -> int:
     print(f"[breakout] fired: {len(candidates)} candidate signals")
 
     # 2. Snapshot account state
-    cash, equity, exposures = _account_equity(args.capital, as_of, account_id=account_id)
+    cash, equity, exposures = _account_equity(
+        capital, as_of, account_id=account_id,
+        equity_reset_date=equity_reset_date,
+    )
     print(f"Account: cash NTD {cash:,.0f} / equity NTD {equity:,.0f} / "
           f"positions_value NTD {exposures['positions_value']:,.0f}\n")
 
@@ -434,7 +445,10 @@ def generate_pending_signals(
     from storage.signals import update_approval
     budget = budget if budget is not None else DEFAULT_RISK_BUDGET
 
-    cash, equity, exposures = _account_equity(capital, as_of, account_id=account_id)
+    cash, equity, exposures = _account_equity(
+        capital, as_of, account_id=account_id,
+        equity_reset_date=equity_reset_date,
+    )
     per_pos_notional = budget.per_position_pct * equity
     fees = DEFAULT_TW_FEES
     buy_cost = per_pos_notional * (1 + fees.commission_rate + fees.slippage_rate)

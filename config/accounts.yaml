@@ -37,6 +37,8 @@ accounts:
     telegram_chat_id: "8565726156"
     ca_cert_path: certs/Sinopac.pfx
     enabled: true
+    trading_capital: 100000
+    equity_reset_date: "2026-06-01"
     use_legacy_env: true            # reads SHIOAJI_API_KEY (no prefix) for now
                                     # set false when adding a second account
 
