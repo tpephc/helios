@@ -497,6 +497,21 @@ CREATE INDEX IF NOT EXISTS idx_positions_account_symbol
     ON positions (account_id, symbol);
 CREATE INDEX IF NOT EXISTS idx_positions_source_order_id
     ON positions (source_order_id);
+
+-- v0.1.19: pullback strategy feature cache
+-- Source: features/pullback_features.py
+-- Columns mirror find_pullback_candidates() query requirements exactly.
+CREATE TABLE IF NOT EXISTS bullish_features (
+    stock_id            VARCHAR,
+    date                DATE,
+    beta_adj_rs_20d     DOUBLE,
+    dist_above_ma20_atr DOUBLE,
+    beta_60             DOUBLE,
+    sma20_slope_10d     DOUBLE,
+    computed_at         TIMESTAMP,
+    PRIMARY KEY (stock_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_bullish_features_date ON bullish_features(date);
 """
 
 
