@@ -61,7 +61,7 @@ def test_fill_and_drift_gate_share_same_price_source(tmp_db, seed_calendar):
         score=0.9, price=140.0, reason=["invariant"],
         signal_date=seed_calendar[0],
         entry_atr=2.0, regime="bull",
-    )
+    ).signal_id
 
     broker = PaperBroker()
     ok, msg, _ = approve_signal(
@@ -539,7 +539,7 @@ def test_listener_does_not_consume_pre_startup_telegram_updates(tmp_db, seed_cal
         symbol="0050", strategy="invariant_test", signal_type="entry",
         score=0.9, price=140.0, reason=["test"],
         signal_date=cal[0], entry_atr=2.0,
-    )
+    ).signal_id
 
     bot = MockTelegramBot(chat_id="TEST_CHAT")
     # Plant a stale message as if it had been sitting in Telegram's queue

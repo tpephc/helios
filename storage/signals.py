@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import uuid
+import duckdb
 from dataclasses import dataclass, field
 from datetime import date as date_type
 from datetime import datetime, timedelta
@@ -29,6 +30,18 @@ from data.database import connect
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+@dataclass(frozen=True)
+class SaveSignalResult:
+    """Return value of save_signal().
+
+    created=True  : new row inserted into DB.
+    created=False : canonical key already exists; existing signal_id returned,
+                    no new row written. Caller must skip Telegram notification
+                    and auto-approve.
+    """
+
+    signal_id: str
+    created: bool
 
 
 ApprovalStatus = Literal[
@@ -89,49 +102,91 @@ def save_signal(
     timeout_minutes: int = 30,
     metadata: dict | None = None,
     signal_id: str | None = None,
-) -> str:
-    """寫入新訊號，回傳 signal_id。
+) -> SaveSignalResult:
+    """寫入新訊號，回傳 SaveSignalResult(signal_id, created)。
+
+    created=True  : 新 row 寫入 DB。
+    created=False : canonical key (symbol, strategy, signal_type, signal_date)
+                    已存在，回傳既有 signal_id，未寫入新 row。Caller 應跳過
+                    Telegram 通知與 auto-approve。
+
+    Signals are event-keyed, not generation-keyed (decided 2026-06-02).
+    Terminal states (REJECTED, EXPIRED_DRIFT, TIMEOUT) permanently close the
+    canonical signal event. A rerun of the same opportunity returns the
+    existing signal_id with created=False.
 
     v0.1.14.2-c3: signal_date is REQUIRED. It is the market-semantic date
     (the as_of for the run that generated this signal), distinct from
-    created_at (system insertion time). Idempotency, audit, and any future
-    "signals for trading day X" query depend on this separation. Mixing them
-    via CAST(timestamp AS DATE) is the bug c3 closes.
+    created_at (system insertion time).
 
     v0.1.14.3.3: optional `signal_id` kwarg lets callers supply their own
     identifier (e.g. `DEV-TEST-001` for `scripts/dev_push_signal.py` test
-    injection — visible / filterable in logs / markers / scars). Default
-    behavior unchanged (uuid4 auto-generated). The schema's PK constraint
-    enforces uniqueness regardless of source.
+    injection). Default behavior unchanged (uuid4 auto-generated).
+
+    v0.1.2 (2026-06-02): returns SaveSignalResult; idempotent on canonical key.
     """
     if signal_id is None:
         signal_id = str(uuid.uuid4())
     now = datetime.now()
     timeout_at = now + timedelta(minutes=timeout_minutes) if approval_status == "PENDING" else None
 
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO signals (
-                signal_id, signal_date, created_at, symbol, strategy, signal_type,
-                score, price, entry_atr, stop_loss, take_profit,
-                reason, regime, approval_status, timeout_at, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                signal_id, signal_date, now, symbol, strategy, signal_type,
-                score, price, entry_atr, stop_loss, take_profit,
-                json.dumps(reason, ensure_ascii=False),
-                regime, approval_status, timeout_at,
-                json.dumps(metadata or {}, ensure_ascii=False),
-            ],
+    try:
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO signals (
+                    signal_id, signal_date, created_at, symbol, strategy, signal_type,
+                    score, price, entry_atr, stop_loss, take_profit,
+                    reason, regime, approval_status, timeout_at, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    signal_id, signal_date, now, symbol, strategy, signal_type,
+                    score, price, entry_atr, stop_loss, take_profit,
+                    json.dumps(reason, ensure_ascii=False),
+                    regime, approval_status, timeout_at,
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                ],
+            )
+        logger.info(
+            "signal_saved",
+            signal_id=signal_id, signal_date=str(signal_date),
+            symbol=symbol, strategy=strategy, score=score, status=approval_status,
         )
-    logger.info(
-        "signal_saved",
-        signal_id=signal_id, signal_date=str(signal_date),
-        symbol=symbol, strategy=strategy, score=score, status=approval_status,
-    )
-    return signal_id
+        return SaveSignalResult(signal_id=signal_id, created=True)
+
+    except duckdb.ConstraintException as exc:
+        # Only handle canonical key conflicts. Re-raise for PK, NOT NULL,
+        # CHECK, or any other constraint violation.
+        with connect(read_only=True) as conn:
+            row = conn.execute(
+                """
+                SELECT signal_id FROM signals
+                WHERE symbol = ? AND strategy = ? AND signal_type = ? AND signal_date = ?
+                """,
+                [symbol, strategy, signal_type, signal_date],
+            ).fetchone()
+
+        if row is None:
+            # ConstraintException came from a different constraint (e.g. PK
+            # collision where signal_id exists under a different canonical key).
+            raise RuntimeError(
+                f"ConstraintException on INSERT but canonical key not found "
+                f"({symbol}, {strategy}, {signal_type}, {signal_date}). "
+                f"Original exception: {exc}"
+            ) from exc
+
+        existing_id = row[0]
+        logger.info(
+            "signal_duplicate_canonical_key",
+            existing_signal_id=existing_id,
+            rejected_signal_id=signal_id,
+            signal_date=str(signal_date),
+            symbol=symbol,
+            strategy=strategy,
+            created=False,
+        )
+        return SaveSignalResult(signal_id=existing_id, created=False)
 
 
 def get_signal(signal_id: str) -> SignalRow | None:
@@ -377,7 +432,7 @@ if __name__ == "__main__":
     from data.database import init_schema
     init_schema()
 
-    sid = save_signal(
+    _r = save_signal(
         symbol="2330",
         strategy="trend_breakout",
         signal_type="buy",
@@ -391,7 +446,8 @@ if __name__ == "__main__":
         regime="strong_bull",
         timeout_minutes=30,
     )
-    print(f"Created signal: {sid}")
+    sid = _r.signal_id
+    print(f"Created signal: {sid}  created={_r.created}")
     print(f"Pending: {len(get_pending())}")
 
     # Simulate ATR drift expiry

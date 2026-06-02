@@ -117,6 +117,8 @@ CREATE INDEX IF NOT EXISTS idx_signals_status      ON signals(approval_status);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol      ON signals(symbol);
 CREATE INDEX IF NOT EXISTS idx_signals_idempotency
     ON signals(symbol, strategy, signal_type, signal_date, approval_status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_signals_canonical_key
+    ON signals(symbol, strategy, signal_type, signal_date);
 
 -- ─────────────────────────────────────────────────────────────────────────
 -- orders journal — v0.1.18

@@ -113,7 +113,7 @@ def main() -> int:
         n_written = 0
         for sig in all_signals:
             try:
-                signal_id = save_signal(
+                _result = save_signal(
                     symbol=sig.stock_id,
                     strategy=sig.strategy,
                     signal_type=sig.side,
@@ -125,12 +125,20 @@ def main() -> int:
                     regime=sig.regime,
                     metadata=sig.metadata,
                 )
-                logger.info(
-                    "signal_written",
-                    signal_id=signal_id, stock_id=sig.stock_id,
-                    strategy=sig.strategy, score=sig.score,
-                )
-                n_written += 1
+                signal_id = _result.signal_id
+                if _result.created:
+                    logger.info(
+                        "signal_written",
+                        signal_id=signal_id, stock_id=sig.stock_id,
+                        strategy=sig.strategy, score=sig.score,
+                    )
+                    n_written += 1
+                else:
+                    logger.info(
+                        "skip_existing_canonical_signal",
+                        signal_id=signal_id, stock_id=sig.stock_id,
+                        strategy=sig.strategy,
+                    )
             except Exception as e:
                 logger.exception("signal_save_failed", stock_id=sig.stock_id)
                 print(f"  ✗ Failed to save {sig.stock_id}: {e}")

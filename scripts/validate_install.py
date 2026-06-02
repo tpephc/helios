@@ -254,12 +254,13 @@ def check_storage_e2e() -> bool:
         today = _date.today()
 
         # 1. Signal lifecycle
-        sid = signals.save_signal(
+        _r1 = signals.save_signal(
             symbol=test_sym, strategy="validate", signal_type="buy",
             score=0.7, price=100.0, signal_date=today, entry_atr=2.0,
             reason=["install validation test"],
         )
-        record("save_signal", bool(sid), f"signal_id={sid[:8]}...")
+        sid = _r1.signal_id
+        record("save_signal", _r1.created, f"signal_id={sid[:8]}...")
 
         # 2. update_approval (UPDATE...RETURNING)
         ok = signals.update_approval(sid, "APPROVED", approved_by="validate")
@@ -284,11 +285,12 @@ def check_storage_e2e() -> bool:
                f"qty={pos.get(test_sym, None).quantity if has_test else 'missing'}")
 
         # 7. ATR drift expiry (v0.1.1 batch fix)
-        sid2 = signals.save_signal(
+        _r2 = signals.save_signal(
             symbol=test_sym, strategy="validate", signal_type="sell",
             score=0.7, price=100.0, signal_date=today, entry_atr=2.0,
             reason=["drift test"],
         )
+        sid2 = _r2.signal_id
         n = signals.expire_drifted({test_sym: 102.0}, max_drift_atr=0.5)
         # drift = 2.0 / 2.0 = 1.0 > 0.5 → 應該被 expire
         sig2 = signals.get_signal(sid2)

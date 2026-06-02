@@ -329,7 +329,7 @@ def main() -> int:
                 )
                 print(f"  {sig.stock_id} skip: active signal already exists")
                 continue
-            signal_id = save_signal(
+            _result = save_signal(
                 symbol=sig.stock_id, strategy=sig.strategy,
                 signal_type=sig.side, score=sig.score, price=sig.entry_price,
                 signal_date=as_of,
@@ -337,6 +337,16 @@ def main() -> int:
                 regime=sig.regime, metadata=sig.metadata,
                 approval_status=("AUTO_APPROVED" if args.auto_approve else "PENDING"),
             )
+            if not _result.created:
+                logger.info(
+                    "skip_existing_canonical_signal",
+                    signal_id=_result.signal_id,
+                    symbol=sig.stock_id,
+                    strategy=sig.strategy,
+                    as_of=str(as_of),
+                )
+                continue
+            signal_id = _result.signal_id
             print(f"\n  {sig.stock_id} ({get_sector(sig.stock_id)})  "
                   f"score={sig.score:.2f}  px={sig.entry_price:.2f}  "
                   f"ATR={sig.entry_atr:.2f}")
@@ -398,7 +408,7 @@ def main() -> int:
                     )
                     print(f"  {pb.symbol} skip: active signal already exists")
                     continue
-                signal_id = save_signal(
+                _result = save_signal(
                     symbol=pb.symbol, strategy=pb.strategy,
                     signal_type=pb.signal_type, score=pb.score,
                     price=pb.price, signal_date=as_of,
@@ -412,6 +422,16 @@ def main() -> int:
                     regime=pb.regime, metadata=pb.metadata,
                     approval_status=("AUTO_APPROVED" if args.auto_approve else "PENDING"),
                 )
+                if not _result.created:
+                    logger.info(
+                        "skip_existing_canonical_signal",
+                        signal_id=_result.signal_id,
+                        symbol=pb.symbol,
+                        strategy=pb.strategy,
+                        as_of=str(as_of),
+                    )
+                    continue
+                signal_id = _result.signal_id
                 print(f"\n  {pb.symbol} ({get_sector(pb.symbol)})  "
                       f"score={pb.score:.2f}  px={pb.price:.2f}  "
                       f"ATR={pb.entry_atr:.2f}  dist={pb.metadata['dist_above_ma20_atr']:.2f}  "
@@ -505,18 +525,7 @@ def generate_pending_signals(
                 )
                 continue
 
-            if _has_active_signal_for(
-                symbol=sig.stock_id, strategy=sig.strategy,
-                signal_type=sig.side, signal_date=as_of,
-            ):
-                logger.info(
-                    "skip_duplicate_signal",
-                    symbol=sig.stock_id, strategy=sig.strategy,
-                    as_of=str(as_of),
-                )
-                continue
-
-            signal_id = save_signal(
+            _result = save_signal(
                 symbol=sig.stock_id, strategy=sig.strategy,
                 signal_type=sig.side, score=sig.score, price=sig.entry_price,
                 signal_date=as_of,
@@ -524,6 +533,16 @@ def generate_pending_signals(
                 regime=sig.regime, metadata=sig.metadata,
                 approval_status="AUTO_APPROVED" if auto_approve else "PENDING",
             )
+            if not _result.created:
+                logger.info(
+                    "skip_existing_canonical_signal",
+                    signal_id=_result.signal_id,
+                    symbol=sig.stock_id,
+                    strategy=sig.strategy,
+                    as_of=str(as_of),
+                )
+                continue
+            signal_id = _result.signal_id
 
             accepted = False
             if auto_approve:
@@ -622,7 +641,7 @@ def generate_pending_signals(
                 )
                 continue
 
-            signal_id = save_signal(
+            _result = save_signal(
                 symbol=pb_sig.symbol, strategy=pb_sig.strategy,
                 signal_type=pb_sig.signal_type, score=pb_sig.score,
                 price=pb_sig.price,
@@ -638,6 +657,16 @@ def generate_pending_signals(
                 metadata=pb_sig.metadata,
                 approval_status="AUTO_APPROVED" if auto_approve else "PENDING",
             )
+            if not _result.created:
+                logger.info(
+                    "skip_existing_canonical_signal",
+                    signal_id=_result.signal_id,
+                    symbol=pb_sig.symbol,
+                    strategy=pb_sig.strategy,
+                    as_of=str(as_of),
+                )
+                continue
+            signal_id = _result.signal_id
 
             accepted = False
             if auto_approve:

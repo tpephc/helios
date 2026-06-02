@@ -174,7 +174,7 @@ def test_approve_pending_to_position(tmp_db, seed_calendar):
         score=0.9, price=140.0, reason=["test"],
         signal_date=seed_calendar[0],
         entry_atr=2.0, regime="bull",
-    )
+    ).signal_id
 
     ok, msg, pos_id = approve_signal(
         sid, target_notional=100_000, fill_date=seed_calendar[1],
@@ -198,7 +198,7 @@ def test_reject_pending(tmp_db, seed_calendar):
         score=0.5, price=140.0, reason=["x"],
         signal_date=seed_calendar[0],
         entry_atr=2.0, regime="bull",
-    )
+    ).signal_id
     ok, _msg = reject_signal(sid)
     assert ok
     assert get_signal(sid).approval_status == "REJECTED"
@@ -215,7 +215,7 @@ def test_late_approve_marks_timeout(tmp_db, seed_calendar, monkeypatch):
         score=0.5, price=140.0, reason=["x"],
         signal_date=seed_calendar[0],
         entry_atr=2.0, regime="bull", timeout_minutes=1,
-    )
+    ).signal_id
     # Wind the clock past timeout — patch datetime.now() in approvals module
     from execution import approvals as ap
     fake_now = datetime.now() + timedelta(minutes=10)
@@ -245,7 +245,7 @@ def test_double_approve_idempotent(tmp_db, seed_calendar):
         score=0.5, price=140.0, reason=["x"],
         signal_date=seed_calendar[0],
         entry_atr=2.0, regime="bull",
-    )
+    ).signal_id
 
     broker = PaperBroker()
     ok1, _, _ = approve_signal(sid, target_notional=100_000,
@@ -279,7 +279,7 @@ def test_same_symbol_double_open_blocked(tmp_db, seed_calendar):
         score=0.9, price=140.0, reason=["x"],
         signal_date=seed_calendar[0],
         entry_atr=2.0, regime="bull",
-    )
+    ).signal_id
     # storage requires APPROVED status before lifecycle.open will proceed
     from storage.signals import update_approval
     update_approval(sid, "APPROVED", approved_by="pytest")
@@ -310,7 +310,7 @@ def test_atr_drift_expiry(tmp_db):
         score=0.5, price=140.0, reason=["x"],
         signal_date=date(2026, 5, 1),
         entry_atr=2.0, regime="bull",
-    )
+    ).signal_id
     # Drift = |145 - 140| = 5.0, threshold = 0.5 * 2.0 = 1.0 → must expire
     expired = expire_by_drift(date(2026, 5, 2))
     assert sid in expired, f"signal not in expired list: {expired}"
@@ -330,7 +330,7 @@ def test_atr_drift_under_threshold_no_expire(tmp_db):
         score=0.5, price=140.0, reason=["x"],
         signal_date=date(2026, 5, 1),
         entry_atr=2.0, regime="bull",
-    )
+    ).signal_id
     expired = expire_by_drift(date(2026, 5, 2))
     assert sid not in expired
     assert get_signal(sid).approval_status == "PENDING"
@@ -582,7 +582,7 @@ def test_drift_gate_uses_adj_open(tmp_db, seed_calendar):
         score=0.9, price=140.0, reason=["test"],
         signal_date=seed_calendar[0],
         entry_atr=2.0, regime="bull",
-    )
+    ).signal_id
     ok, msg, _ = approve_signal(
         sid, target_notional=50_000, fill_date=fill_date,
         broker=PaperBroker(), approved_by="pytest",
@@ -810,7 +810,7 @@ def test_save_signal_honors_custom_signal_id(tmp_db):
         signal_date=date(2026, 5, 14),
         entry_atr=20.0, regime="bull",
         signal_id="DEV-TEST-001",
-    )
+    ).signal_id
     assert sid == "DEV-TEST-001", f"explicit signal_id ignored: got {sid}"
     row = get_signal("DEV-TEST-001")
     assert row is not None
@@ -828,7 +828,7 @@ def test_save_signal_default_signal_id_is_uuid(tmp_db):
         score=0.5, price=950.0, reason=["x"],
         signal_date=date(2026, 5, 14),
         entry_atr=20.0, regime="bull",
-    )
+    ).signal_id
     # uuid4 strings have 4 dashes (8-4-4-4-12)
     assert sid.count("-") == 4
     assert len(sid) == 36
@@ -1101,3 +1101,64 @@ def test_bootstrap_price_enables_broker_fill(tmp_db):
         f"adj_open {price:.2f} by more than 1% — broker is not reading "
         f"the bootstrapped row"
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# P1-OPS — Signal storage idempotency (2026-06-02)
+# ─────────────────────────────────────────────────────────────
+
+
+def test_save_signal_canonical_idempotency(tmp_db):
+    """P1-OPS: repeated save_signal() calls with the same canonical key
+    must return the same signal_id with created=False on subsequent calls.
+
+    Signals are event-keyed: (symbol, strategy, signal_type, signal_date).
+    """
+    from storage.signals import SaveSignalResult, save_signal
+
+    r1 = save_signal(
+        symbol="IDEM_TEST", strategy="test_strategy", signal_type="buy",
+        score=0.5, price=100.0, reason=["first"],
+        signal_date=date(2026, 1, 1),
+    )
+    assert isinstance(r1, SaveSignalResult)
+    assert r1.created is True
+
+    r2 = save_signal(
+        symbol="IDEM_TEST", strategy="test_strategy", signal_type="buy",
+        score=0.9, price=105.0, reason=["rerun"],
+        signal_date=date(2026, 1, 1),
+    )
+    assert isinstance(r2, SaveSignalResult)
+    assert r2.created is False
+    assert r2.signal_id == r1.signal_id
+
+
+def test_terminal_state_does_not_permit_regeneration(tmp_db):
+    """P1-OPS: a REJECTED signal must not regenerate a new signal_id.
+
+    Terminal states (REJECTED, EXPIRED_DRIFT, TIMEOUT) permanently close
+    the canonical signal event. This is the core Event-keyed semantic
+    decided 2026-06-02.
+    """
+    from storage.signals import SaveSignalResult, get_signal, save_signal, update_approval
+
+    r1 = save_signal(
+        symbol="IDEM_TEST", strategy="test_strategy", signal_type="buy",
+        score=0.5, price=100.0, reason=["first"],
+        signal_date=date(2026, 1, 2),
+    )
+    assert r1.created is True
+
+    ok = update_approval(r1.signal_id, "REJECTED", approved_by="test")
+    assert ok is True
+    assert get_signal(r1.signal_id).approval_status == "REJECTED"
+
+    r2 = save_signal(
+        symbol="IDEM_TEST", strategy="test_strategy", signal_type="buy",
+        score=0.7, price=102.0, reason=["after reject"],
+        signal_date=date(2026, 1, 2),
+    )
+    assert isinstance(r2, SaveSignalResult)
+    assert r2.created is False
+    assert r2.signal_id == r1.signal_id
