@@ -318,6 +318,17 @@ def main() -> int:
     if accepted:
         print("=== Accepted breakout signals ===")
         for sig, _ in accepted:
+            if _has_active_signal_for(
+                symbol=sig.stock_id, strategy=sig.strategy,
+                signal_type=sig.side, signal_date=as_of,
+            ):
+                logger.info(
+                    "skip_duplicate_signal",
+                    symbol=sig.stock_id, strategy=sig.strategy,
+                    as_of=str(as_of),
+                )
+                print(f"  {sig.stock_id} skip: active signal already exists")
+                continue
             signal_id = save_signal(
                 symbol=sig.stock_id, strategy=sig.strategy,
                 signal_type=sig.side, score=sig.score, price=sig.entry_price,
@@ -376,6 +387,17 @@ def main() -> int:
         if pb_signals:
             print(f"\n=== Accepted pullback signals ({len(pb_signals)}) ===")
             for pb in pb_signals:
+                if _has_active_signal_for(
+                    symbol=pb.symbol, strategy=pb.strategy,
+                    signal_type=pb.signal_type, signal_date=as_of,
+                ):
+                    logger.info(
+                        "skip_duplicate_signal",
+                        symbol=pb.symbol, strategy=pb.strategy,
+                        as_of=str(as_of),
+                    )
+                    print(f"  {pb.symbol} skip: active signal already exists")
+                    continue
                 signal_id = save_signal(
                     symbol=pb.symbol, strategy=pb.strategy,
                     signal_type=pb.signal_type, score=pb.score,
@@ -470,6 +492,17 @@ def generate_pending_signals(
 
         for sig, ok, _reason in decisions:
             if not ok:
+                continue
+
+            if _has_active_signal_for(
+                symbol=sig.stock_id, strategy=sig.strategy,
+                signal_type=sig.side, signal_date=as_of,
+            ):
+                logger.info(
+                    "skip_duplicate_signal",
+                    symbol=sig.stock_id, strategy=sig.strategy,
+                    as_of=str(as_of),
+                )
                 continue
 
             if _has_active_signal_for(
