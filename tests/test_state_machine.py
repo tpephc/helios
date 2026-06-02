@@ -26,7 +26,7 @@ from tests.conftest import MockTelegramBot, seed_price
 # ─────────────────────────────────────────────────────────────
 
 
-def test_unauthorized_chat_ignored(tmp_db):
+def test_unauthorized_chat_ignored(tmp_db, test_account_id):
     """Messages from unconfigured chat_id must be ignored (security gate).
 
     v0.1.14.3.7: listener now drains pre-startup updates, so pre-seeding the
@@ -45,7 +45,8 @@ def test_unauthorized_chat_ignored(tmp_db):
     bot.on_poll = inject_on_first_poll
 
     summary = listen_for_approvals(
-        bot=bot, broker=PaperBroker(),
+        bot=bot, broker=PaperBroker(account_id=test_account_id),
+        account_id=test_account_id,
         fill_date=date(2026, 5, 2),
         target_notional_for=lambda _: 100000.0,
         duration_seconds=1, poll_timeout=1,
@@ -79,7 +80,7 @@ def test_t_plus_1_fill_date(tmp_db, seed_calendar):
     assert nxt_end is None
 
 
-def test_t_plus_1_fill_uses_next_day_open(tmp_db, seed_calendar):
+def test_t_plus_1_fill_uses_next_day_open(tmp_db, seed_calendar, test_account_id):
     """PaperBroker.submit_buy must use the fill_date's adj_open, not T's.
 
     v0.1.14.3.1: renamed from `..._next_day_close` — under v0.1.14.3+ the
@@ -91,7 +92,7 @@ def test_t_plus_1_fill_uses_next_day_open(tmp_db, seed_calendar):
     """
     from execution.paper_broker import PaperBroker
 
-    broker = PaperBroker()
+    broker = PaperBroker(account_id=test_account_id)
     cal = seed_calendar
     # close on cal[0] = 140.0; close on cal[1] = 140.5 (per seed_calendar pattern)
     result = broker.submit_buy(
@@ -109,7 +110,7 @@ def test_t_plus_1_fill_uses_next_day_open(tmp_db, seed_calendar):
 # ─────────────────────────────────────────────────────────────
 
 
-def test_push_failure_does_not_leave_pending(tmp_db, seed_calendar, monkeypatch):
+def test_push_failure_does_not_leave_pending(tmp_db, seed_calendar, monkeypatch, test_account_id):
     """If Telegram push returns None, signal must be transitioned out of PENDING.
 
     Per reviewer P0-3: 'missed signal > wrong trade'.
@@ -140,6 +141,7 @@ def test_push_failure_does_not_leave_pending(tmp_db, seed_calendar, monkeypatch)
 
     pending, _ = generate_pending_signals(
         as_of=seed_calendar[0], capital=1_000_000, bot=bot,
+        account_id=test_account_id,
     )
 
     # Expected: pending list is empty (push failed, signal expired)
@@ -162,7 +164,7 @@ def test_push_failure_does_not_leave_pending(tmp_db, seed_calendar, monkeypatch)
 # ─────────────────────────────────────────────────────────────
 
 
-def test_approve_pending_to_position(tmp_db, seed_calendar):
+def test_approve_pending_to_position(tmp_db, seed_calendar, test_account_id):
     """Happy path: PENDING signal → approve → OPEN position."""
     from execution.approvals import approve_signal
     from execution.paper_broker import PaperBroker
@@ -178,12 +180,13 @@ def test_approve_pending_to_position(tmp_db, seed_calendar):
 
     ok, msg, pos_id = approve_signal(
         sid, target_notional=100_000, fill_date=seed_calendar[1],
-        broker=PaperBroker(), approved_by="pytest",
+        broker=PaperBroker(account_id=test_account_id), approved_by="pytest",
+        account_id=test_account_id,
     )
     assert ok, f"approve failed: {msg}"
     assert pos_id is not None
 
-    opens = get_open_positions(symbol="0050")
+    opens = get_open_positions(symbol="0050", account_id=test_account_id)
     assert len(opens) == 1
     assert opens[0].entry_signal_id == sid
     assert opens[0].regime_at_entry == "bull"
@@ -204,7 +207,7 @@ def test_reject_pending(tmp_db, seed_calendar):
     assert get_signal(sid).approval_status == "REJECTED"
 
 
-def test_late_approve_marks_timeout(tmp_db, seed_calendar, monkeypatch):
+def test_late_approve_marks_timeout(tmp_db, seed_calendar, monkeypatch, test_account_id):
     """P1-5: late /approve must transition signal to TIMEOUT, not just error out."""
     from execution.approvals import approve_signal
     from execution.paper_broker import PaperBroker
@@ -224,7 +227,8 @@ def test_late_approve_marks_timeout(tmp_db, seed_calendar, monkeypatch):
 
     ok, msg, _ = approve_signal(
         sid, target_notional=100_000, fill_date=seed_calendar[1],
-        broker=PaperBroker(),
+        broker=PaperBroker(account_id=test_account_id),
+        account_id=test_account_id,
     )
     assert not ok
     assert "已逾時" in msg
@@ -233,7 +237,7 @@ def test_late_approve_marks_timeout(tmp_db, seed_calendar, monkeypatch):
     assert get_signal(sid).expired_reason == "late_approval_after_timeout"
 
 
-def test_double_approve_idempotent(tmp_db, seed_calendar):
+def test_double_approve_idempotent(tmp_db, seed_calendar, test_account_id):
     """P1-6: second /approve on same signal returns False, doesn't double-fill."""
     from execution.approvals import approve_signal
     from execution.paper_broker import PaperBroker
@@ -247,19 +251,21 @@ def test_double_approve_idempotent(tmp_db, seed_calendar):
         entry_atr=2.0, regime="bull",
     ).signal_id
 
-    broker = PaperBroker()
+    broker = PaperBroker(account_id=test_account_id)
     ok1, _, _ = approve_signal(sid, target_notional=100_000,
-                               fill_date=seed_calendar[1], broker=broker)
+                               fill_date=seed_calendar[1], broker=broker,
+                               account_id=test_account_id)
     ok2, _msg2, pos2 = approve_signal(sid, target_notional=100_000,
-                                      fill_date=seed_calendar[1], broker=broker)
+                                      fill_date=seed_calendar[1], broker=broker,
+                                      account_id=test_account_id)
     assert ok1
     assert not ok2
     assert pos2 is None
     # Still exactly one open position
-    assert len(get_open_positions(symbol="0050")) == 1
+    assert len(get_open_positions(symbol="0050", account_id=test_account_id)) == 1
 
 
-def test_same_symbol_double_open_blocked(tmp_db, seed_calendar):
+def test_same_symbol_double_open_blocked(tmp_db, seed_calendar, test_account_id):
     """lifecycle.open_position_from_signal must refuse to open second position
     when one is already OPEN for that symbol."""
     from execution.lifecycle import open_position_from_signal
@@ -269,6 +275,7 @@ def test_same_symbol_double_open_blocked(tmp_db, seed_calendar):
 
     # Pre-seed an OPEN position for 0050
     open_position(
+        account_id=test_account_id,
         symbol="0050", strategy="trend_breakout_v1",
         entry_date=seed_calendar[0], entry_price=140.0, entry_atr=2.0,
         regime_at_entry="bull", sector="etf", is_etf=True,
@@ -286,10 +293,11 @@ def test_same_symbol_double_open_blocked(tmp_db, seed_calendar):
 
     pos_id = open_position_from_signal(
         signal_id=sid, target_notional=100_000,
-        fill_date=seed_calendar[1], broker=PaperBroker(),
+        fill_date=seed_calendar[1], broker=PaperBroker(account_id=test_account_id),
+        account_id=test_account_id,
     )
     assert pos_id is None, "second open for same symbol must be refused"
-    assert len(get_open_positions(symbol="0050")) == 1
+    assert len(get_open_positions(symbol="0050", account_id=test_account_id)) == 1
 
 
 # ─────────────────────────────────────────────────────────────
@@ -535,7 +543,7 @@ def test_is_trading_day_calendar_correctness(tmp_db):
 # ─────────────────────────────────────────────────────────────
 
 
-def test_fill_uses_adj_open_not_adj_close(tmp_db):
+def test_fill_uses_adj_open_not_adj_close(tmp_db, test_account_id):
     """v0.1.14.3 A: PaperBroker must read adj_open (not adj_close) for fills.
 
     Seeds distinct adj_open and adj_close on the fill day, then asserts the
@@ -548,7 +556,7 @@ def test_fill_uses_adj_open_not_adj_close(tmp_db):
     # adj_open=140.0, adj_close=145.0 — gap is the test signal
     seed_price("0050", fill_date, close=145.0, open_price=140.0)
 
-    result = PaperBroker().submit_buy(
+    result = PaperBroker(account_id=test_account_id).submit_buy(
         symbol="0050", target_notional=50_000, fill_date=fill_date,
     )
     assert result.success, f"fill failed: {result.error}"
@@ -558,7 +566,7 @@ def test_fill_uses_adj_open_not_adj_close(tmp_db):
     )
 
 
-def test_drift_gate_uses_adj_open(tmp_db, seed_calendar):
+def test_drift_gate_uses_adj_open(tmp_db, seed_calendar, test_account_id):
     """v0.1.14.3 A: approvals._check_atr_drift must compare signal price to
     adj_open[fill_date], not adj_close[fill_date].
 
@@ -585,7 +593,8 @@ def test_drift_gate_uses_adj_open(tmp_db, seed_calendar):
     ).signal_id
     ok, msg, _ = approve_signal(
         sid, target_notional=50_000, fill_date=fill_date,
-        broker=PaperBroker(), approved_by="pytest",
+        broker=PaperBroker(account_id=test_account_id), approved_by="pytest",
+        account_id=test_account_id,
     )
     assert not ok, f"drift gate must reject — adj_open drifted 2.0 > 1.0. msg={msg}"
     assert "偏離" in msg
@@ -610,7 +619,7 @@ def test_liquidity_check_blocks_oversized_buy(tmp_db):
     assert result.error == "insufficient_liquidity", f"got {result.error!r}"
 
 
-def test_liquidity_check_allows_normal_buy(tmp_db):
+def test_liquidity_check_allows_normal_buy(tmp_db, test_account_id):
     """v0.1.14.3 B: a buy under the 0.5% liquidity threshold must pass."""
     from execution.paper_broker import PaperBroker
 
@@ -618,7 +627,7 @@ def test_liquidity_check_allows_normal_buy(tmp_db):
     # 100-NTD price, 1M volume. 50k notional → ~500 shares → 500/1M = 0.05% < 0.5%
     seed_price("0050", fill_date, close=100.0, open_price=100.0, volume=1_000_000)
 
-    result = PaperBroker().submit_buy(
+    result = PaperBroker(account_id=test_account_id).submit_buy(
         symbol="0050", target_notional=50_000, fill_date=fill_date,
     )
     assert result.success, f"normal buy should pass, got error={result.error!r}"
@@ -641,19 +650,20 @@ def test_liquidity_check_blocks_oversized_sell(tmp_db):
     assert result.error == "insufficient_liquidity"
 
 
-def test_scan_and_exit_reports_open_position_ages(tmp_db, seed_calendar):
+def test_scan_and_exit_reports_open_position_ages(tmp_db, seed_calendar, test_account_id):
     """v0.1.14.3 C: scan_and_exit summary must carry per-position age info
     so 5-day rollup can surface stuck-OPEN positions."""
     from scripts.run_exit_scan import scan_and_exit
     from storage.positions import OPEN, open_position
 
     open_position(
+        account_id=test_account_id,
         symbol="0050", strategy="trend_breakout_v1",
         entry_date=seed_calendar[0], entry_price=140.0, entry_atr=2.0,
         regime_at_entry="bull", sector="etf", is_etf=True,
         shares=100, notional_at_entry=14000, status=OPEN,
     )
-    summary = scan_and_exit(as_of=seed_calendar[3], fill_date=seed_calendar[4])
+    summary = scan_and_exit(as_of=seed_calendar[3], fill_date=seed_calendar[4], account_id=test_account_id)
     ages = summary["open_position_days"]
     assert len(ages) == 1
     entry = ages[0]
@@ -663,7 +673,7 @@ def test_scan_and_exit_reports_open_position_ages(tmp_db, seed_calendar):
     assert entry["age_days"] is not None and entry["age_days"] >= 3
 
 
-def test_scan_and_exit_reports_failed_symbols(tmp_db, seed_calendar, monkeypatch):
+def test_scan_and_exit_reports_failed_symbols(tmp_db, seed_calendar, monkeypatch, test_account_id):
     """v0.1.14.3 C: scan_and_exit must record symbols whose exit FILL failed,
     not just the count. run_summary uses this for cross-day streak detection."""
     from scripts.run_exit_scan import scan_and_exit
@@ -672,6 +682,7 @@ def test_scan_and_exit_reports_failed_symbols(tmp_db, seed_calendar, monkeypatch
     # Open a position. Seed today's data so exit RULE fires (regime exit needs
     # 'bear' regime to fire under defaults).
     open_position(
+        account_id=test_account_id,
         symbol="0050", strategy="trend_breakout_v1",
         entry_date=seed_calendar[0], entry_price=140.0, entry_atr=2.0,
         regime_at_entry="bull", sector="etf", is_etf=True,
@@ -688,7 +699,7 @@ def test_scan_and_exit_reports_failed_symbols(tmp_db, seed_calendar, monkeypatch
     from datetime import timedelta
     far_future = seed_calendar[-1] + timedelta(days=30)
 
-    summary = scan_and_exit(as_of=as_of, fill_date=far_future)
+    summary = scan_and_exit(as_of=as_of, fill_date=far_future, account_id=test_account_id)
     # Either the exit fired and fill failed, OR the rule didn't fire.
     # The test guarantees the rule fires (bear regime on a bull-entry position
     # triggers RegimeExit), so we expect a failed exit.
@@ -750,7 +761,7 @@ def test_run_summary_history_round_trip(tmp_db, isolated_marker, tmp_path):
     assert compute_failure_streaks(history) == {"0050": 2}
 
 
-def test_scan_and_exit_summary_includes_age_aggregates(tmp_db, seed_calendar):
+def test_scan_and_exit_summary_includes_age_aggregates(tmp_db, seed_calendar, test_account_id):
     """v0.1.14.3.1: scan_and_exit summary derives avg_position_days and
     max_position_days from open_position_days so the rollup can surface
     holding-time pathologies (e.g. one outlier stuck open for weeks while
@@ -760,19 +771,21 @@ def test_scan_and_exit_summary_includes_age_aggregates(tmp_db, seed_calendar):
 
     # Two OPEN positions with different entry dates → different ages
     open_position(
+        account_id=test_account_id,
         symbol="0050", strategy="trend_breakout_v1",
         entry_date=seed_calendar[0], entry_price=140.0, entry_atr=2.0,
         regime_at_entry="bull", sector="etf", is_etf=True,
         shares=100, notional_at_entry=14000, status=OPEN,
     )
     open_position(
+        account_id=test_account_id,
         symbol="2330", strategy="trend_breakout_v1",
         entry_date=seed_calendar[2], entry_price=600.0, entry_atr=10.0,
         regime_at_entry="bull", sector="semiconductor", is_etf=False,
         shares=10, notional_at_entry=6000, status=OPEN,
     )
 
-    summary = scan_and_exit(as_of=seed_calendar[4], fill_date=seed_calendar[5])
+    summary = scan_and_exit(as_of=seed_calendar[4], fill_date=seed_calendar[5], account_id=test_account_id)
 
     ages = [d["age_days"] for d in summary["open_position_days"]]
     assert summary["avg_position_days"] == sum(ages) / len(ages)
@@ -782,12 +795,12 @@ def test_scan_and_exit_summary_includes_age_aggregates(tmp_db, seed_calendar):
     )
 
 
-def test_scan_and_exit_summary_age_aggregates_when_no_positions(tmp_db, seed_calendar):
+def test_scan_and_exit_summary_age_aggregates_when_no_positions(tmp_db, seed_calendar, test_account_id):
     """v0.1.14.3.1: when no positions are OPEN, age aggregates must be None
     (not 0, not NaN, not raise). run_summary renders None as '(no open positions)'."""
     from scripts.run_exit_scan import scan_and_exit
 
-    summary = scan_and_exit(as_of=seed_calendar[4], fill_date=seed_calendar[5])
+    summary = scan_and_exit(as_of=seed_calendar[4], fill_date=seed_calendar[5], account_id=test_account_id)
     assert summary["open_position_days"] == []
     assert summary["avg_position_days"] is None
     assert summary["max_position_days"] is None
@@ -856,7 +869,7 @@ def test_next_dev_signal_id_increments(tmp_db):
         entry_atr=20.0, regime="bull",
     )
     save_signal(**base, signal_id="DEV-TEST-001")
-    save_signal(**base, signal_id="DEV-TEST-002")
+    save_signal(**{**base, "signal_date": date(2026, 5, 15)}, signal_id="DEV-TEST-002")
     assert next_dev_signal_id() == "DEV-TEST-003"
     # Different prefix still starts at 001
     assert next_dev_signal_id(prefix="DEV-LATE-") == "DEV-LATE-001"
@@ -1055,7 +1068,7 @@ def test_classify_whitespace_and_case_robust():
 # ─────────────────────────────────────────────────────────────
 
 
-def test_bootstrap_price_enables_broker_fill(tmp_db):
+def test_bootstrap_price_enables_broker_fill(tmp_db, test_account_id):
     """v0.1.14.3.8: `_bootstrap_price_row` inserts a row that PaperBroker
     can use for adj_open (ref_price) and volume (liquidity gate).
 
@@ -1072,7 +1085,7 @@ def test_bootstrap_price_enables_broker_fill(tmp_db):
     price = 950.0
     volume = 25_000_000
 
-    broker = PaperBroker(fees=DEFAULT_TW_FEES)
+    broker = PaperBroker(fees=DEFAULT_TW_FEES, account_id=test_account_id)
 
     # Before bootstrap: no data → fill must fail
     before = broker.submit_buy(

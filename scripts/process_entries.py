@@ -470,6 +470,7 @@ def generate_pending_signals(
     budget: RiskBudget | None = None,
     account_id: str | None = None,
     auto_approve: bool = False,
+    equity_reset_date: date_type | None = None,
 ) -> tuple[list[str], dict[str, float]]:
     """Generate entry signals + filter + push to Telegram.
 
@@ -479,6 +480,7 @@ def generate_pending_signals(
     pullback signal_generator as pending_symbols.
 
     v0.1.19: account_id required (no implicit fallback).
+    equity_reset_date: if set, closed positions before this date excluded from equity calc.
     """
     if account_id is None:
         raise ValueError(

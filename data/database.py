@@ -144,6 +144,8 @@ CREATE TABLE IF NOT EXISTS orders (
     symbol          TEXT    NOT NULL,
     side            TEXT    NOT NULL
                             CHECK (side IN ('BUY', 'SELL')),
+    order_lot_type  TEXT    NOT NULL DEFAULT 'COMMON'
+                            CHECK (order_lot_type IN ('COMMON', 'ODD')),
 
     -- Quantities (unit-bearing names; see UNIT CONVENTION above)
     requested_lots  INTEGER NOT NULL
@@ -199,10 +201,15 @@ CREATE TABLE IF NOT EXISTS orders (
 
     -- Invariant 1: status/fill consistency (unit-aware; share-equivalent)
     CHECK (
-        (status = 'FILLED'  AND filled_shares = requested_lots * 1000)
+        (status = 'FILLED'  AND order_lot_type = 'COMMON' AND filled_shares = requested_lots * 1000)
         OR
-        (status = 'PARTIAL' AND filled_shares > 0
+        (status = 'FILLED'  AND order_lot_type = 'ODD'    AND filled_shares = requested_lots)
+        OR
+        (status = 'PARTIAL' AND order_lot_type = 'COMMON' AND filled_shares > 0
                             AND filled_shares < requested_lots * 1000)
+        OR
+        (status = 'PARTIAL' AND order_lot_type = 'ODD'    AND filled_shares > 0
+                            AND filled_shares < requested_lots)
         OR
         (status IN ('INTENT', 'READY_FOR_SUBMISSION', 'SUBMITTED',
                     'FAILED', 'CANCELLED', 'EXPIRED'))

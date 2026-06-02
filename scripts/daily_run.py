@@ -257,6 +257,7 @@ def main() -> int:
             as_of=as_of, capital=capital, bot=bot,
             account_id=account_id,
             auto_approve=args.auto_approve,
+            equity_reset_date=getattr(_account, 'equity_reset_date', None),
         )
         if args.auto_approve:
             print(f"[7] entry pipeline: {len(pending)} signals auto-approved + PaperBroker filled")

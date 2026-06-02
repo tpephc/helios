@@ -28,7 +28,7 @@ from tests.conftest import seed_price
 # ─────────────────────────────────────────────────────────────
 
 
-def test_fill_and_drift_gate_share_same_price_source(tmp_db, seed_calendar):
+def test_fill_and_drift_gate_share_same_price_source(tmp_db, seed_calendar, test_account_id):
     """Invariant: the column the drift gate compares against MUST be the same
     column the broker fills at. If they diverge, an approval can pass on one
     price reference and execute at another — the trade gets done at a price
@@ -63,10 +63,11 @@ def test_fill_and_drift_gate_share_same_price_source(tmp_db, seed_calendar):
         entry_atr=2.0, regime="bull",
     ).signal_id
 
-    broker = PaperBroker()
+    broker = PaperBroker(account_id=test_account_id)
     ok, msg, _ = approve_signal(
         sid, target_notional=50_000, fill_date=fill_date,
         broker=broker, approved_by="invariant-test",
+        account_id=test_account_id,
     )
     assert ok, (
         f"INVARIANT VIOLATED: approval should pass when drift gate consults "
@@ -74,7 +75,7 @@ def test_fill_and_drift_gate_share_same_price_source(tmp_db, seed_calendar):
         f"drift gate is reading a different column than the broker. msg={msg}"
     )
 
-    pos = get_open_positions(symbol="0050")[0]
+    pos = get_open_positions(symbol="0050", account_id=test_account_id)[0]
     # Fill price = adj_open × (1 + slippage). Default slippage 0.001.
     expected_fill_from_adj_open = 140.5 * 1.001            # ≈ 140.6405
     forbidden_fill_from_adj_close = 142.0 * 1.001          # ≈ 142.142
@@ -91,7 +92,7 @@ def test_fill_and_drift_gate_share_same_price_source(tmp_db, seed_calendar):
 # ─────────────────────────────────────────────────────────────
 
 
-def test_fill_result_carries_execution_reason_on_success(tmp_db):
+def test_fill_result_carries_execution_reason_on_success(tmp_db, test_account_id):
     """Invariant: every successful FillResult sets execution_reason='filled'.
 
     The string-only `error` field is None on success — that's necessary but
@@ -102,7 +103,7 @@ def test_fill_result_carries_execution_reason_on_success(tmp_db):
 
     fill_date = date(2026, 5, 4)
     seed_price("0050", fill_date, close=100.0, open_price=100.0, volume=1_000_000)
-    result = PaperBroker().submit_buy(
+    result = PaperBroker(account_id=test_account_id).submit_buy(
         symbol="0050", target_notional=50_000, fill_date=fill_date,
     )
     assert result.success
@@ -158,7 +159,7 @@ def test_fill_result_carries_participation_rate_on_liquidity_breach(tmp_db):
     assert result.participation_rate > 0.005
 
 
-def test_fill_result_carries_participation_rate_on_success(tmp_db):
+def test_fill_result_carries_participation_rate_on_success(tmp_db, test_account_id):
     """Invariant: successful fills also report participation_rate, so
     "how close was this to breaching" can be analyzed across all fills,
     not just rejected ones."""
@@ -166,7 +167,7 @@ def test_fill_result_carries_participation_rate_on_success(tmp_db):
 
     fill_date = date(2026, 5, 4)
     seed_price("0050", fill_date, close=100.0, open_price=100.0, volume=1_000_000)
-    result = PaperBroker().submit_buy(
+    result = PaperBroker(account_id=test_account_id).submit_buy(
         symbol="0050", target_notional=50_000, fill_date=fill_date,
     )
     assert result.success
@@ -508,7 +509,7 @@ def test_finmind_http_error_propagated_exception_does_not_leak_token():
 # ─────────────────────────────────────────────────────────────
 
 
-def test_listener_does_not_consume_pre_startup_telegram_updates(tmp_db, seed_calendar):
+def test_listener_does_not_consume_pre_startup_telegram_updates(tmp_db, seed_calendar, test_account_id):
     """Invariant: messages that arrived in the Telegram queue BEFORE
     `listen_for_approvals` started must NOT influence signal state.
 
@@ -549,8 +550,9 @@ def test_listener_does_not_consume_pre_startup_telegram_updates(tmp_db, seed_cal
     assert len(bot.update_queue) == 1, "test setup precondition"
 
     summary = listen_for_approvals(
-        bot=bot, broker=PaperBroker(),
+        bot=bot, broker=PaperBroker(account_id=test_account_id),
         fill_date=cal[1],
+        account_id=test_account_id,
         target_notional_for=lambda _: 100000.0,
         duration_seconds=1, poll_timeout=1,
     )

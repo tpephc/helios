@@ -212,3 +212,9 @@ class MockTelegramBot:
 @pytest.fixture
 def mock_bot() -> MockTelegramBot:
     return MockTelegramBot()
+
+
+@pytest.fixture
+def test_account_id() -> str:
+    """Fixed account_id string for tests requiring v0.1.18 account isolation."""
+    return "test_account"
