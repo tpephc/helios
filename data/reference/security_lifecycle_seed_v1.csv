@@ -1,0 +1,19 @@
+stock_id,otc_first_date,mainboard_date,mainboard_type,source_type,source_url,verified_at,verified_by,notes
+2645,2022-02-18,2023-03-14,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=2645,2026-06-03,Veronica,
+2646,2022-09-30,2024-10-25,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=2646,2026-06-03,Veronica,
+4583,2020-12-01,2022-05-09,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=4583,2026-06-03,Veronica,transfer-board: DQ rows post-date listing; classification provisional per P1-DATA assessment
+6446,2014-03-11,2024-01-25,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=6446,2026-06-03,Veronica,
+6472,2014-10-01,2023-12-19,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=6472,2026-06-03,Veronica,
+6526,2022-06-22,2023-10-19,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=6526,2026-06-03,Veronica,
+6691,2018-08-08,2022-01-03,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=6691,2026-06-03,Veronica,
+6770,2020-12-09,2021-12-06,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=6770,2026-06-03,Veronica,transfer-board: DQ rows post-date listing; classification provisional per P1-DATA assessment
+6789,2021-04-06,2022-06-30,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=6789,2026-06-03,Veronica,transfer-board: DQ rows post-date listing; classification provisional per P1-DATA assessment
+6805,2020-11-20,2023-11-09,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=6805,2026-06-03,Veronica,
+6831,2021-08-11,2025-11-25,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=6831,2026-06-03,Veronica,
+6919,2022-12-26,2024-10-02,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=6919,2026-06-03,Veronica,
+6944,2023-04-27,2025-05-28,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=6944,2026-06-03,Veronica,
+7610,2022-09-30,2025-09-09,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=7610,2026-06-03,Veronica,
+7750,2024-06-18,2025-09-17,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=7750,2026-06-03,Veronica,
+7769,2024-10-31,2025-11-27,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=7769,2026-06-03,Veronica,
+7799,2024-11-27,2025-09-15,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=7799,2026-06-03,Veronica,
+7822,2025-03-27,2026-03-30,TWSE,MOPS,https://mops.twse.com.tw/mops/#/web/t05st03?companyId=7822,2026-06-03,Veronica,
