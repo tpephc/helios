@@ -531,6 +531,21 @@ CREATE TABLE IF NOT EXISTS security_lifecycle (
     notes           VARCHAR,
     PRIMARY KEY (stock_id)
 );
+
+-- v0.1.20: filter view — excludes pre-listing (OTC) rows from daily_price_adj.
+-- A row is included if the stock has no lifecycle entry (assumed fully listed)
+-- or if the row date >= mainboard_date.
+-- This is the single enforcement point for listing-status filtering.
+-- Do NOT query daily_price_adj directly in research or feature pipelines
+-- after P1-DATA remediation is applied.
+-- Governance: docs/decision_records/p1_data_remediation_spec.md v1.0.0
+CREATE VIEW IF NOT EXISTS listed_market_daily_price_adj AS
+SELECT p.*
+FROM daily_price_adj p
+LEFT JOIN security_lifecycle s
+    ON p.stock_id = s.stock_id
+WHERE s.stock_id IS NULL
+   OR p.date >= s.mainboard_date;
 """
 
 
