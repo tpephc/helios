@@ -145,7 +145,7 @@ def _build_price_panel() -> pl.DataFrame:
                 ROW_NUMBER() OVER (
                     PARTITION BY stock_id ORDER BY date
                 ) - 1 AS td_idx
-            FROM daily_price_adj
+            FROM listed_market_daily_price_adj
             ORDER BY stock_id, date
         """).pl()
 

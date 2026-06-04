@@ -201,7 +201,7 @@ def _compute_benchmark_forward_returns(
                    ROW_NUMBER() OVER (
                        PARTITION BY stock_id ORDER BY date
                    ) - 1 AS td_idx
-            FROM daily_price_adj
+            FROM listed_market_daily_price_adj
         """).pl()
 
     df = universe.join(

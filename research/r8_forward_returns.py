@@ -67,7 +67,7 @@ SELECT
     adj_open,
     adj_close,
     ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date) AS td_idx
-FROM daily_price_adj
+FROM listed_market_daily_price_adj
 """
 
 # ---------------------------------------------------------------------------

@@ -72,7 +72,7 @@ WITH price_panel AS (
         adj_close,
         LAG(adj_close) OVER (PARTITION BY stock_id ORDER BY date) AS prev_adj_close,
         LAG(date)      OVER (PARTITION BY stock_id ORDER BY date) AS prev_date
-    FROM daily_price_adj
+    FROM listed_market_daily_price_adj
 ),
 
 r8_candidates AS (
