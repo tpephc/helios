@@ -512,6 +512,25 @@ CREATE TABLE IF NOT EXISTS bullish_features (
     PRIMARY KEY (stock_id, date)
 );
 CREATE INDEX IF NOT EXISTS idx_bullish_features_date ON bullish_features(date);
+
+-- v0.1.20: security lifecycle — original listing / board-transfer dates
+-- Source: MOPS hand-verified; seed at data/reference/security_lifecycle_seed_v1.csv
+-- Covers only the 18 stocks with IF-1 pre-listing contamination.
+-- Stocks absent from this table are assumed fully listed throughout the panel.
+-- Used by: listed_market_daily_price_adj view (P1-DATA remediation).
+-- Governance: docs/decision_records/p1_data_remediation_spec.md v1.0.0
+CREATE TABLE IF NOT EXISTS security_lifecycle (
+    stock_id        VARCHAR     NOT NULL,
+    otc_first_date  DATE,
+    mainboard_date  DATE        NOT NULL,
+    mainboard_type  VARCHAR     NOT NULL,
+    source          VARCHAR     NOT NULL,
+    source_url      VARCHAR,
+    verified_at     DATE        NOT NULL,
+    verified_by     VARCHAR     NOT NULL,
+    notes           VARCHAR,
+    PRIMARY KEY (stock_id)
+);
 """
 
 
