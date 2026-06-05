@@ -3,7 +3,7 @@
 """Daily feature computation pipeline (v0.1.11).
 
 兩個階段:
-  Phase 1: 每個 symbol 從 daily_price_adj 算 9 個 indicator → 寫 daily_features
+  Phase 1: 每個 symbol 從 listed_market_daily_price_adj 算 9 個 indicator → 寫 daily_features
   Phase 2: TAIEX 從 daily_price 算 regime → 寫 market_regime
 
 設計:
@@ -47,7 +47,7 @@ logger = get_logger(__name__)
 def get_symbols_with_adj() -> list[str]:
     with connect(read_only=True) as conn:
         rows = conn.execute(
-            "SELECT DISTINCT stock_id FROM daily_price_adj ORDER BY stock_id"
+            "SELECT DISTINCT stock_id FROM listed_market_daily_price_adj ORDER BY stock_id"
         ).fetchall()
     return [r[0] for r in rows]
 
@@ -58,7 +58,7 @@ def load_adj_for_symbol(stock_id: str) -> pl.DataFrame:
             """
             SELECT stock_id, date, adj_open, adj_high, adj_low, adj_close,
                    raw_close, cum_factor, volume
-            FROM daily_price_adj
+            FROM listed_market_daily_price_adj
             WHERE stock_id = ?
             ORDER BY date
             """,
@@ -215,7 +215,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--symbols", type=str,
-        help="逗號分隔；不給就用 daily_price_adj 全部 symbol",
+        help="逗號分隔；不給就用 listed_market_daily_price_adj 全部 symbol",
     )
     parser.add_argument(
         "--indicators-only", action="store_true",
@@ -242,7 +242,7 @@ def main() -> int:
         else:
             symbols = get_symbols_with_adj()
         if not symbols:
-            print("❌ daily_price_adj 為空，請先跑 build_adjusted_prices.py")
+            print("❌ listed_market_daily_price_adj 為空，請先跑 build_adjusted_prices.py / security_lifecycle remediation")
             return 1
         summary["phase1"] = compute_phase_indicators(symbols)
 
