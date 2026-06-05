@@ -513,42 +513,53 @@ CREATE TABLE IF NOT EXISTS bullish_features (
 );
 CREATE INDEX IF NOT EXISTS idx_bullish_features_date ON bullish_features(date);
 
--- v0.1.20: security lifecycle — original listing / board-transfer dates
+-- v0.1.20: security lifecycle — interval model (SPEC-P1-DATA-REMEDIATION-v1)
 -- Source: MOPS hand-verified; seed at data/reference/security_lifecycle_seed_v1.csv
 -- Covers only the 18 stocks with IF-1 pre-listing contamination.
 -- Stocks absent from this table are assumed fully listed throughout the panel.
+-- Each stock has two rows: EMERGING [otc_first_date, mainboard_date)
+--                          TWSE/TPEx [mainboard_date, NULL)
 -- Used by: listed_market_daily_price_adj view (P1-DATA remediation).
--- Governance: docs/decision_records/p1_data_remediation_spec.md v1.0.0
+-- Governance: SPEC-P1-DATA-REMEDIATION-v1 (ACCEPTED)
 CREATE TABLE IF NOT EXISTS security_lifecycle (
-    stock_id        VARCHAR     NOT NULL,
-    otc_first_date  DATE,
-    mainboard_date  DATE        NOT NULL,
-    mainboard_type  VARCHAR     NOT NULL,
-    source          VARCHAR     NOT NULL,
-    source_url      VARCHAR,
-    verified_at     DATE        NOT NULL,
-    verified_by     VARCHAR     NOT NULL,
-    notes           VARCHAR,
-    PRIMARY KEY (stock_id)
-);
+    stock_id     VARCHAR   NOT NULL,
+    listed_from  DATE      NOT NULL,
+    listed_to    DATE,
+    market       VARCHAR   NOT NULL,
+    source_type  VARCHAR   NOT NULL,
+    source_url   VARCHAR   NOT NULL,
+    verified_at  TIMESTAMP,
+    verified_by  VARCHAR,
+    notes        VARCHAR,
 
--- v0.1.20: filter view — excludes pre-listing (OTC) rows from daily_price_adj.
--- A row is included if the stock has no lifecycle entry (assumed fully listed)
--- or if the row date >= mainboard_date.
+    PRIMARY KEY (stock_id, listed_from),
+
+    CHECK (listed_to IS NULL OR listed_from < listed_to),
+    CHECK (market IN ('EMERGING', 'OTC', 'TWSE', 'TPEx'))
+);
+-- v0.1.20 (updated): filter view — excludes EMERGING-period rows from daily_price_adj.
+-- A row is included if the stock has no lifecycle record (assumed fully listed)
+-- or if the row date >= MIN(listed_from) for TWSE/TPEx intervals.
+-- Equivalent to: date >= mainboard_date for the 18 seed stocks.
 -- This is the single enforcement point for listing-status filtering.
 -- Do NOT query daily_price_adj directly in research or feature pipelines
 -- after P1-DATA remediation is applied.
--- Governance: docs/decision_records/p1_data_remediation_spec.md v1.0.0
+-- Governance: SPEC-P1-DATA-REMEDIATION-v1 § 6 (ACCEPTED)
 CREATE VIEW IF NOT EXISTS listed_market_daily_price_adj AS
 SELECT p.*
 FROM daily_price_adj p
-LEFT JOIN security_lifecycle s
-    ON p.stock_id = s.stock_id
-WHERE s.stock_id IS NULL
-   OR p.date >= s.mainboard_date;
+WHERE p.date >= COALESCE(
+    (
+        SELECT MIN(l.listed_from)
+        FROM   security_lifecycle l
+        WHERE  l.stock_id = p.stock_id
+          AND  l.market IN ('TWSE', 'TPEx')
+    ),
+    DATE '1900-01-01'
+);
+
+
 """
-
-
 @contextmanager
 def connect(read_only: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
     """DuckDB context manager。"""
