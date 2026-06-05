@@ -33,6 +33,7 @@ dependencies = [
     "shioaji>=1.3.3",
     "scipy>=1.17.1",
     "exchange-calendars>=4.13.2",
+    "lxml>=6.1.1",
 ]
 
 [dependency-groups]
