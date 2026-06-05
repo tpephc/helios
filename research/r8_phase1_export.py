@@ -55,7 +55,7 @@ _BUILDER_VERSION = "0.1.0"
 _SPEC_PATH = _REPO_ROOT / "research/r8_phase1_lifecycle_spec.md"
 _ADR_PATH = _REPO_ROOT / "docs/decision_records/r8_phase1_bootstrap_adr.md"
 
-_STORAGE = _REPO_ROOT / "data/_storage/r8_phase1"
+_STORAGE = _REPO_ROOT / "data/_storage/r8_phase1_remediated"
 _EVENTS_PARQUET = _STORAGE / "r8_events.parquet"
 _FWD_RETURNS_PARQUET = _STORAGE / "r8_forward_returns.parquet"
 _LIFECYCLE_PARQUET = _STORAGE / "r8_lifecycle_metrics.parquet"

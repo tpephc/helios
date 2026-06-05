@@ -54,7 +54,7 @@ _SPEC_PATH = _REPO_ROOT / "research/r8_phase1_lifecycle_spec.md"
 _ADR_PATH = _REPO_ROOT / "docs/decision_records/r8_phase1_bootstrap_adr.md"
 _EVENTS_PARQUET = _REPO_ROOT / "data/_storage/r8_phase1/r8_events.parquet"
 _FWD_RETURNS_PARQUET = _REPO_ROOT / "data/_storage/r8_phase1/r8_forward_returns.parquet"
-_OUTPUT_DIR = _REPO_ROOT / "data/_storage/r8_phase1"
+_OUTPUT_DIR = _REPO_ROOT / "data/_storage/r8_phase1_remediated"
 _OUTPUT_PARQUET = _OUTPUT_DIR / "r8_benchmarks.parquet"
 _OUTPUT_MANIFEST = _OUTPUT_DIR / "r8_benchmarks_manifest.json"
 
