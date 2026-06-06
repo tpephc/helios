@@ -1,9 +1,9 @@
 # R8 MA5 Momentum — Phase 1 Lifecycle Specification
 
 <!-- research/r8_phase1_lifecycle_spec.md -->
-<!-- v0.1.2 — 2026-06-02 -->
+<!-- v0.1.3 — 2026-06-06 -->
 
-**Status:** LOCKED — v0.1.2 (2026-06-02)
+**Status:** LOCKED — v0.1.3 (2026-06-06)
 **Inherits from:** `docs/research/r8_phase0_feasibility.md` (closed 2026-06-01, rev2)
 **Authorises:** Lifecycle replay infrastructure and forward-return measurement only.
 **Does not authorise:** Production deployment, alpha validation, execution rules,
@@ -11,9 +11,29 @@ or any claim of independent alpha.
 
 ---
 
+## Changelog
+
+| Version | Date | Change |
+|---|---|---|
+| v0.1.2 | 2026-06-02 | Initial SPEC LOCKED |
+| v0.1.3 | 2026-06-06 | Added Phase 1 Findings section (A-3 complete). Status updated to reflect P0-B and A-3 completion. No SPEC terms modified. |
+
+---
+
 ## Status
 
-Phase 1 SPEC LOCKED (2026-06-02).
+Phase 1 SPEC LOCKED (2026-06-02). Findings section added v0.1.3 (2026-06-06).
+
+**Analysis progress as of v0.1.3:**
+
+| Analysis | Status | Artifact |
+|---|---|---|
+| P0-B Cell adequacy audit | COMPLETE | `data/_storage/r8_phase1_cell_adequacy/v0.1.1/` |
+| A-3 R8∩RS_T3 vs RS_T3 unconditional | COMPLETE | `data/_storage/r8_phase1_a3/v0.1.0/` |
+| A-1 RS_T3 Hold benchmark | NOT STARTED | — |
+| A-2 RS_T3 + Pullback benchmark | NOT STARTED | — |
+
+All findings remain **PROVISIONAL** per AC-6. IF-2 and IF-3 are OPEN.
 
 This document is the upstream governance contract for all Phase 1 implementation
 artifacts, analysis notebooks, and any downstream SPEC that references R8 Phase 1
@@ -350,4 +370,142 @@ under any of the following conditions:
 
 ---
 
-*End of r8_phase1_lifecycle_spec.md v0.1.2*
+## Phase 1 Findings
+
+<!-- Added v0.1.3 — 2026-06-06 — LOCK APPROVED -->
+<!-- All findings are PROVISIONAL per AC-6. IF-2 and IF-3 OPEN. -->
+
+**Findings status: PROVISIONAL**
+
+All findings in this section are provisional per AC-6. The panel contains
+known integrity gaps (IF-2: empty `stock_info`; IF-3: empty
+`corporate_actions`, DQ-CA-001). These gaps remain open as of v0.1.3.
+No finding below may be cited as validated or publication-ready until
+a clean-panel re-run is completed and this document is updated accordingly.
+
+### Inference method
+
+All inferential statistics use the stationary block-bootstrap per
+ADR-R8P1-001 v0.1.0:
+
+- Resampling unit: trading date (date-level, not event-level)
+- Block length: L=20 (primary); sensitivity grid L={5, 10, 20, 40}
+- Replications: B=5000
+- CI method: percentile (95%)
+- p-value method: null-shifted two-tailed
+- Joint resample applied to treatment and baseline within each replication
+- n_eff reference unit: treatment date pool
+- Seed: 42
+
+Primary inference uses L=20. Results at L={5, 10} are sensitivity
+diagnostics only per ADR-R8P1-001 D3 and may not be cited as primary
+inferential statements.
+
+Artifacts: `data/_storage/r8_phase1_a3/v0.1.0/` (primary inference +
+sensitivity + manifest). Provenance root: P0-B panel snapshot hash
+`b82897a0f45be66a067e2557715fbe38489b938a3a4fd3485cc9285e7b6f3235`.
+
+### A-3: R8 within RS_T3 vs RS_T3 unconditional
+
+**Comparison:** Treatment_1 (R8 ∩ RS_T3, n=5,330 events) vs Baseline_1
+(RS_T3 unconditional non-R8, n=63,363 observations).
+**Panel:** treatment_n_dates per cell from P0-B D-2A; full inference
+restricted to cells with joint adequacy = PASS × PASS.
+
+**Full inference cells (PASS × PASS):** bull/nlu=0, bear/nlu=0, neutral/nlu=0.
+All other cells are DIRECTIONAL_ONLY or INSUFFICIENT; point estimates for
+those cells are not reported here as findings.
+
+#### Tier 1 — Robust findings (full inference, robust across sensitivity grid)
+
+**Bull regime, near_limit_up=0**
+(treatment n≈2,141–2,276 events; treatment dates≈596–614 per horizon)
+
+| Horizon | δ_obs | 95% CI (L=20) | CI range across L={5,10,20,40} | p (L=20) | p range across L | n_eff (L=20) |
+|---|---|---|---|---|---|---|
+| 10td | +1.35% | [+0.69%, +2.18%] | lower bound +0.61% to +0.72% | 0.0002 | 0.0000–0.0010 | 299 |
+| 20td | +2.10% | [+0.94%, +3.45%] | lower bound +0.77% to +1.11% | 0.0008 | 0.0006–0.0036 | 258 |
+
+**Sensitivity verdict:** ROBUST. At all tested block lengths L={5,10,20,40},
+the 95% CI lower bound remains strictly positive. p ≤ 0.004 at all block
+lengths. The finding does not depend on the L=20 choice.
+
+**Economic pattern:** δ_obs increases monotonically with horizon
+(1td: −0.03%, 5td: +0.38%, 10td: +1.35%, 20td: +2.10%), consistent
+with a trend-continuation dynamic rather than an immediate entry-timing
+effect. This pattern is a descriptive observation; causal interpretation
+requires further analysis outside Phase 1 scope.
+
+**Interpretation boundary:** This finding establishes that R8 events
+within RS_T3 are followed by incrementally higher forward returns than
+RS_T3 non-R8 observations at 10td and 20td horizons in bull regimes.
+It does not establish that this difference is exploitable net of execution
+costs, that it is stable over time, or that it constitutes tradeable alpha.
+The finding is conditional on the RS_T3 proxy defined in LA-4. It should
+not be interpreted as evidence that R8 provides incremental information
+outside the high-RS universe.
+
+#### Tier 2 — Consistent direction, insufficient evidence for significance
+
+**Bull regime, near_limit_up=0, 5td**
+(treatment n=2,235; treatment dates=610)
+
+δ_obs = +0.38%. Positive direction observed at all block lengths
+(L={5,10,20,40}). p ranges from 0.046 to 0.085 across the sensitivity
+grid; CI lower bound ranges from +0.003% to +0.059%. The result does not
+meet the α=0.05 significance threshold consistently across block lengths.
+
+**Verdict:** Consistent positive direction; insufficient evidence for
+promotion to a statistically-supported finding.
+
+#### Tier 3 — Suggestive, not promoted
+
+**Bear regime, near_limit_up=0, 20td**
+(treatment n=491; treatment dates=173)
+
+δ_obs = +1.46%. p ranges from 0.025 to 0.034 across the sensitivity grid
+(nominally significant), but the 95% percentile CI contains zero at all
+tested block lengths (lower bound −0.19% to −0.11%). Under the governance
+principle that the ADR-locked CI method (percentile) takes precedence over
+the p-value method, this result is classified as suggestive.
+
+Additional structural note: n_eff is non-monotone across horizons in the
+bear cell (5td: 184, 10td: 80, 20td: 141). The 10td drop suggests
+concentrated clustering in a small number of influential date clusters
+within the bear regime. This is a structural observation, not a defect.
+
+**Verdict:** Suggestive positive trend at 20td. Not promoted. Re-evaluate
+after P1-DATA clean-panel re-run.
+
+#### No-signal cells (full inference)
+
+**Bear regime, nlu=0, horizons 1td / 5td / 10td:** p > 0.23 at all block
+lengths, CI contains zero. No evidence of incremental timing effect at
+these horizons.
+
+**Neutral regime, nlu=0, all horizons:** All deltas are negative
+(range −0.02% to −0.59%); all 95% CIs contain zero; all p > 0.05 across
+the sensitivity grid. n_eff at 20td = 47–60, reflecting limited date
+coverage (treatment_dates=126) and high VIF at longer horizons. Wide CIs
+at 20td are a structural finding per ADR-R8P1-001 D7 (honest disclosure
+of small n_eff), not a defect to be resolved by pooling.
+
+#### Adequacy-restricted cells (not included in findings)
+
+Cells with joint adequacy DIRECTIONAL_ONLY or INSUFFICIENT are excluded
+from the findings table. Point estimates exist in the artifact but are
+not promoted to findings without adequate inferential support. These
+cells are: bull/nlu=1, crisis/nlu=0, crisis/nlu=1, bear/nlu=1,
+neutral/nlu=1.
+
+### Open items affecting findings
+
+| ID | Description | Impact on A-3 findings |
+|---|---|---|
+| IF-2 | Empty `stock_info` | Sector composition of treatment/baseline unknown; electronics-concentration bias from Phase 0 cannot be re-verified |
+| IF-3 | Empty `corporate_actions` (DQ-CA-001) | Halt/suspension events cannot be excluded; affected events may inflate or deflate forward returns |
+| BACKLOG-IF1-GUARD | No repo-wide guard preventing direct access to `daily_price_adj` outside allowlist | Forward return computation integrity unguarded at repo level |
+
+---
+
+*End of r8_phase1_lifecycle_spec.md v0.1.3*
