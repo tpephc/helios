@@ -1,9 +1,9 @@
 # R8 MA5 Momentum — Phase 1 Lifecycle Specification
 
 <!-- research/r8_phase1_lifecycle_spec.md -->
-<!-- v0.1.4 — 2026-06-06 -->
+<!-- v0.1.6 — 2026-06-07 -->
 
-**Status:** LOCKED — v0.1.4 (2026-06-06)
+**Status:** LOCKED — v0.1.6 (2026-06-07)
 **Inherits from:** `docs/research/r8_phase0_feasibility.md` (closed 2026-06-01, rev2)
 **Authorises:** Lifecycle replay infrastructure and forward-return measurement only.
 **Does not authorise:** Production deployment, alpha validation, execution rules,
@@ -17,8 +17,9 @@ or any claim of independent alpha.
 |---|---|---|
 | v0.1.2 | 2026-06-02 | Initial SPEC LOCKED |
 | v0.1.3 | 2026-06-06 | Added Phase 1 Findings section (A-3 complete). Status updated to reflect P0-B and A-3 completion. No SPEC terms modified. |
-| v0.1.5 | 2026-06-06 | IF-2 reclassified from AC-6 binding blocker to P2 data backlog. company_metadata accepted as Phase 1 sector diagnostic source. No SPEC terms modified. |
 | v0.1.4 | 2026-06-06 | A-1 and A-2 complete. Phase 1 Findings section updated. AC-2 satisfied. Analysis progress table updated. Reference to interim findings note added. No SPEC terms modified. |
+| v0.1.5 | 2026-06-06 | IF-2 reclassified from AC-6 binding blocker to P2 data backlog. company_metadata accepted as Phase 1 sector diagnostic source. No SPEC terms modified. |
+| v0.1.6 | 2026-06-07 | Composition audit finding added (new section). IF-3B reclassified from AC-6 binding blocker to P2 non-binding per composition audit evidence. DQ-ADJ-003 reclassified from adjustment anomaly to capital reduction event; subsumed by DQ-CA-001. Open items table updated. No SPEC terms (AC-1 through AC-7, LA-1 through LA-8) modified. |
 
 ---
 
@@ -40,9 +41,10 @@ and reported. A-2 is satisfied via adequacy outcome: Treatment_2 (R8 ∩ RS_T3 �
 pullback state) contains only 262 events across 109 dates (4.9% of Treatment_1),
 yielding 0 PASS cells. This sparsity is the substantive A-2 finding.
 
-All findings remain **PROVISIONAL** per AC-6. AC-6 binding blockers: IF-3A (corporate_actions dividend/split not populated)
-and IF-3B (suspension/halt/resumption dataset not built). IF-2 reclassified
-as non-binding per v0.1.5..
+All findings remain **PROVISIONAL** per AC-6. IF-3A closed (commit `76f1f45`).
+IF-3B reclassified as P2 non-binding per v0.1.6 composition audit.
+IF-2 reclassified as P2 non-binding per v0.1.5.
+No AC-6 binding blockers remain. Clean-panel re-run is unblocked.
 
 Full integrated findings: see `research/r8_phase1_interim_findings.md` v0.1.0.
 
@@ -246,8 +248,11 @@ time of this SPEC:
 2. **Empty `stock_info`** — sector mapping relies on `company_metadata
    .industry_code` only.
 3. **Empty `corporate_actions`** (DQ-CA-001) — halt/resumption rows
-   cannot be distinguished from bad data; 203 SUSPENSION_GAP rows are
-   classified as pending.
+   cannot be distinguished from bad data. 203 SUSPENSION_GAP rows were
+   classified as pending at Phase 0 time. A composition audit conducted
+   2026-06-07 (see Phase 1 Findings: Composition Audit) found 0 confirmed
+   halt-resumption events in the r8_events population. IF-3B reclassified
+   as P2 non-binding per v0.1.6.
 
 ### Provisional findings constraint
 
@@ -375,7 +380,7 @@ under any of the following conditions:
 | P1-DATA remediation reveals that pre-listing contamination materially changes RS_T3 composition or R8 signal counts. | Phase 1 must be re-run on the clean panel. All provisional findings are superseded. |
 | The regime classification model is retrained or its thresholds change. | Phase 1 findings stratified by `regime[T-1]` must be re-evaluated. |
 | The `beta_adj_rs_*` computation methodology changes. | RS_T3 proxy and LA-4 must be re-verified. |
-| A suspension/halt table becomes available, enabling reclassification of SUSPENSION_GAP rows. | DQ-338 classification must be revisited; affected rows must be excluded or reclassified. |
+| A suspension/halt table becomes available, enabling reclassification of SUSPENSION_GAP rows. | DQ-338 classification must be revisited. Composition audit (v0.1.6) found 0 confirmed halt-resumption events in r8_events. A halt table may reclassify rows in `daily_price_adj` at forward-return observation dates outside the reviewed signal population. |
 | Event count per day distribution changes materially (e.g. sustained >50 simultaneous signals). | Effective-n estimate and clustering assumptions must be revisited. |
 | Any Phase 1 output is proposed as the basis for a production deployment decision. | A new Phase 2 SPEC is required. This SPEC does not authorise that step. |
 
@@ -550,14 +555,88 @@ not promoted to findings without adequate inferential support. These
 cells are: bull/nlu=1, crisis/nlu=0, crisis/nlu=1, bear/nlu=1,
 neutral/nlu=1.
 
+### Composition Audit — SUSPENSION_GAP Candidate Rows
+
+**Conducted:** 2026-06-07
+**Method:** Exhaustive classification of all r8_events rows with
+`signal_daily_return >= 0.10`, cross-referenced against `daily_price_adj`
+`calendar_gap_days`, volume signals, TWSE holiday calendar, and news
+sources for long-gap rows.
+
+#### Motivation
+
+IF-3B was designated an AC-6 binding blocker in commit `77fb3c1` on the
+basis that `corporate_actions` contained no halt/suspension records and
+that "203 SUSPENSION_GAP rows" in the r8_events population might represent
+halt-resumption cross-gaps inflating or deflating forward returns. The
+composition audit was conducted to verify whether this risk materialises
+in the actual r8_events data.
+
+The 203 figure originated from a Phase 0 audit run (2026-06-02,
+`ma5_momentum_feasibility.py` v0.1.2) using an earlier r8_events snapshot.
+The current panel contains 234 candidate rows under the same definition
+(`signal_daily_return >= 0.10`, excluding PRE_LISTING_OTC). The
+classification method is identical.
+
+#### Results
+
+| Class | Count | % | Notes |
+|---|---|---|---|
+| Normal limit-up (ret≈10%, gap=1–4d) | 227 | 97.0% | Standard Taiwan daily price limit; normal trading |
+| Holiday gap (gap≥5d, ret=10–14%) | 6 | 2.6% | Lunar New Year, Mid-Autumn, Typhoon, Tomb Sweeping; verified against TWSE calendar |
+| Capital reduction 換發新股 | 1 | 0.4% | 2327 / 2022-10-31; see DQ-ADJ-003 reclassification below |
+| **Confirmed halt-resumption** | **0** | **0%** | None found |
+
+**Total candidate rows examined:** 234
+**Confirmed halt-resumption events in r8_events:** 0
+
+#### Implication for IF-3B
+
+No empirical evidence of halt-resumption contamination was identified in
+the reviewed r8_events population. The hypothesised halt-contamination
+pathway that motivated IF-3B binding status is not supported by the
+evidence in the event population reviewed.
+
+Residual uncertainty remains regarding trading interruptions at
+forward-return observation dates (T+1 to T+20) outside the reviewed
+signal population. IF-3B therefore remains a data-infrastructure concern,
+but no longer blocks AC-6.
+
+IF-3B is reclassified from AC-6 binding blocker to P2 data infrastructure
+(same treatment as IF-2, v0.1.5). Clean-panel re-run is unblocked.
+
+#### DQ-ADJ-003 Reclassification
+
+**Previous classification:** 2327 / 2022-10-31 — possible adjustment
+calculation anomaly (`adj_close` showed +36.94% while `raw_close` appeared
+normal).
+
+**Reclassification (v0.1.6):** 2327 / 2022-10-31 is a 現金減資換發新股
+(capital reduction with share re-issuance) event confirmed via news source
+(cnyes.com/news/id/4972505). The stock resumed trading on 2022-10-31 after
+a 12-calendar-day suspension during the capital reduction process. The
++36.94% return reflects the price adjustment from the reduced share count,
+which is correct. The `adj_close` value is not anomalous; the root cause
+is the absence of this event in `corporate_actions` (DQ-CA-001).
+
+**Disposition:** DQ-ADJ-003 closed as a standalone DQ item. Underlying gap
+subsumed by DQ-CA-001 / IF-3B P2 backlog.
+
+**Impact on findings:** 2327 / 2022-10-31 carries `rs_t3_t_minus_1 = 0.0`
+and `near_limit_up_flag = True`, placing it in the `bear/nlu=1` cell.
+This cell is adequacy-restricted (INSUFFICIENT) and excluded from all
+Tier 1, Tier 2, and Tier 3 findings. No finding is affected.
+
 ### Open items affecting findings
 
 | ID | Description | Impact on findings |
 |---|---|---|
-| IF-2 | Empty `stock_info` — **RECLASSIFIED P2** | Phase 1 A-1/A-2/A-3 scripts do not query `stock_info`. Sector validation uses `company_metadata.industry_code` (TWSE t187ap03_L, 1088 rows). IF-2 does not block AC-6 closeout. `stock_info` population pipeline deferred as P2 data infrastructure. |
-| IF-3 | Empty `corporate_actions` (DQ-CA-001) | Halt/suspension events cannot be excluded; affected events may inflate or deflate forward returns |
+| IF-2 | Empty `stock_info` — **RECLASSIFIED P2** | Sector composition of treatment/baseline unknown; electronics-concentration bias from Phase 0 cannot be re-verified. Non-binding per v0.1.5. |
+| IF-3A | `corporate_actions` dividend/split — **CLOSED** (commit `76f1f45`) | 1106 rows, 199 symbols populated. No residual impact. |
+| IF-3B | Suspension/halt/resumption dataset — **RECLASSIFIED P2** | Composition audit (v0.1.6) found 0 confirmed halt-resumption events in r8_events. Non-binding per v0.1.6. Residual uncertainty at T+1–T+20 observation dates disclosed above. |
+| DQ-ADJ-003 | 2327 / 2022-10-31 — **CLOSED** | Reclassified as capital reduction event; subsumed by DQ-CA-001. No finding affected (adequacy-restricted cell). |
 | BACKLOG-IF1-GUARD | No repo-wide guard preventing direct access to `daily_price_adj` outside allowlist | Forward return computation integrity unguarded at repo level |
 
 ---
 
-*End of r8_phase1_lifecycle_spec.md v0.1.4*
+*End of r8_phase1_lifecycle_spec.md v0.1.6*
