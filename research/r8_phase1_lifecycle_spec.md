@@ -1,9 +1,9 @@
 # R8 MA5 Momentum — Phase 1 Lifecycle Specification
 
 <!-- research/r8_phase1_lifecycle_spec.md -->
-<!-- v0.1.3 — 2026-06-06 -->
+<!-- v0.1.4 — 2026-06-06 -->
 
-**Status:** LOCKED — v0.1.3 (2026-06-06)
+**Status:** LOCKED — v0.1.4 (2026-06-06)
 **Inherits from:** `docs/research/r8_phase0_feasibility.md` (closed 2026-06-01, rev2)
 **Authorises:** Lifecycle replay infrastructure and forward-return measurement only.
 **Does not authorise:** Production deployment, alpha validation, execution rules,
@@ -17,23 +17,31 @@ or any claim of independent alpha.
 |---|---|---|
 | v0.1.2 | 2026-06-02 | Initial SPEC LOCKED |
 | v0.1.3 | 2026-06-06 | Added Phase 1 Findings section (A-3 complete). Status updated to reflect P0-B and A-3 completion. No SPEC terms modified. |
+| v0.1.4 | 2026-06-06 | A-1 and A-2 complete. Phase 1 Findings section updated. AC-2 satisfied. Analysis progress table updated. Reference to interim findings note added. No SPEC terms modified. |
 
 ---
 
 ## Status
 
-Phase 1 SPEC LOCKED (2026-06-02). Findings section added v0.1.3 (2026-06-06).
+Phase 1 SPEC LOCKED (2026-06-02). Findings section updated v0.1.4 (2026-06-06).
 
-**Analysis progress as of v0.1.3:**
+**Analysis progress as of v0.1.4:**
 
 | Analysis | Status | Artifact |
 |---|---|---|
 | P0-B Cell adequacy audit | COMPLETE | `data/_storage/r8_phase1_cell_adequacy/v0.1.1/` |
+| A-1 RS_T3 Hold benchmark | COMPLETE | `data/_storage/r8_phase1_a1/v0.1.0/` |
+| A-2 RS_T3 + Pullback benchmark | COMPLETE (descriptive only — 0 PASS cells) | `data/_storage/r8_phase1_a2/v0.1.0/` |
 | A-3 R8∩RS_T3 vs RS_T3 unconditional | COMPLETE | `data/_storage/r8_phase1_a3/v0.1.0/` |
-| A-1 RS_T3 Hold benchmark | NOT STARTED | — |
-| A-2 RS_T3 + Pullback benchmark | NOT STARTED | — |
+
+**AC-2 status: SATISFIED.** All three required comparisons have been measured
+and reported. A-2 is satisfied via adequacy outcome: Treatment_2 (R8 ∩ RS_T3 ∩
+pullback state) contains only 262 events across 109 dates (4.9% of Treatment_1),
+yielding 0 PASS cells. This sparsity is the substantive A-2 finding.
 
 All findings remain **PROVISIONAL** per AC-6. IF-2 and IF-3 are OPEN.
+
+Full integrated findings: see `research/r8_phase1_interim_findings.md` v0.1.0.
 
 This document is the upstream governance contract for all Phase 1 implementation
 artifacts, analysis notebooks, and any downstream SPEC that references R8 Phase 1
@@ -372,16 +380,19 @@ under any of the following conditions:
 
 ## Phase 1 Findings
 
-<!-- Added v0.1.3 — 2026-06-06 — LOCK APPROVED -->
+<!-- Updated v0.1.4 — 2026-06-06 — LOCK APPROVED -->
 <!-- All findings are PROVISIONAL per AC-6. IF-2 and IF-3 OPEN. -->
 
 **Findings status: PROVISIONAL**
 
 All findings in this section are provisional per AC-6. The panel contains
 known integrity gaps (IF-2: empty `stock_info`; IF-3: empty
-`corporate_actions`, DQ-CA-001). These gaps remain open as of v0.1.3.
+`corporate_actions`, DQ-CA-001). These gaps remain open as of v0.1.4.
 No finding below may be cited as validated or publication-ready until
 a clean-panel re-run is completed and this document is updated accordingly.
+
+Full integrated findings with narrative, research hypotheses, and benchmark
+hierarchy: see `research/r8_phase1_interim_findings.md` v0.1.0.
 
 ### Inference method
 
@@ -397,24 +408,62 @@ ADR-R8P1-001 v0.1.0:
 - n_eff reference unit: treatment date pool
 - Seed: 42
 
-Primary inference uses L=20. Results at L={5, 10} are sensitivity
-diagnostics only per ADR-R8P1-001 D3 and may not be cited as primary
-inferential statements.
+A-1 uses a single-side bootstrap (baseline date pool only, no joint resample)
+per ADR-R8P1-002 and session-locked spec decision (Option X). No p-value is
+reported for A-1.
 
-Artifacts: `data/_storage/r8_phase1_a3/v0.1.0/` (primary inference +
-sensitivity + manifest). Provenance root: P0-B panel snapshot hash
-`b82897a0f45be66a067e2557715fbe38489b938a3a4fd3485cc9285e7b6f3235`.
+A-2 uses no bootstrap (descriptive only — 0 PASS cells).
 
-### A-3: R8 within RS_T3 vs RS_T3 unconditional
+### A-1: RS_T3 Hold Benchmark
 
-**Comparison:** Treatment_1 (R8 ∩ RS_T3, n=5,330 events) vs Baseline_1
-(RS_T3 unconditional non-R8, n=63,363 observations).
-**Panel:** treatment_n_dates per cell from P0-B D-2A; full inference
-restricted to cells with joint adequacy = PASS × PASS.
+**Artifact:** `data/_storage/r8_phase1_a1/v0.1.0/`
+**Mode:** Descriptive with bootstrap uncertainty (no p-value)
+**Panel:** Baseline_1 — 63,363 observations, 1,068 unique dates
 
-**Full inference cells (PASS × PASS):** bull/nlu=0, bear/nlu=0, neutral/nlu=0.
-All other cells are DIRECTIONAL_ONLY or INSUFFICIENT; point estimates for
-those cells are not reported here as findings.
+PASS cells: bull/nlu=0, bear/nlu=0, neutral/nlu=0.
+
+**Bull regime, nlu=0 — key results:**
+
+| Horizon | θ_base | 95% CI (L=20) | n_eff |
+|---|---|---|---|
+| 10td | +1.50% | [+0.85%, +2.13%] | 105 |
+| 20td | +3.03% | [+1.84%, +4.17%] | 71 |
+
+RS_T3 baseline is materially positive in bull regimes at longer horizons.
+CI excludes zero at 5td and beyond. Findings robust across L={5,10,20,40}.
+
+Bear and neutral baselines: all 95% CIs contain zero at 5td and beyond.
+The RS_T3 Hold strategy does not produce reliably positive returns in
+bear or neutral regimes on R8 event dates.
+
+### A-2: RS_T3 + Pullback Benchmark
+
+**Artifact:** `data/_storage/r8_phase1_a2/v0.1.0/`
+**Mode:** DESCRIPTIVE ONLY — no bootstrap, no CI, no p-value
+**Adequacy outcome: 0 PASS cells, 2 DIRECTIONAL_ONLY, 6 INSUFFICIENT**
+
+Treatment_2 (R8 ∩ RS_T3 ∩ `dist_above_ma20_atr < 0`) contains 262 events
+across 109 dates — 4.9% of Treatment_1. This sparsity is a structural finding:
+R8's +5% intraday move definition is nearly incompatible with simultaneous
+pullback state at the signal date. Full inferential evaluation of Δ_A2 is
+not possible under the current sample.
+
+**Directional evidence (inference prohibited):**
+
+Bull/nlu=0: Δ_A2 ≈ +2.20% at 20td (38 treatment dates).
+Bear/nlu=0: Δ_A2 ≈ +5.00% at 20td (36 treatment dates).
+
+These point estimates are directionally consistent with A-3 (H2: R8 uplift
+independent of pullback state), but carry no inferential weight. The H1/H2
+question remains unresolved.
+
+### A-3: R8 within RS_T3 vs RS_T3 Unconditional
+
+**Artifact:** `data/_storage/r8_phase1_a3/v0.1.0/`
+**Mode:** Full inferential (B=5000, L=20 primary, joint bootstrap)
+**Panel:** Treatment_1 — 5,330 events; Baseline_1 — 63,363 observations
+
+Full inference cells (PASS × PASS): bull/nlu=0, bear/nlu=0, neutral/nlu=0.
 
 #### Tier 1 — Robust findings (full inference, robust across sensitivity grid)
 
@@ -500,7 +549,7 @@ neutral/nlu=1.
 
 ### Open items affecting findings
 
-| ID | Description | Impact on A-3 findings |
+| ID | Description | Impact on findings |
 |---|---|---|
 | IF-2 | Empty `stock_info` | Sector composition of treatment/baseline unknown; electronics-concentration bias from Phase 0 cannot be re-verified |
 | IF-3 | Empty `corporate_actions` (DQ-CA-001) | Halt/suspension events cannot be excluded; affected events may inflate or deflate forward returns |
@@ -508,4 +557,4 @@ neutral/nlu=1.
 
 ---
 
-*End of r8_phase1_lifecycle_spec.md v0.1.3*
+*End of r8_phase1_lifecycle_spec.md v0.1.4*
