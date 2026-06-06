@@ -56,12 +56,29 @@ DEFAULT_HISTORY_DAYS = 365 * 5
 
 
 def get_universe_symbols() -> list[str]:
-    """從 universe.yaml 取 symbols (不加 TAIEX, TAIEX 沒有 dividend)。"""
+    """Load all universe symbols from the YAML config.
+
+    Covers both nested universes under ``universes`` (which use
+    ``include_specific``) and top-level universe definitions such as
+    ``dynamic_top200`` (which use ``symbols``).  Dividend ingestion must
+    cover all panels used in Phase 1 research; omitting ``dynamic_top200``
+    leaves 185 of 200 universe symbols without corporate_actions coverage.
+    """
     universe = load_universe()
     symbols: set[str] = set()
-    for _, u_def in universe.get("universes", {}).items():
-        for sym in u_def.get("include_specific", []):
-            symbols.add(str(sym))
+
+    for u_def in universe.get("universes", {}).values():
+        if isinstance(u_def, dict):
+            for sym in u_def.get("include_specific", []):
+                symbols.add(str(sym))
+
+    for key, value in universe.items():
+        if key == "universes":
+            continue
+        if isinstance(value, dict) and isinstance(value.get("symbols"), list):
+            for sym in value["symbols"]:
+                symbols.add(str(sym))
+
     return sorted(symbols)
 
 
