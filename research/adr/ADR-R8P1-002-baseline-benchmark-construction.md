@@ -3,7 +3,8 @@
 <!-- research/adr/ADR-R8P1-002-baseline-benchmark-construction.md -->
 <!-- v0.1.0 — 2026-06-06 -->
 
-**Status:** DRAFT — pending sign-off
+**Status:** LOCKED — v0.1.0
+**Lock date:** 2026-06-06
 **Authority:** Implementation ADR resolving methodological ambiguity in
 `research/r8_phase1_lifecycle_spec.md` v0.1.2 §Required Comparisons
 Benchmarks 1, 2, and 3.
@@ -490,8 +491,8 @@ Silent edits are prohibited.
 | Role | Status |
 |---|---|
 | Method author | Drafted v0.1.0, 2026-06-06 |
-| Phase 1 SPEC owner | Pending |
-| Lock date | Pending |
+| Phase 1 SPEC owner | Signed off 2026-06-06 |
+| Lock date | 2026-06-06 |
 
 Until sign-off, no Phase 1 inferential output may be produced.
 

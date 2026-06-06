@@ -3,7 +3,8 @@
 <!-- research/r8_phase1_cell_adequacy_spec.md -->
 <!-- v0.1.1 — 2026-06-06 -->
 
-**Status:** DRAFT — pending sign-off
+**Status:** LOCKED — v0.1.1
+**Lock date:** 2026-06-06
 **Supersedes:** v0.1.0 (LOCKED 2026-06-06)
 **Inherits from:**
 - `research/r8_phase1_lifecycle_spec.md` v0.1.2
