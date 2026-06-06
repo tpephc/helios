@@ -17,6 +17,7 @@ or any claim of independent alpha.
 |---|---|---|
 | v0.1.2 | 2026-06-02 | Initial SPEC LOCKED |
 | v0.1.3 | 2026-06-06 | Added Phase 1 Findings section (A-3 complete). Status updated to reflect P0-B and A-3 completion. No SPEC terms modified. |
+| v0.1.5 | 2026-06-06 | IF-2 reclassified from AC-6 binding blocker to P2 data backlog. company_metadata accepted as Phase 1 sector diagnostic source. No SPEC terms modified. |
 | v0.1.4 | 2026-06-06 | A-1 and A-2 complete. Phase 1 Findings section updated. AC-2 satisfied. Analysis progress table updated. Reference to interim findings note added. No SPEC terms modified. |
 
 ---
@@ -39,7 +40,9 @@ and reported. A-2 is satisfied via adequacy outcome: Treatment_2 (R8 ∩ RS_T3 �
 pullback state) contains only 262 events across 109 dates (4.9% of Treatment_1),
 yielding 0 PASS cells. This sparsity is the substantive A-2 finding.
 
-All findings remain **PROVISIONAL** per AC-6. IF-2 and IF-3 are OPEN.
+All findings remain **PROVISIONAL** per AC-6. AC-6 binding blockers: IF-3A (corporate_actions dividend/split not populated)
+and IF-3B (suspension/halt/resumption dataset not built). IF-2 reclassified
+as non-binding per v0.1.5..
 
 Full integrated findings: see `research/r8_phase1_interim_findings.md` v0.1.0.
 
@@ -551,7 +554,7 @@ neutral/nlu=1.
 
 | ID | Description | Impact on findings |
 |---|---|---|
-| IF-2 | Empty `stock_info` | Sector composition of treatment/baseline unknown; electronics-concentration bias from Phase 0 cannot be re-verified |
+| IF-2 | Empty `stock_info` — **RECLASSIFIED P2** | Phase 1 A-1/A-2/A-3 scripts do not query `stock_info`. Sector validation uses `company_metadata.industry_code` (TWSE t187ap03_L, 1088 rows). IF-2 does not block AC-6 closeout. `stock_info` population pipeline deferred as P2 data infrastructure. |
 | IF-3 | Empty `corporate_actions` (DQ-CA-001) | Halt/suspension events cannot be excluded; affected events may inflate or deflate forward returns |
 | BACKLOG-IF1-GUARD | No repo-wide guard preventing direct access to `daily_price_adj` outside allowlist | Forward return computation integrity unguarded at repo level |
 

@@ -386,8 +386,26 @@ conditional on IF-2 and IF-3 closure — see Section 9.
 | ID | Description | Status | Impact |
 |---|---|---|---|
 | AC-6 | All Phase 1 findings remain PROVISIONAL until clean-panel re-run | OPEN | All findings require re-confirmation after IF-2 and IF-3 are closed |
-| IF-2 | Empty `stock_info` | OPEN | Sector composition of treatment/baseline cannot be verified; electronics-concentration bias from Phase 0 cannot be re-checked |
+| IF-2 | Empty `stock_info` — RECLASSIFIED P2 | NOT BINDING | Phase 1 scripts do not query `stock_info`; sector validation uses `company_metadata.industry_code`. Does not block AC-6 closeout. |
 | IF-3 | Empty `corporate_actions` (DQ-CA-001) | OPEN | Halt/suspension events cannot be excluded; may inflate or deflate forward returns in affected events |
+
+### IF-2 Reclassification
+
+IF-2 (`stock_info` empty table) is reclassified from an AC-6 binding
+blocker to a P2 data backlog item, effective 2026-06-06.
+
+Rationale:
+- Phase 1 A-1/A-2/A-3 estimand construction does not query `stock_info`.
+- Sector composition validation is diagnostic only and does not enter
+  forward-return computation.
+- `company_metadata.industry_code` (source: TWSE t187ap03_L, 1088 rows,
+  last synced 2026-05-22) is accepted as the Phase 1 sector diagnostic
+  source.
+
+AC-6 binding blockers are now: IF-3A (corporate_actions dividend/split
+population) and IF-3B (suspension/halt/resumption tradability dataset).
+The `stock_info` population pipeline remains deferred as P2 data
+infrastructure work.
 
 ### Research questions not addressed by Phase 1
 
