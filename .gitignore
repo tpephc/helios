@@ -45,3 +45,7 @@ _v0_1_16_staging/
 
 # Catch-all for transient .pre_* backup files (any patch session)
 *.pre_*.bak
+
+# DuckDB and SQLite database files
+*.db
+*.duckdb
