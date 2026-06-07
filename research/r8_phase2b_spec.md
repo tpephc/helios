@@ -1,9 +1,9 @@
 # R8 MA5 Momentum — Phase 2B Execution Bridge Specification
 
 <!-- research/r8_phase2b_spec.md -->
-<!-- v0.1.1 — 2026-06-07 -->
+<!-- v0.1.2 — 2026-06-07 -->
 
-**Status:** LOCKED — v0.1.1 (2026-06-07)
+**Status:** LOCKED — v0.1.2 (2026-06-07)
 **Inherits from:**
 - `research/r8_phase1_interim_findings.md` v1.0.0 (CONFIRMED)
 - `research/r8_phase1_lifecycle_spec.md` v0.2.1 (LOCKED)
@@ -23,6 +23,7 @@ alpha validation, portfolio optimisation, or Phase 2C work.
 |---|---|---|
 | v0.1.0 | 2026-06-07 | Initial SPEC LOCKED. D1–D3 decisions frozen. Commission and slippage independently specified. Three mandatory concentration scenarios frozen. |
 | v0.1.1 | 2026-06-07 | Weight formula clarified to `min(1/N, 10%)` (removes redundant single-position cap constraint). Verdict names changed TRADEABLE→FEASIBLE, NOT TRADEABLE→NOT FEASIBLE to avoid deployment-readiness misreading. No D1–D3 parameters modified. |
+| v0.1.2 | 2026-06-07 | Position sizing semantics clarified: `min(1/N, 10%)` is a per-position deployment budget (partial-NAV model). Portfolio gross = sum of NAV-weighted position returns; event gross mean retained as reference column. No D1–D3 parameters modified. |
 
 ---
 
@@ -157,29 +158,37 @@ Total cost deduction per scenario:
 
 ### 5.1 Position sizing
 
-**Method:** 1/N equal weight.
+**Method:** Per-position deployment budget of `min(1/N, 10%)`.
 
-Rationale: Equal weighting isolates the signal edge from portfolio
-construction effects. Phase 2A established effect persistence; Phase 2B
-tests whether the edge survives execution friction. Introducing a
-weighting scheme (Kelly, vol-targeting, conviction-weighting) would
-conflate signal edge with portfolio construction edge, making failure
-mode attribution impossible.
+**Semantics:** This is a **partial-NAV deployment model**, not a
+fully-invested equal-weight portfolio. Each position receives
+`min(1/N, 10%)` of NAV. When N = 10, the portfolio is fully deployed
+(10 × 10% = 100% NAV). When N < 10, the portfolio is partially deployed
+(e.g., N=3 → 30% NAV, 70% cash). Undeployed capital earns 0%.
+
+This reflects realistic deployment constraints: the strategy does not
+lever up to stay fully invested when few signals qualify. Normalising
+weights to sum to 1.0 when N < 10 would misrepresent the deployment
+decision and overstate concentration risk.
+
+Rationale: Isolates per-position signal edge from portfolio construction
+effects. Introducing weighting schemes (Kelly, vol-targeting) would
+conflate signal edge with portfolio construction edge.
 
 **Portfolio construction rules (frozen):**
 
 | Parameter | Value | Notes |
 |---|---|---|
-| Weighting | `min(1/N, 10%)` | N = number of active positions on entry date; cap binds when N < 10 |
-| Max simultaneous positions | 10 | Hard cap |
+| Per-position weight | `min(1/N, 10%)` | N = active positions on entry date |
+| Max simultaneous positions | 10 | Hard cap; 10 positions = 100% NAV |
 | Holding period | 20 trading days | Matches Phase 1 primary horizon |
+| Undeployed capital | Cash (0% return) | Not modelled as a return source |
 
-**Weight formula note:** `min(1/N, 10%)` is the single governing rule.
-With max_positions=10 and N always ≤ 10 at entry, the 10% cap is binding
-only when N = 1 (full single-position portfolio) and is redundant for N ≥
-10. Stating the formula explicitly prevents runner implementations from
-applying the cap and equal-weight as two separate, potentially conflicting
-constraints.
+**Gross return definition:** Portfolio gross return on a signal date =
+`sum(weight_i × fwd_return_i)` — a NAV-weighted return, not the mean of
+selected event returns. The event-level mean (`event_gross_mean`) is
+retained as a reference column but is not the primary Gross figure
+in the output table.
 
 ### 5.2 Overflow handling
 
@@ -278,9 +287,11 @@ levels) with four cost columns:
 | High-Uplift | S2 | x.xx% | −0.585% | −0.500% | x.xx% |
 | High-Uplift | S3 | x.xx% | −0.585% | −1.000% | x.xx% |
 
-Gross is the mean event-level forward return at 20td for R8 treatment
-events in the scenario date pool, after the 1/N position sizing rules
-are applied.
+Gross is the mean signal-date portfolio gross return across all signal
+dates in the scenario date pool: `mean(sum(weight_i × fwd_return_i))`
+per SPEC §5.1 partial-NAV model. `event_gross_mean` (mean of individual
+event returns without NAV weighting) is retained as a reference column
+but is not the primary Gross figure.
 
 ### 7.2 Supplementary outputs
 
@@ -381,4 +392,4 @@ Regardless of verdict:
 
 ---
 
-*End of r8_phase2b_spec.md v0.1.1*
+*End of r8_phase2b_spec.md v0.1.2*
