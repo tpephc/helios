@@ -1,17 +1,18 @@
-# R8 Phase 1 — Interim Findings
+# R8 Phase 1 — Interim Findings — v1.0.0
 
 <!-- research/r8_phase1_interim_findings.md -->
-<!-- v0.2.0 — 2026-06-07 -->
+<!-- v1.0.0 — 2026-06-07 -->
 
 ---
 
-> **Status: CONFIRMED (clean-panel re-run complete)**
+> **Status: CONFIRMED — v1.0.0 (2026-06-07)**
 >
-> Clean-panel re-run complete (2026-06-07, commit 4a307e6). AC-6 binding blockers
-> cleared. IF-3A CLOSED (commit 76f1f45). IF-3B reclassified P2 non-binding
-> (composition audit 2026-06-07). IF-2 reclassified P2 non-binding (v0.1.5).
-> Findings confirmed for Phase 1 measurement scope only. This document does not
-> constitute alpha validation, execution authorisation, or production deployment.
+> Promoted from PROVISIONAL to CONFIRMED. Clean-panel re-run complete
+> (2026-06-07, commit 4a307e6). AC-6 CLOSED. IF-3A CLOSED (commit 76f1f45).
+> IF-3B reclassified P2 non-binding (composition audit 2026-06-07).
+> IF-2 reclassified P2 non-binding (v0.1.5). Findings confirmed for
+> Phase 1 measurement scope only. This document does not constitute alpha
+> validation, execution authorisation, or production deployment.
 
 ---
 
@@ -32,6 +33,7 @@ This is a pre-registered finding, not a methodological failure.
 
 All three analyses are now artifact-complete. Clean-panel re-run complete
 (2026-06-07). Phase 1 overall status: CONFIRMED (measurement scope).
+Promoted to v1.0.0 (2026-06-07).
 
 ---
 
@@ -374,10 +376,14 @@ conditional on IF-2 and IF-3 closure — see Section 9.
 - That R8 is exploitable net of execution costs.
 - That the R8 uplift is stable across different time sub-periods.
 - That the pullback condition (H1 vs H2) is resolved.
-- That the findings are robust to panel remediation — clean-panel re-run complete;
-  Benchmark C fingerprint: provisional +6.7666% → remediated +6.8538%
-  (pooled unstratified ret_20d mean, research/r8_benchmarks.py).
 - That R8 constitutes independent alpha.
+
+**Panel-remediation robustness (evaluated and confirmed):**
+Clean-panel re-run completed 2026-06-07 (commit 4a307e6). Benchmark C
+fingerprint remained stable: provisional +6.7666% → remediated +6.8538%
+(Δ = +0.0872pp; pooled unstratified ret_20d mean, research/r8_benchmarks.py).
+Phase 1 findings are confirmed robust to panel remediation within
+measurement scope.
 
 ---
 
@@ -405,10 +411,10 @@ Rationale:
   last synced 2026-05-22) is accepted as the Phase 1 sector diagnostic
   source.
 
-AC-6 binding blockers are now: IF-3A (corporate_actions dividend/split
-population) and IF-3B (suspension/halt/resumption tradability dataset).
-The `stock_info` population pipeline remains deferred as P2 data
-infrastructure work.
+AC-6 binding blockers as of v1.0.0: none. IF-3A CLOSED (commit 76f1f45).
+IF-3B reclassified P2 non-binding (composition audit 2026-06-07). IF-2
+reclassified P2 non-binding (v0.1.5). The `stock_info` population pipeline
+remains deferred as P2 data infrastructure work.
 
 ### Research questions not addressed by Phase 1
 
@@ -430,6 +436,27 @@ infrastructure work.
 AC-2 (all three required comparisons measured and reported) is satisfied.
 AC-6 CLOSED. Phase 1 overall status: **CONFIRMED** (measurement scope, 2026-06-07).
 
+### AC-6 Closeout Statement
+
+**AC-6: CLOSED — 2026-06-07**
+
+All binding constraints on Phase 1 findings validity have been resolved:
+
+| Constraint | Resolution | Evidence |
+|---|---|---|
+| AC-6 clean-panel re-run | CLOSED | Commit 4a307e6; Benchmark C Δ = +0.0872pp |
+| IF-3A corporate_actions | CLOSED | Commit 76f1f45; 1,106 rows, 199 symbols |
+| IF-3B suspension/halt | P2 non-binding | Composition audit: 0 halt-resumption in r8_events |
+| IF-2 stock_info | P2 non-binding | Phase 1 scripts do not query stock_info |
+
+Phase 1 findings are promoted from PROVISIONAL to CONFIRMED, effective
+2026-06-07. Scope of confirmation: measurement scope only (incremental
+forward return differences in bull regimes at 10td and 20td horizons,
+under conditions defined in Sections 3–6). This promotion does not
+constitute alpha validation, execution authorisation, or production
+deployment authorisation. Phase 2 requires a new versioned SPEC; Phase 1
+confirmation does not automatically authorise Phase 2 scope expansion.
+
 ---
 
-*End of r8_phase1_interim_findings.md v0.2.0*
+*End of r8_phase1_interim_findings.md v1.0.0*

@@ -1,9 +1,9 @@
-# R8 MA5 Momentum — Phase 1 Lifecycle Specification
+# R8 MA5 Momentum — Phase 1 Lifecycle Specification — v0.2.1
 
 <!-- research/r8_phase1_lifecycle_spec.md -->
-<!-- v0.1.6 — 2026-06-07 -->
+<!-- v0.2.1 — 2026-06-07 -->
 
-**Status:** LOCKED — v0.1.6 (2026-06-07)
+**Status:** LOCKED — v0.2.1 (2026-06-07)
 **Inherits from:** `docs/research/r8_phase0_feasibility.md` (closed 2026-06-01, rev2)
 **Authorises:** Lifecycle replay infrastructure and forward-return measurement only.
 **Does not authorise:** Production deployment, alpha validation, execution rules,
@@ -20,33 +20,45 @@ or any claim of independent alpha.
 | v0.1.4 | 2026-06-06 | A-1 and A-2 complete. Phase 1 Findings section updated. AC-2 satisfied. Analysis progress table updated. Reference to interim findings note added. No SPEC terms modified. |
 | v0.1.5 | 2026-06-06 | IF-2 reclassified from AC-6 binding blocker to P2 data backlog. company_metadata accepted as Phase 1 sector diagnostic source. No SPEC terms modified. |
 | v0.1.6 | 2026-06-07 | Composition audit finding added (new section). IF-3B reclassified from AC-6 binding blocker to P2 non-binding per composition audit evidence. DQ-ADJ-003 reclassified from adjustment anomaly to capital reduction event; subsumed by DQ-CA-001. Open items table updated. No SPEC terms (AC-1 through AC-7, LA-1 through LA-8) modified. |
+| v0.2.0 | 2026-06-07 | Phase 1 Promotion Status section added. PROVISIONAL language removed. Analysis progress table artifact paths updated to v0.2.0. Findings reference updated to v1.0.0. AC-6 formally closed. No SPEC terms (AC-1 through AC-7, LA-1 through LA-8) modified. |
+| v0.2.1 | 2026-06-07 | Pre-promotion governance constraint section relabelled as historical. AC-6 row updated with CLOSED status. LA-5 updated with SUPERSEDED note. Future Invalidation P1-DATA row updated with outcome. Cosmetic consistency patch only; no SPEC terms modified. |
 
 ---
 
 ## Status
 
-Phase 1 SPEC LOCKED (2026-06-02). Findings section updated v0.1.4 (2026-06-06).
+Phase 1 SPEC LOCKED (2026-06-02). Findings promoted to CONFIRMED (2026-06-07).
 
-**Analysis progress as of v0.1.4:**
+### Phase 1 Promotion Status
+
+**CONFIRMED — 2026-06-07**
+
+AC-6 CLOSED. Clean-panel re-run completed (commit 4a307e6). All binding
+blockers resolved:
+
+- IF-3A CLOSED (commit 76f1f45)
+- IF-3B reclassified P2 non-binding (composition audit 2026-06-07)
+- IF-2 reclassified P2 non-binding (v0.1.5)
+
+Phase 1 findings are promoted from PROVISIONAL to CONFIRMED for measurement
+scope only. This promotion does not constitute alpha validation, execution
+authorisation, or production deployment authorisation.
+
+See: `research/r8_phase1_interim_findings.md` v1.0.0
+
+**Analysis progress as of v0.2.0:**
 
 | Analysis | Status | Artifact |
 |---|---|---|
 | P0-B Cell adequacy audit | COMPLETE | `data/_storage/r8_phase1_cell_adequacy/v0.1.1/` |
-| A-1 RS_T3 Hold benchmark | COMPLETE | `data/_storage/r8_phase1_a1/v0.1.0/` |
-| A-2 RS_T3 + Pullback benchmark | COMPLETE (descriptive only — 0 PASS cells) | `data/_storage/r8_phase1_a2/v0.1.0/` |
-| A-3 R8∩RS_T3 vs RS_T3 unconditional | COMPLETE | `data/_storage/r8_phase1_a3/v0.1.0/` |
+| A-1 RS_T3 Hold benchmark | COMPLETE | `data/_storage/r8_phase1_a1/v0.2.0/` |
+| A-2 RS_T3 + Pullback benchmark | COMPLETE (descriptive only — 0 PASS cells) | `data/_storage/r8_phase1_a2/v0.2.0/` |
+| A-3 R8∩RS_T3 vs RS_T3 unconditional | COMPLETE | `data/_storage/r8_phase1_a3/v0.2.0/` |
 
 **AC-2 status: SATISFIED.** All three required comparisons have been measured
 and reported. A-2 is satisfied via adequacy outcome: Treatment_2 (R8 ∩ RS_T3 ∩
 pullback state) contains only 262 events across 109 dates (4.9% of Treatment_1),
 yielding 0 PASS cells. This sparsity is the substantive A-2 finding.
-
-All findings remain **PROVISIONAL** per AC-6. IF-3A closed (commit `76f1f45`).
-IF-3B reclassified as P2 non-binding per v0.1.6 composition audit.
-IF-2 reclassified as P2 non-binding per v0.1.5.
-No AC-6 binding blockers remain. Clean-panel re-run is unblocked.
-
-Full integrated findings: see `research/r8_phase1_interim_findings.md` v0.1.0.
 
 This document is the upstream governance contract for all Phase 1 implementation
 artifacts, analysis notebooks, and any downstream SPEC that references R8 Phase 1
@@ -254,21 +266,26 @@ time of this SPEC:
    halt-resumption events in the r8_events population. IF-3B reclassified
    as P2 non-binding per v0.1.6.
 
-### Provisional findings constraint
+### Pre-promotion governance constraint *(historical — superseded by v0.2.0)*
 
-All Phase 1 statistical conclusions are **provisional** until P1-DATA
-remediation is completed. No alpha-validation claim, no publication-ready
+> **Note (v0.2.0):** The constraint below was the operative governance rule
+> from SPEC LOCKED (v0.1.2) through clean-panel re-run completion (2026-06-07).
+> It has been satisfied. AC-6 is CLOSED. Findings are CONFIRMED.
+> This section is retained for audit continuity only.
+
+All Phase 1 statistical conclusions were **provisional** until P1-DATA
+remediation was completed. No alpha-validation claim, no publication-ready
 finding, and no production deployment decision may be based on Phase 1
 results alone while these gaps remain open.
 
-This constraint applies without exception. It cannot be waived by
-individual judgment; it requires a formal P1-DATA close and a
+This constraint applied without exception. It could not be waived by
+individual judgment; it required a formal P1-DATA close and a
 SPEC-level sign-off on panel integrity.
 
 ### P1-DATA relationship
 
 P1-DATA is a parallel backlog item, not a hard prerequisite that blocks
-Phase 1 from beginning. The correct sequencing is:
+Phase 1 from beginning. The correct sequencing was:
 
 ```
 Phase 1 SPEC (this document) → Phase 1 implementation → Phase 1 findings
@@ -276,8 +293,8 @@ Phase 1 SPEC (this document) → Phase 1 implementation → Phase 1 findings
               P1-DATA remediation → panel re-run → findings upgraded from provisional
 ```
 
-Phase 1 findings MUST be clearly labelled as provisional in any report or
-presentation until the panel re-run under a clean panel is completed.
+**Outcome (v0.2.0):** P1-DATA remediation completed. Clean-panel re-run
+completed 2026-06-07 (commit 4a307e6). Findings promoted to CONFIRMED.
 
 ---
 
@@ -292,7 +309,7 @@ Phase 1 is complete when ALL of the following are satisfied:
 | AC-3 | All analysis is stratified by `regime[T-1]`; no pooled-regime result is presented without explicit caveat. |
 | AC-4 | Near-limit-up subset (signal day close >= +9.5% relative to previous close) is tagged and reported separately; pooled results note this subset explicitly. |
 | AC-5 | Block-bootstrap effective-n estimate is reported alongside any inferential statistic. |
-| AC-6 | All findings are labelled as provisional pending P1-DATA remediation. |
+| AC-6 | All findings are labelled as provisional pending P1-DATA remediation. **CLOSED 2026-06-07** (commit 4a307e6; findings promoted to CONFIRMED). |
 | AC-7 | No execution policy, production deployment, or alpha-validation claim appears in Phase 1 outputs. |
 
 AC-7 is a negative criterion. Violation of AC-7 constitutes a governance
@@ -342,7 +359,7 @@ the analysis.
 | LA-2 | SMA / RS / `dist_above_ma20_atr` are point-in-time as-of T close. Verify via `bullish_features.computed_at`. |
 | LA-3 | Regime is attached as `regime[T-1]`, consistent with production. |
 | LA-4 | RS_T3 is the T-1 de-circularised top tertile of `beta_adj_rs_*`. The +5% signal candle is excluded from the RS window. |
-| LA-5 | Phase 1 uses the current panel. All findings are provisional pending P1-DATA remediation. |
+| LA-5 | Phase 1 uses the current panel. ~~All findings are provisional pending P1-DATA remediation.~~ **Superseded (v0.2.0):** P1-DATA remediation complete; findings CONFIRMED (2026-06-07). |
 | LA-6 | Industry concentration and same-day clustering (up to 77 simultaneous signals on 2024-08-07) mean that row count is not independent-observation count. Effective-n must be estimated. |
 | LA-7 | `find_bullish_setups.py` is an observational screener with uncalibrated thresholds ([ASSUMED]). It is not a validated entry strategy and may not be used as a benchmark. |
 | LA-8 | All forward-return horizons are measured in **trading days**. Non-trading days (weekends, public holidays) do not advance event age. Calendar-day interpretation is not permitted. |
@@ -377,7 +394,7 @@ under any of the following conditions:
 
 | Condition | Action required |
 |---|---|
-| P1-DATA remediation reveals that pre-listing contamination materially changes RS_T3 composition or R8 signal counts. | Phase 1 must be re-run on the clean panel. All provisional findings are superseded. |
+| P1-DATA remediation reveals that pre-listing contamination materially changes RS_T3 composition or R8 signal counts. | Phase 1 must be re-run on the clean panel. All provisional findings are superseded. **Outcome (v0.2.0):** Clean-panel re-run completed 2026-06-07 (commit 4a307e6). Benchmark C Δ = +0.0872pp. Findings confirmed robust; not superseded. |
 | The regime classification model is retrained or its thresholds change. | Phase 1 findings stratified by `regime[T-1]` must be re-evaluated. |
 | The `beta_adj_rs_*` computation methodology changes. | RS_T3 proxy and LA-4 must be re-verified. |
 | A suspension/halt table becomes available, enabling reclassification of SUSPENSION_GAP rows. | DQ-338 classification must be revisited. Composition audit (v0.1.6) found 0 confirmed halt-resumption events in r8_events. A halt table may reclassify rows in `daily_price_adj` at forward-return observation dates outside the reviewed signal population. |
@@ -388,19 +405,16 @@ under any of the following conditions:
 
 ## Phase 1 Findings
 
-<!-- Updated v0.1.4 — 2026-06-06 — LOCK APPROVED -->
-<!-- All findings are PROVISIONAL per AC-6. IF-2 and IF-3 OPEN. -->
+<!-- Updated v0.2.0 — 2026-06-07 — LOCK APPROVED -->
 
-**Findings status: PROVISIONAL**
+**Findings status: CONFIRMED (2026-06-07)**
 
-All findings in this section are provisional per AC-6. The panel contains
-known integrity gaps (IF-2: empty `stock_info`; IF-3: empty
-`corporate_actions`, DQ-CA-001). These gaps remain open as of v0.1.4.
-No finding below may be cited as validated or publication-ready until
-a clean-panel re-run is completed and this document is updated accordingly.
+All findings in this section are confirmed per AC-6 closeout (2026-06-07,
+commit 4a307e6). IF-3A CLOSED. IF-3B and IF-2 reclassified P2 non-binding.
+Clean-panel re-run complete. Findings are confirmed for measurement scope only.
 
 Full integrated findings with narrative, research hypotheses, and benchmark
-hierarchy: see `research/r8_phase1_interim_findings.md` v0.1.0.
+hierarchy: see `research/r8_phase1_interim_findings.md` v1.0.0.
 
 ### Inference method
 
@@ -424,7 +438,7 @@ A-2 uses no bootstrap (descriptive only — 0 PASS cells).
 
 ### A-1: RS_T3 Hold Benchmark
 
-**Artifact:** `data/_storage/r8_phase1_a1/v0.1.0/`
+**Artifact:** `data/_storage/r8_phase1_a1/v0.2.0/`
 **Mode:** Descriptive with bootstrap uncertainty (no p-value)
 **Panel:** Baseline_1 — 63,363 observations, 1,068 unique dates
 
@@ -446,7 +460,7 @@ bear or neutral regimes on R8 event dates.
 
 ### A-2: RS_T3 + Pullback Benchmark
 
-**Artifact:** `data/_storage/r8_phase1_a2/v0.1.0/`
+**Artifact:** `data/_storage/r8_phase1_a2/v0.2.0/`
 **Mode:** DESCRIPTIVE ONLY — no bootstrap, no CI, no p-value
 **Adequacy outcome: 0 PASS cells, 2 DIRECTIONAL_ONLY, 6 INSUFFICIENT**
 
@@ -467,7 +481,7 @@ question remains unresolved.
 
 ### A-3: R8 within RS_T3 vs RS_T3 Unconditional
 
-**Artifact:** `data/_storage/r8_phase1_a3/v0.1.0/`
+**Artifact:** `data/_storage/r8_phase1_a3/v0.2.0/`
 **Mode:** Full inferential (B=5000, L=20 primary, joint bootstrap)
 **Panel:** Treatment_1 — 5,330 events; Baseline_1 — 63,363 observations
 
@@ -639,4 +653,4 @@ Tier 1, Tier 2, and Tier 3 findings. No finding is affected.
 
 ---
 
-*End of r8_phase1_lifecycle_spec.md v0.1.6*
+*End of r8_phase1_lifecycle_spec.md v0.2.1*
