@@ -245,8 +245,8 @@ def main() -> int:
         )
         return 0
 
+    run_at = datetime.now(timezone.utc)
     try:
-        run_at = datetime.now(timezone.utc)
         logger.info("intraday_monitor_start", run_at=run_at.isoformat())
 
         bot = _build_bot()
