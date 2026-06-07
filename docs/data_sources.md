@@ -90,8 +90,25 @@
 | 項目 | 內容 |
 |---|---|
 | 用途 | 基本面特徵 |
-| 寫入表 | `monthly_revenue` |
-| 來源 | FinMind |
+| 寫入表 | `monthly_revenue`（目前 row count = 0，無 ingestion script） |
+| 狀態 | **P2-DATA — OPEN** |
+
+**來源評估（2026-06-07）：**
+
+| 來源 | 歷史深度 | 筆數/次 | 適用場景 |
+|---|---|---|---|
+| TWSE OpenAPI `/opendata/t187ap05_P` | **當月 only**（302 筆，單月全市場） | 302 | 每月增量 append |
+| FinMind | 多年歷史 | 可按股票查詢 | 歷史補抓（一次性） |
+
+**建議架構：雙來源策略**
+- 歷史補抓：FinMind → `monthly_revenue`（一次性）
+- 每月增量：TWSE OpenAPI → `monthly_revenue`（月底 cron append）
+
+**注意：**
+- TWSE API 日期格式為民國年（例：11504 = 民國 115 年 4 月 = 2026-04）
+- API 無 parameters，每次回傳當月全市場；無法指定歷史月份
+- 現有 `monthly_revenue` schema 有 `revenue_yoy` 欄位，TWSE API 有 YoY% 可直接對應
+- 目前無任何 research pipeline 依賴此表，非緊急
 
 ---
 
