@@ -143,6 +143,21 @@
 | 已知案例 | 2327（DQ-ADJ-003，已分類） |
 | 注意 | 與 dividend ingestion 不同 pipeline，需獨立處理 |
 
+
+### 4.4 除權除息預告表（前瞻性）
+
+| 項目 | 內容 |
+|---|---|
+| 狀態 | **P2-DATA — OPEN**（尚未 ingest） |
+| Endpoint | TWSE OpenAPI `/exchangeReport/TWT48U_ALL` |
+| 資料性質 | **前瞻性預告**，非歷史記錄 |
+| 覆蓋範圍 | 近期至未來約 2 個月的 ex-date（2026-06-07 確認：208 筆，範圍 2026-06-04 → 2026-08-07） |
+| 欄位 | Date（ex-date）、Code、Exdividend（除權/除息標記）、StockDividendRatio、CashDividend 等 |
+| 已知限制 | CashDividend 欄位常為空（只有標記，無金額）；無歷史資料；無 parameters |
+| 與 4.1 的關係 | **互補**，不替代。4.1 是事後歷史金額；本 endpoint 是事前 ex-date 預警 |
+| 適用場景 | 持倉風險管理：在 ex-date 前預警，避免持股穿越除息日造成價格跳空誤判 |
+| 寫入表建議 | 新增 `exright_schedule` 或寫入 `corporate_actions`（kind='exdiv_notice'） |
+
 ---
 
 ## 5. 交易日曆
