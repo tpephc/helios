@@ -1,17 +1,17 @@
 # R8 Phase 1 — Interim Findings
 
 <!-- research/r8_phase1_interim_findings.md -->
-<!-- v0.1.0 — 2026-06-06 -->
+<!-- v0.2.0 — 2026-06-07 -->
 
 ---
 
-> **Status: PROVISIONAL**
+> **Status: CONFIRMED (clean-panel re-run complete)**
 >
-> This document is provisional per lifecycle spec AC-6. IF-2 (empty `stock_info`)
-> and IF-3 (empty `corporate_actions`, DQ-CA-001) remain OPEN. No finding in this
-> document may be cited as validated or publication-ready. No production strategy
-> changes may be derived from this document. All findings require a clean-panel
-> re-run after IF-2 and IF-3 are closed before any downstream use.
+> Clean-panel re-run complete (2026-06-07, commit 4a307e6). AC-6 binding blockers
+> cleared. IF-3A CLOSED (commit 76f1f45). IF-3B reclassified P2 non-binding
+> (composition audit 2026-06-07). IF-2 reclassified P2 non-binding (v0.1.5).
+> Findings confirmed for Phase 1 measurement scope only. This document does not
+> constitute alpha validation, execution authorisation, or production deployment.
 
 ---
 
@@ -30,8 +30,8 @@ across 109 dates — 4.9% of Treatment_1. This sparsity precludes inferential
 evaluation. Directional estimates are available but carry no statistical weight.
 This is a pre-registered finding, not a methodological failure.
 
-All three analyses are now artifact-complete. Phase 1 overall status remains
-IN PROGRESS pending clean-panel re-run (AC-6 condition).
+All three analyses are now artifact-complete. Clean-panel re-run complete
+(2026-06-07). Phase 1 overall status: CONFIRMED (measurement scope).
 
 ---
 
@@ -76,7 +76,7 @@ both sides per ADR-R8P1-002 interpretation β.
 
 ## 4. A-1 Findings — RS_T3 Hold Benchmark
 
-**Artifact:** `data/_storage/r8_phase1_a1/v0.1.0/`
+**Artifact:** `data/_storage/r8_phase1_a1/v0.2.0/`
 **Mode:** Descriptive with bootstrap uncertainty (no hypothesis test, no p-value)
 **Panel:** Baseline_1 — 63,363 observations, 1,068 unique dates, 204 stocks
 
@@ -140,7 +140,7 @@ context for interpreting A-3 uplifts.
 
 ## 5. A-2 Findings — RS_T3 + Pullback Benchmark
 
-**Artifact:** `data/_storage/r8_phase1_a2/v0.1.0/`
+**Artifact:** `data/_storage/r8_phase1_a2/v0.2.0/`
 **Mode:** DESCRIPTIVE ONLY — no bootstrap, no CI, no p-value
 **Panel:** Treatment_2 — 262 observations, 109 dates; Baseline_2 — 8,846 observations, 956 dates
 
@@ -217,7 +217,7 @@ The H1/H2 question remains open pending a larger sample.
 
 ## 6. A-3 Findings — R8 within RS_T3 vs RS_T3 Unconditional
 
-**Artifact:** `data/_storage/r8_phase1_a3/v0.1.0/`
+**Artifact:** `data/_storage/r8_phase1_a3/v0.2.0/`
 **Mode:** Full inferential (stationary block bootstrap, B=5000, L=20 primary)
 **Panel:** Treatment_1 — 5,330 events; Baseline_1 — 63,363 observations
 
@@ -316,7 +316,7 @@ evidence.
 
 | Regime | Answer | Basis |
 |---|---|---|
-| **Bull** | **YES (PROVISIONAL)** | A-3 Tier 1: Δ_obs = +1.35% / +2.10% at 10td / 20td; robust across bootstrap sensitivity grid; CI strictly positive at all block lengths |
+| **Bull** | **YES (CONFIRMED)** | A-3 Tier 1: Δ_obs = +1.21% / +1.92% at 10td / 20td (v0.2.0 clean panel); CI strictly positive at all block lengths; robust across bootstrap sensitivity grid |
 | **Bear** | **INCONCLUSIVE** | A-3 Tier 3: Δ_obs = +1.46% at 20td nominally significant (p ≈ 0.03) but 95% CI contains zero; not promoted under CI-precedence rule |
 | **Neutral** | **NO EVIDENCE** | A-3: all deltas negative or near-zero; all CIs contain zero; p > 0.05 across full grid |
 | **Pullback interaction** | **UNRESOLVED** | A-2: Treatment_2 too sparse (38 max treatment dates); directional estimates consistent with H2 but inference prohibited |
@@ -342,7 +342,7 @@ conditional on IF-2 and IF-3 closure — see Section 9.
 
 ## 9. Phase 1 Conclusions
 
-### What Phase 1 has established (subject to PROVISIONAL status)
+### What Phase 1 has established (confirmed under clean-panel re-run)
 
 1. **Positive RS_T3 baseline in bull regimes.** RS_T3 Hold generates
    approximately +3% at 20td in bull-regime conditions on R8 event dates.
@@ -374,7 +374,9 @@ conditional on IF-2 and IF-3 closure — see Section 9.
 - That R8 is exploitable net of execution costs.
 - That the R8 uplift is stable across different time sub-periods.
 - That the pullback condition (H1 vs H2) is resolved.
-- That the findings are robust to panel remediation (IF-2, IF-3 remain open).
+- That the findings are robust to panel remediation — clean-panel re-run complete;
+  Benchmark C fingerprint: provisional +6.7666% → remediated +6.8538%
+  (pooled unstratified ret_20d mean, research/r8_benchmarks.py).
 - That R8 constitutes independent alpha.
 
 ---
@@ -385,9 +387,10 @@ conditional on IF-2 and IF-3 closure — see Section 9.
 
 | ID | Description | Status | Impact |
 |---|---|---|---|
-| AC-6 | All Phase 1 findings remain PROVISIONAL until clean-panel re-run | OPEN | All findings require re-confirmation after IF-2 and IF-3 are closed |
+| AC-6 | Clean-panel re-run | **CLOSED** (2026-06-07, commit 4a307e6) | Findings confirmed for measurement scope. |
 | IF-2 | Empty `stock_info` — RECLASSIFIED P2 | NOT BINDING | Phase 1 scripts do not query `stock_info`; sector validation uses `company_metadata.industry_code`. Does not block AC-6 closeout. |
-| IF-3 | Empty `corporate_actions` (DQ-CA-001) | OPEN | Halt/suspension events cannot be excluded; may inflate or deflate forward returns in affected events |
+| IF-3A | `corporate_actions` dividend/split | **CLOSED** (commit 76f1f45) | No residual impact. |
+| IF-3B | Suspension/halt dataset | **P2 non-binding** | Composition audit found 0 halt-resumption events in r8_events. Residual uncertainty at T+1–T+20 observation dates: forward-observation window contains unquantified residual risk, but no evidence it materially affects A-3 Tier 1 finding direction or magnitude. |
 
 ### IF-2 Reclassification
 
@@ -420,14 +423,13 @@ infrastructure work.
 
 | Analysis | Artifact | Inference mode | AC-2 contribution |
 |---|---|---|---|
-| A-1 RS_T3 Hold | `r8_phase1_a1/v0.1.0/` | Descriptive + bootstrap CI | COMPLETE |
-| A-2 RS_T3 Pullback | `r8_phase1_a2/v0.1.0/` | Descriptive only (0 PASS cells) | COMPLETE — adequacy outcome |
-| A-3 R8 within RS_T3 | `r8_phase1_a3/v0.1.0/` | Full inferential | COMPLETE |
+| A-1 RS_T3 Hold | `r8_phase1_a1/v0.2.0/` | Descriptive + bootstrap CI | COMPLETE |
+| A-2 RS_T3 Pullback | `r8_phase1_a2/v0.2.0/` | Descriptive only (0 PASS cells) | COMPLETE — adequacy outcome |
+| A-3 R8 within RS_T3 | `r8_phase1_a3/v0.2.0/` | Full inferential | COMPLETE |
 
 AC-2 (all three required comparisons measured and reported) is satisfied.
-AC-6 remains binding. Phase 1 overall status: **IN PROGRESS** pending
-clean-panel re-run.
+AC-6 CLOSED. Phase 1 overall status: **CONFIRMED** (measurement scope, 2026-06-07).
 
 ---
 
-*End of r8_phase1_interim_findings.md v0.1.0*
+*End of r8_phase1_interim_findings.md v0.2.0*
