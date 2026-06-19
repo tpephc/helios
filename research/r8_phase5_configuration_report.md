@@ -1,9 +1,9 @@
 # R8 MA5 Momentum — Phase 5 Configuration Selection Report
 
 <!-- research/r8_phase5_configuration_report.md -->
-<!-- v1.0.1 — 2026-06-08 -->
+<!-- v1.0.2 — 2026-06-19 -->
 
-**Status:** LOCKED — v1.0.1 (2026-06-08)
+**Status:** LOCKED — v1.0.2 (2026-06-19)
 
 **Changelog:**
 
@@ -11,8 +11,10 @@
 |---|---|---|
 | v1.0.0 | 2026-06-08 | Initial report draft |
 | v1.0.1 | 2026-06-08 | P5-RPT-001: §6.2 Arm C gate result labelled MARGINAL PASS with explicit margin language. P5-RPT-002: §3.4 expanded with full price-snapshot divergence table (694/1013 dates, nav_end 6.477→6.975, Sharpe 2.378→2.498). P5-RPT-003+006: §7 Finding P5-4 H1/H2 interpretation section added — failure ≠ Arm C fail; capacity and Sharpe are separate dimensions. P5-RPT-004: §1 Executive Summary Primary/Secondary candidate distinction made explicit. P5-RPT-005: §9.3 Phase 6 research hypothesis reframed around "reduce capital occupancy without truncating alpha harvesting period" — not further ranking refinement. |
+| v1.0.2 | 2026-06-19 | P5-PATCH-001: ARM_C reclassified from SELECTED (marginal P5-G1) to CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED. Gate-passage facts unchanged; verdict label revised to reflect that Sharpe preservation is not statistically distinguishable from noise. P5-PATCH-002: §7 Finding P5-4 downgraded to Working Hypothesis P5-4 — Phase 4 single-factor estimates and Phase 5 combined estimate were measured on different `daily_price_adj` snapshots; interaction identification is not clean. Resolution scoped as P5-FOLLOWUP-001 (owned by Phase 6 SPEC). P5-PATCH-003: §7 P5-3 statistical-significance wording corrected — gate margin is not a significance criterion. P5-PATCH-004: §3.4 and new §8.6 disclose that lineage-gate attribution to the adj-price refresh is plausibility-based, not independently reconciled at symbol level. Forward governance requirement for future lineage-gate overrides recorded as a Phase 6 SPEC item. §9 Phase 6 motivation restructured so that capital occupancy (Arm A admission 17.5%, 82.5% rejected due to lock-up) is the primary justification for exit-policy research; the working hypothesis P5-4 is supplementary, not load-bearing. |
 **Verdict:** CONFIGURATION_SELECTED
-**Selected Arms:** ARM_B (20td + RS-60d), ARM_C (10td + RS-60d)
+**Selected Arms:** ARM_B (20td + RS-60d)
+**Reclassified Arms:** ARM_C (10td + RS-60d) → CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED
 **Recommended Deployment Baseline:** ARM_B
 **Runner:** `scripts/run_phase5_analysis.py` v0.1.0
 **Artifacts:** `data/_storage/r8_phase5/v0.1.0/`
@@ -29,9 +31,14 @@ Phase 5 evaluated three pre-registered portfolio configurations against
 the capital utilisation and risk-adjusted performance questions carried
 forward from Phase 3 and Phase 4.
 
-Both ARM_B (20td + RS-60d ranking) and ARM_C (10td + RS-60d ranking)
-satisfied all applicable pre-registered gate criteria in the Low-Uplift
-stress environment, yielding a verdict of **CONFIGURATION_SELECTED**.
+ARM_B (20td + RS-60d ranking) is selected as the sole deployable Phase 6
+baseline. ARM_C (10td + RS-60d ranking) is reclassified as
+**CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED**: its admission gain is a
+mechanical, robust finding, but its Sharpe gate passage is not
+statistically distinguishable from noise and is sensitive to the
+adj-price snapshot. The phase verdict remains **CONFIGURATION_SELECTED**
+because the Phase 5 research question (which configuration should be
+brought to deployment evaluation) is answered by ARM_B alone.
 
 **ARM_B is the recommended deployment baseline for Phase 6.** It
 demonstrated a substantial improvement in Low-Uplift Sharpe (+0.635 vs
@@ -39,40 +46,49 @@ Arm A) and a meaningful reduction in maximum drawdown (−3.23pp), with
 no loss of admission capacity. The gate margins are wide, and the Phase
 4 CANDIDATE designation for RS-60d ranking is fully confirmed.
 
-**ARM_C satisfied all three gates, including the admission improvement
-gate (P5-G3, +14.83pp), but only marginally satisfied the Sharpe gate
-(P5-G1, Δ = −0.093 against a threshold of −0.10, margin = +0.007).**
-Its SELECTED status should be interpreted with caution: under the locked
-Phase 3 price snapshot, Arm C's P5-G1 Δ would be −0.137, which would
-not pass. Arm C demonstrates that 10td holding substantially increases
-capital capacity (17.5% → 32.4%), but this gain comes at a measurable
-Sharpe cost.
+**ARM_C satisfied all three pre-registered gates at evaluation, but only
+marginally satisfied the Sharpe gate (P5-G1, Δ = −0.093 against a
+threshold of −0.10, margin = +0.007).** The +0.007 margin is narrow
+relative to the sampling error of the Sharpe estimate at this sample
+size, and the Low-Uplift bootstrap CI (§5) crosses zero. Under the
+locked Phase 3 price snapshot, Arm C's P5-G1 Δ would be −0.137, which
+would not pass. ARM_C demonstrates that 10td holding substantially
+increases admission rate (17.5% → 32.4%) — this is a mechanical effect
+of capital turnover and is robust; its claimed Sharpe preservation is
+not. ARM_C is therefore reclassified rather than treated as a
+co-equal deployment candidate.
 
-Four findings emerged from the Phase 5 analysis:
+Three findings and one working hypothesis emerged from the Phase 5
+analysis:
 
-- **P5-1:** RS-60d ranking is confirmed as a robust improvement in the
-  Low-Uplift environment.
-- **P5-2:** 10td holding period materially increases capital utilisation.
-- **P5-3:** The capacity gain from shorter holding is not free; Sharpe
-  declines.
-- **P5-4:** The benefits of RS-60d ranking and 10td holding are not
-  additive when combined. This is the most unexpected finding of Phase 5
-  and directly motivates the Phase 6 exit policy research direction.
+- **P5-1 (finding):** RS-60d ranking is confirmed as a robust improvement
+  in the Low-Uplift environment.
+- **P5-2 (finding):** 10td holding period materially increases capital
+  utilisation.
+- **P5-3 (finding):** The capacity gain from shorter holding is not free;
+  Sharpe declines.
+- **P5-4 (working hypothesis, not established):** RS-60d ranking and
+  10td holding may be sub-additive when combined. Identification is
+  blocked by a snapshot inconsistency between Phase 4 single-factor
+  estimates (old snapshot) and the Phase 5 combined estimate (new
+  snapshot). Resolution is scoped as P5-FOLLOWUP-001 and owned by the
+  Phase 6 SPEC.
 
-Phase 5 remains a research track only. Neither ARM_B nor ARM_C selection
-authorises modification of the Helios paper-trading exit contract.
+Phase 5 remains a research track only. ARM_B selection does not
+authorise modification of the Helios paper-trading exit contract.
 Phase 6 requires a new SPEC.
 
-**Primary Candidate: ARM_B (20td + RS-60d).** Wide-margin gate passage,
+**Selected Arm: ARM_B (20td + RS-60d).** Wide-margin gate passage,
 simultaneous Sharpe improvement and MaxDD reduction, no snapshot
-sensitivity. This is the recommended Phase 6 deployment baseline.
+sensitivity. This is the Phase 6 deployment baseline.
 
-**Secondary Candidate: ARM_C (10td + RS-60d).** Marginal P5-G1 passage
-(margin = +0.007), snapshot-sensitive, Sharpe below Arm A in absolute
-terms. ARM_C establishes the proof of concept that 10td holding can
-materially expand capacity (+14.83pp admission); it does not establish
-that 10td is the right production parameter. The evidence for ARM_C
-is materially weaker than for ARM_B.
+**Reclassified Arm: ARM_C (10td + RS-60d) → CAPACITY_DEMONSTRATED /
+SHARPE_UNRESOLVED.** ARM_C establishes that shorter fixed holding can
+materially expand admission rate (+14.83pp, mechanical and robust). It
+does not establish that 10td is a deployable production parameter:
+P5-G1 passage is marginal, snapshot-sensitive, and within the Sharpe
+estimator's sampling error. ARM_C is retained in the Phase 5 record as
+a capacity reference, not as a Phase 6 candidate.
 
 ---
 
@@ -160,6 +176,20 @@ comparability. Phase 3/4 locked artifacts are not modified.
 ARM_A_REFERENCE was updated to Phase 5 price-snapshot baseline values
 (P5-REF-001 in `scripts/run_phase5_analysis.py`).
 
+**Attribution note (P5-PATCH-004):** Attribution of the +0.120 Sharpe
+shift to a `daily_price_adj` retroactive adjustment is based on the
+observed divergence pattern (694/1013 dates, first divergence
+2023-07-14) and its consistency with annual TWSE ex-dividend
+restatement timing. No independent symbol-level reconciliation against
+TWSE source records was performed at the time of the lineage-gate
+override. The plausibility argument was accepted because: (i) the
+divergence was concentrated in the pre-2024 segment, (ii) Phase 5 LU
+Sharpe shift (−0.044) was within tolerance, suggesting recent prices
+were stable, and (iii) the position/date pool was unchanged. This is
+recorded as a limitation in §8.6. A forward governance requirement
+covering future lineage-gate overrides is recorded for the Phase 6
+SPEC.
+
 The full-sample Sharpe shift (+0.120) exceeds the lineage gate tolerance
 (±0.050) and triggered the P5-BLOCK-001 abort on the first run. The
 Low-Uplift Sharpe shift (−0.044) is within tolerance, confirming that
@@ -232,10 +262,13 @@ RS_T3 benchmark (Low-Uplift): Sharpe 0.634, MaxDD 26.87%.
 
 Arm C nearly doubles admission rate vs Arm A in Low-Uplift (17.5% →
 32.4%, ×1.85). However, Low-Uplift Sharpe falls from 1.569 (Arm A) to
-1.476 despite RS-60d ranking. This is in contrast to Phase 4 Track A
-findings, where 10td alone (FIFO baseline) produced Low-Uplift Sharpe
-2.114 vs 1.613 for 20td FIFO — a different direction. The interaction
-between 10td and RS-60d ranking is discussed in §7 (Finding P5-4).
+1.476 despite RS-60d ranking. This is in apparent contrast to Phase 4
+Track A findings, where 10td alone (FIFO baseline) produced Low-Uplift
+Sharpe 2.114 vs 1.613 for 20td FIFO. The contrast is read with caution
+because the Phase 4 single-factor estimates were collected on a
+different `daily_price_adj` snapshot from the Phase 5 estimates above;
+see Working Hypothesis P5-4 in §7 for the identification problem and
+P5-FOLLOWUP-001 for the resolution path.
 
 ---
 
@@ -302,22 +335,34 @@ baseline (Sharpe(A) = 1.569), Arm C passes with a margin of +0.007.
 Under the locked Phase 3 reference (Sharpe(A) = 1.613), the observed
 Δ would be −0.137, which would **not** satisfy P5-G1 (threshold −0.10).
 
-This sensitivity does not invalidate the Phase 5 result — all three
-arms were evaluated on a consistent adj-price basis under approved
-governance. However, ARM_C's SELECTED status is not robust to
-snapshot timing. ARM_C is a secondary candidate. ARM_B remains the
-recommended deployment baseline.
+This sensitivity does not invalidate the gate-passage facts at
+evaluation time — all three arms were evaluated on a consistent
+adj-price basis under approved governance. However, ARM_C's gate
+passage is not robust to snapshot timing. In v1.0.2, ARM_C is
+reclassified to CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED (§6.3) and is
+not carried forward as a Phase 6 deployment candidate. ARM_B remains
+the sole Phase 6 deployment baseline.
 
 ### 6.3 Verdict
 
-| Arm | Gates passed | Result |
+| Arm | Gates passed (at evaluation) | Verdict label (v1.0.2) |
 |---|---|---|
 | A | N/A (lineage reference) | — |
 | B | P5-G1 ✓, P5-G2 ✓ | **SELECTED** |
-| C | P5-G1 ✓ (marginal), P5-G2 ✓, P5-G3 ✓ | **SELECTED (marginal P5-G1)** |
+| C | P5-G1 ✓ (marginal), P5-G2 ✓, P5-G3 ✓ | **CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED** (see note) |
+
+Gate-passage facts (column 2) are historical record at evaluation time
+and are not modified by v1.0.2. The verdict label (column 3) reflects
+post-evaluation interpretation. Arm C's P5-G1 margin of +0.007 is
+narrow relative to the sampling error of the Sharpe estimator at this
+sample size (see §7 Finding P5-3) and is sensitive to the adj-price
+snapshot (see §6.2). The mechanical admission gain (P5-G3) is robust;
+the Sharpe-preservation interpretation is not. ARM_C is therefore
+reclassified rather than carried as a co-equal SELECTED arm.
 
 **Layer 1:** CONFIGURATION_SELECTED
-**Layer 2:** SELECTED: ARM_B, ARM_C
+**Layer 2:** SELECTED: ARM_B
+**Reclassified:** ARM_C → CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED
 
 ---
 
@@ -374,25 +419,56 @@ pre-registered P5-G1 gate.
 | Low-Uplift MaxDD | 20.54% | 20.71% | +0.17pp |
 | Low-Uplift Admission | 17.5% | 32.4% | +14.83pp |
 
-The Sharpe cost is modest in absolute terms but statistically meaningful
-given the pre-registered gate margin of 0.007. Phase 6 should treat
-Arm C as a proof-of-concept for capacity expansion rather than as a
-production-ready parameter choice.
+The Sharpe cost is modest in absolute terms. **The gate margin (+0.007)
+is narrow relative to the sampling error of the Sharpe estimate at this
+sample size; the Sharpe difference between Arm C and Arm A is not
+statistically distinguishable from noise** (the Low-Uplift bootstrap CI
+crosses zero, §5). The pre-registered gate margin is a governance
+threshold, not a statistical-significance criterion. Phase 6 should
+treat Arm C as a proof-of-concept for capacity expansion rather than as
+a production-ready parameter choice; the reclassification to
+CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED in §6.3 reflects this.
 
-### Finding P5-4: RS-60d ranking and 10td holding are not additive
+### Working Hypothesis P5-4: RS-60d ranking and 10td holding may be sub-additive
 
-This is the most unexpected finding of Phase 5 and the most directly
-informative for Phase 6 design.
+**Status:** WORKING HYPOTHESIS — not an established finding. Resolution
+is scoped as **P5-FOLLOWUP-001**, owned by the Phase 6 SPEC. Downgrade
+from "Finding" to "Working Hypothesis" in v1.0.2 (P5-PATCH-002).
 
-Phase 4 established separately that:
-- RS-60d ranking improved Low-Uplift Sharpe from 1.613 to 2.128
-  (+0.515) relative to FIFO at 20td.
-- 10td holding improved Low-Uplift Sharpe from 1.613 to 2.114
-  (+0.501) relative to FIFO at 20td.
+**Why this is not an established finding (identification problem):**
+The apparent non-additivity rests on comparing Phase 4 single-factor
+Sharpe estimates against the Phase 5 combined-configuration Sharpe
+estimate. These two sets of estimates were measured on **different
+`daily_price_adj` snapshots**:
 
-The implicit assumption was that combining both improvements might yield
-an additive or super-additive result. Phase 5 directly tested this
-combination for the first time. The result was sub-additive:
+| Configuration | Source | Snapshot |
+|---|---|---|
+| 20td + FIFO Sharpe = 1.613 | Phase 4 | pre-2026-06-08 |
+| 20td + RS-60d Sharpe = 2.128 | Phase 4 | pre-2026-06-08 |
+| 10td + FIFO Sharpe = 2.114 | Phase 4 | pre-2026-06-08 |
+| Arm A (20td + FIFO) Sharpe = 1.569 | Phase 5 | 2026-06-08 |
+| Arm B (20td + RS-60d) Sharpe = 2.204 | Phase 5 | 2026-06-08 |
+| Arm C (10td + RS-60d) Sharpe = 1.476 | Phase 5 | 2026-06-08 |
+
+The snapshot refresh shifted Arm A's Low-Uplift Sharpe by −0.044 (§3.4).
+This is the **same order of magnitude** as the apparent interaction
+effect that would need to be present for "non-additivity" to be a clean
+conclusion. Phase 4's `10td + FIFO` configuration was not re-evaluated
+on the Phase 5 snapshot, so the interaction term
+
+```
+Δ_interaction = Sharpe(RS-60d + 10td) − Sharpe(RS-60d, 20td)
+                                       − Sharpe(FIFO, 10td)
+                                       + Sharpe(FIFO, 20td)
+```
+
+cannot be computed from a snapshot-consistent set of estimates. Until
+this is done, the apparent sub-additivity is **suggestive but not
+identified**: it may be a real interaction, or it may be partially or
+fully an artefact of the cross-snapshot comparison.
+
+**Observed Phase 5 comparison (snapshot-consistent within Phase 5
+only):**
 
 | Configuration | Low-Uplift Sharpe | vs Arm A (FIFO, 20td) |
 |---|---|---|
@@ -400,39 +476,47 @@ combination for the first time. The result was sub-additive:
 | Arm B: 20td + RS-60d | 2.204 | +0.635 |
 | Arm C: 10td + RS-60d | 1.476 | −0.093 |
 
-Adding RS-60d ranking at 20td raises Sharpe substantially. Adding 10td
-holding *on top of* RS-60d ranking reduces Sharpe below even the FIFO
-baseline. This is a non-additive interaction: f(RS-60d) + f(10td) ≠
-f(RS-60d + 10td).
+What this table establishes (snapshot-consistent): adding RS-60d ranking
+at 20td raises Sharpe substantially; the combined `10td + RS-60d`
+configuration sits below `20td + FIFO`. What it does **not** establish
+on its own is whether this is an interaction effect or a level effect
+of 10td holding under the current snapshot — that requires comparison
+to a snapshot-matched `10td + FIFO` estimate that Phase 5 did not
+collect.
 
 **Pre-registered hypotheses for Arm C (from SPEC §9):**
-- H1: Sharpe(C, LU) > 1.613 — **NOT SUPPORTED** (observed: 1.476)
-- H2: Sharpe(C, LU) ≥ 2.128 — **NOT SUPPORTED** (observed: 1.476)
+- H1: Sharpe(C, LU) > 1.613 — NOT SUPPORTED (observed: 1.476)
+- H2: Sharpe(C, LU) ≥ 2.128 — NOT SUPPORTED (observed: 1.476)
 
 **Interpretation of H1/H2 failure:**
-The failure of H1 and H2 does not invalidate Arm C or its SELECTED
-status. Arm C satisfied all three pre-registered gate criteria. H1 and
-H2 were pre-registered as documentary hypotheses — expected-value
-statements based on Phase 4 separate-component findings — not as gate
-criteria. Their function is to characterise the interaction effect.
+H1 and H2 were pre-registered as documentary hypotheses — expected-value
+statements derived from Phase 4 single-component estimates — not as
+gate criteria, and not as identified interaction tests. Their failure
+is consistent with a sub-additive interaction; it is also consistent
+with the Phase 4 single-factor estimates being snapshot-biased. The
+H1/H2 NOT SUPPORTED labels remain correct as documentary record but do
+not by themselves resolve the identification question.
 
-What H1/H2 failure tells us is specific and valuable: the capacity
-improvement observed in Phase 4 for 10td holding did not translate into
-superior risk-adjusted performance when combined with RS-60d ranking.
-10td holding impairs the alpha extraction that RS-60d ranking enables.
-This is the core content of Finding P5-4.
+What can be said with confidence (snapshot-consistent within Phase 5,
+free of any cross-phase comparison):
+- ARM_C delivers a robust admission improvement (P5-2, mechanical).
+- ARM_C's Sharpe is below Arm B's Sharpe (Phase 5 baseline) by 0.728.
+- ARM_C's Sharpe is below Arm A's Sharpe by 0.093, within sampling
+  error of the Sharpe estimator at this sample size (P5-3).
 
-A reader should not interpret H1/H2 NOT SUPPORTED as "Arm C failed".
-The correct interpretation is: "Arm C's value is capacity expansion,
-not Sharpe improvement. These are separate things."
+What cannot be said until P5-FOLLOWUP-001 resolves the snapshot
+inconsistency: that the deficit `Arm_C − Arm_A = −0.093` is attributable
+to an interaction between RS-60d ranking and 10td holding rather than
+to a level effect of 10td holding under the current snapshot.
 
-The practical implication is that capacity expansion and Sharpe
-preservation are in tension when achieved via fixed holding-period
-reduction. This motivates the Phase 6 research hypothesis: an
-**adaptive exit policy** may be able to release capital from
-underperforming positions early (recovering capacity) while allowing
-strong positions to run toward 20td (preserving alpha), thereby
-decoupling capacity from holding period.
+**Implication for Phase 6 motivation:** The working hypothesis is
+suggestive enough to inform Phase 6 design but is **not load-bearing**
+for the Phase 6 exit-policy research direction. The primary motivation
+for exit-policy research is the capital-occupancy bottleneck (Arm A LU
+admission = 17.5%, 82.5% of signals rejected due to capital lock-up;
+see §9.2), which is established independently of P5-4. If
+P5-FOLLOWUP-001 ultimately rejects the sub-additivity hypothesis, the
+Phase 6 research direction does not need to be revised.
 
 ---
 
@@ -469,11 +553,13 @@ sample; their persistence is not established.
 
 Phase 4 tested RS-60d ranking and 10td holding separately. Phase 5 is
 the first direct evaluation of their combination. The sub-additive
-interaction (Finding P5-4) was not anticipated. This is a normal
-consequence of testing combinations rather than components — the finding
-is informative rather than invalidating, but it means Phase 6 should
-not assume that other combinations of Phase 4 candidates will also be
-additive.
+appearance (Working Hypothesis P5-4) was not anticipated. Because
+Phase 4 single-factor estimates and the Phase 5 combined estimate were
+collected on different `daily_price_adj` snapshots, the apparent
+sub-additivity is not cleanly identified; resolution is scoped as
+P5-FOLLOWUP-001. Phase 6 should not assume that other combinations of
+Phase 4 candidates will be additive without snapshot-consistent
+re-evaluation.
 
 ### 8.5 Scope constraints
 
@@ -482,64 +568,134 @@ dynamic slippage modelling, or live execution. All findings are
 conditional on the fixed-hold, paper-price NAV reconstruction
 methodology used in Phases 3–5.
 
+### 8.6 Lineage-gate attribution is plausibility-based
+
+The +0.120 full-sample Sharpe shift that triggered the P5-BLOCK-001
+lineage-gate abort (§3.4) was attributed to a `daily_price_adj`
+retroactive update on the basis of: (i) the divergence pattern (694/1013
+common dates affected, with first divergence on 2023-07-14), and (ii)
+the consistency of this timing with the annual TWSE ex-dividend
+restatement cycle. **No independent symbol-level reconciliation against
+TWSE source records was performed at the time of the lineage-gate
+override.** The reference baseline update (P5-REF-001) was therefore
+accepted on a plausibility argument, not on an identified attribution.
+
+The plausibility argument is strong but is not equivalent to an
+identification. A future lineage-gate trigger of similar magnitude
+could in principle have a non-snapshot cause (e.g., a corporate-action
+ingestion bug, an upstream FinMind/Shioaji data anomaly, or a universe
+drift defect) and would not be distinguishable from a price-snapshot
+refresh by the diagnostic procedure used here.
+
+Phase 5 v1.0.2 records this as a limitation but does not retroactively
+add validation that did not occur. A forward governance requirement —
+that future lineage-gate overrides require divergence localisation, an
+independent attribution check, and a documented evidence chain before
+the reference baseline is updated — is recorded as a Phase 6 SPEC item
+(see §9.4).
+
 ---
 
 ## 9. Phase 6 Implications
 
 ### 9.1 Recommended baseline
 
-ARM_B (20td + RS-60d) is the recommended Phase 6 starting point. It
-has demonstrated consistent, wide-margin improvement over the FIFO
-baseline in the Low-Uplift environment, and its gate margins provide
-a stable reference against which Phase 6 exit policy variants can
-be compared.
+ARM_B (20td + RS-60d) is the sole Phase 6 deployment baseline. It has
+demonstrated consistent, wide-margin improvement over the FIFO baseline
+in the Low-Uplift environment, and its gate margins provide a stable
+reference against which Phase 6 exit policy variants can be compared.
+ARM_C is not a Phase 6 candidate; its CAPACITY_DEMONSTRATED status is
+a research reference for the scale of admission gain achievable through
+fixed holding-period reduction, not a deployment endorsement.
 
-### 9.2 The capital occupancy problem
+### 9.2 Primary motivation for Phase 6: the capital-occupancy bottleneck
 
-Phase 5 confirms that capital occupancy is the primary constraint on
-R8 capacity. In Low-Uplift, Arm A (the best-historically-tested FIFO
-configuration) admits only 17.5% of eligible signals — 82.5% are
-rejected due to capital lock-up, not signal quality. Arm B improves
-signal selection within this constraint but does not relax it. Arm C
-demonstrates that fixed holding-period reduction is one way to relax
-it, but at Sharpe cost.
+Phase 5 establishes that capital occupancy is the primary constraint on
+R8 deployable capacity. In Low-Uplift:
+
+```
+Arm A LU admission rate:          17.5%
+Signals rejected (capital lock):  82.5%
+```
+
+This is a **mechanical** observation, independent of any Sharpe
+estimate. It is robust to snapshot timing, to sampling error in
+risk-adjusted-performance estimators, and to the P5-4 identification
+question. Of every 100 eligible R8 signals in the Low-Uplift stress
+environment, 82 are rejected not because they look bad but because
+slots are occupied by earlier positions in their fixed 20td hold. Arm B
+improves signal selection within this constraint but does not relax
+it. The Phase 5 deployable configuration (ARM_B) is therefore capacity-
+bottlenecked by construction.
+
+This observation is sufficient, on its own, to justify Phase 6
+exit-policy research. The Phase 5 verdict (CONFIGURATION_SELECTED with
+ARM_B) does not need any interaction-effect interpretation to motivate
+that research direction.
 
 ### 9.3 Phase 6 research hypothesis
 
-Phase 4 and Phase 5 findings jointly motivate a specific Phase 6
-hypothesis. The right question for Phase 6 is not:
-
-> Can another ranking factor outperform RS-60d?
-
-Phase 5 (Finding P5-1) answers this: RS-60d ranking is confirmed and
-becomes the fixed baseline. The signal selection problem is largely
-solved within the current architecture.
-
-The right question is:
+The right question for Phase 6 is:
 
 > Can capital occupancy be reduced without truncating the alpha
 > harvesting period?
 
 This is the structural argument for adaptive exit policy research.
-ARM_B holds every position for a fixed 20td regardless of how it
-performs during the hold. An adaptive exit policy would release capital
-from underperforming positions early (recovering occupancy) while
-allowing high-quality positions to run toward 20td (preserving alpha).
-If this hypothesis holds, Phase 6 could achieve both the +14.83pp
-capacity improvement demonstrated by ARM_C and the +0.635 Sharpe
-improvement demonstrated by ARM_B — without the Sharpe-capacity
-trade-off that ARM_C revealed.
+ARM_B holds every position for a fixed 20td regardless of how the
+position performs during the hold. An adaptive exit policy would
+release capital from underperforming positions earlier (recovering
+occupancy) while allowing high-quality positions to run toward 20td
+(preserving alpha). The achievable Pareto frontier between capacity
+recovery and alpha preservation is the empirical Phase 6 question;
+adaptive exit policies will incur some selection cost (positions exited
+early that would have recovered) and Phase 6 will need to characterise
+this cost as part of the evaluation.
+
+The question Phase 6 should **not** ask is:
+
+> Can another ranking factor outperform RS-60d?
+
+Phase 5 (Finding P5-1) answered this: RS-60d ranking is confirmed and
+becomes the fixed Phase 6 baseline. The signal selection problem is
+largely solved within the current architecture; the bottleneck has
+moved to capital occupancy.
+
+**Supplementary motivation (working hypothesis P5-4):** If
+P5-FOLLOWUP-001 confirms a genuine sub-additive interaction between
+RS-60d ranking and fixed 10td holding, this provides additional reason
+to prefer an adaptive (state-conditional) exit over a fixed shorter
+hold. If P5-FOLLOWUP-001 rejects the interaction hypothesis, the Phase
+6 research direction is not invalidated — capital occupancy is by
+itself sufficient justification (§9.2).
 
 ### 9.4 Phase 6 design constraints
 
 The Phase 6 SPEC must address:
 
 1. ARM_B as the frozen baseline (not re-estimated in Phase 6).
-2. ARM_C marginal P5-G1 passage — Phase 6 should not treat 10td as
-   a validated parameter without fresh evaluation.
+2. ARM_C reclassification to CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED
+   — Phase 6 must not treat 10td as a validated parameter; if any
+   Phase 6 exit policy implicitly truncates effective holding period,
+   the resulting Sharpe must be evaluated against ARM_B, not against
+   ARM_C.
 3. The price-snapshot refresh: Phase 6 must document its own snapshot
    date and check for further adj-price restatements since Phase 5.
-4. Track C (signal characterisation) research proceeds independently
+4. **P5-FOLLOWUP-001 ownership:** The Phase 6 SPEC must decide whether
+   to allocate research budget to a snapshot-consistent re-evaluation
+   of Phase 4 single-factor configurations (`20td + FIFO`,
+   `10td + FIFO`, `20td + RS-60d`) on the Phase 5 snapshot, in order
+   to identify the interaction term and promote (or reject) Working
+   Hypothesis P5-4. Phase 6 may decide that this is not the highest-
+   value research expenditure; this decision must be explicit in the
+   SPEC.
+5. **Lineage-gate override governance (from §8.6):** Future lineage-gate
+   triggers of comparable magnitude must require divergence
+   localisation, an independent attribution check (e.g., symbol-level
+   reconciliation against TWSE source records or cross-validation
+   against a second adj-price source), and a documented evidence chain
+   before the reference baseline is updated. Plausibility-based
+   attribution is no longer sufficient.
+6. Track C (signal characterisation) research proceeds independently
    and does not feed into Phase 6 unless explicitly authorised by
    a future SPEC.
 
@@ -557,30 +713,38 @@ entry ranking. Exit policy research directly targets this bottleneck.
 
 ## 10. Conclusion
 
-Phase 5 achieved its pre-registered research objective. Two
-configurations were selected:
+Phase 5 achieved its pre-registered research objective. One
+configuration is selected as the Phase 6 deployment baseline; a second
+configuration is reclassified to a research reference rather than a
+deployment candidate.
 
-**ARM_B (20td + RS-60d):** Robust, wide-margin improvement over the
-Phase 3 baseline in the Low-Uplift stress environment. Confirmed as
-the Phase 6 deployment baseline. The RS-60d ranking benefit is
-consistent across full sample and stress environment, and across
+**ARM_B (20td + RS-60d) — SELECTED:** Robust, wide-margin improvement
+over the Phase 3 baseline in the Low-Uplift stress environment.
+Confirmed as the Phase 6 deployment baseline. The RS-60d ranking benefit
+is consistent across full sample and stress environment, and across
 multiple metrics (Sharpe and MaxDD).
 
-**ARM_C (10td + RS-60d):** Marginal Sharpe gate passage (P5-G1 margin
-= 0.007) with a robust capacity improvement (admission +14.83pp).
-Selected as a secondary candidate, but Arm C's SELECTED status is
-sensitive to the adj-price snapshot used for reference, and should not
-be treated as equivalent in strength to Arm B. ARM_C establishes the
-proof of concept that 10td holding can materially increase capacity;
-it does not establish that 10td is the right production parameter.
+**ARM_C (10td + RS-60d) — RECLASSIFIED to CAPACITY_DEMONSTRATED /
+SHARPE_UNRESOLVED:** ARM_C satisfied all three pre-registered gates at
+evaluation time. On post-evaluation review, its P5-G1 margin (+0.007)
+is narrow relative to the sampling error of the Sharpe estimator at
+this sample size, and the gate result is sensitive to the adj-price
+snapshot. The mechanical admission gain (17.5% → 32.4%) is robust and
+remains a valid research reference for capacity expansion via shorter
+fixed holding. ARM_C is not a Phase 6 candidate.
 
-The most consequential research finding is **P5-4**: RS-60d ranking
-and 10td holding are not additive. Their combination produces a
-sub-additive outcome — capacity improves but Sharpe regresses below
-the FIFO baseline. This directly motivates Phase 6's exit policy
-research direction: an adaptive exit policy is hypothesised to achieve
-both capacity improvement and Sharpe preservation in a way that fixed
-holding-period reduction cannot.
+The Phase 5 → Phase 6 research direction (capital occupancy as the
+primary deployment bottleneck, exit policy as the primary research
+target) rests on the mechanical Arm A LU admission figure (17.5%
+admitted, 82.5% rejected due to capital lock-up). This argument is
+independent of Working Hypothesis P5-4 and is therefore robust to the
+P5-FOLLOWUP-001 outcome.
+
+**Working Hypothesis P5-4** — that RS-60d ranking and 10td holding are
+sub-additive — is retained as a working hypothesis because the
+identification rests on a cross-snapshot comparison that Phase 5 did
+not collect snapshot-consistent estimates to resolve. P5-FOLLOWUP-001
+is owned by the Phase 6 SPEC, which decides whether to resolve it.
 
 Phase 5 does not authorise paper-trading modification. Phase 6
 requires a new SPEC.
@@ -596,21 +760,32 @@ requires a new SPEC.
 | `research/r8_phase4_optimisation_report.md` | v1.0.0 | LOCKED |
 | `research/r8_phase5_spec.md` | v0.1.0 | LOCKED |
 | `research/r8_phase5_price_snapshot_refresh_note.md` | v0.1.0 | GOVERNANCE NOTE |
-| `research/r8_phase5_configuration_report.md` | v1.0.1 | **THIS DOCUMENT** |
+| `research/r8_phase5_configuration_report.md` | v1.0.2 | **THIS DOCUMENT** |
+| `research/r8_phase5_followup_001_spec.md` | v0.1.0 | SPEC SKELETON — owned by Phase 6 SPEC |
 
 **Downstream authorisation:**
 Phase 6 deployment evaluation SPEC is authorised by this verdict.
-Phase 6 SPEC must explicitly address: ARM_B as baseline, ARM_C
-marginal passage note, price-snapshot refresh, and capital occupancy
-as the primary research target.
+Phase 6 SPEC must explicitly address: ARM_B as the sole baseline,
+ARM_C reclassification to CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED,
+the price-snapshot refresh, capital occupancy as the primary research
+target, P5-FOLLOWUP-001 ownership (resolve or formally defer), and the
+forward lineage-gate override governance requirement (§9.4 item 5).
 
 **What Phase 5 does not establish:**
-- That ARM_B or ARM_C produces superior OOS returns.
+- That ARM_B produces superior OOS returns.
 - That CONFIGURATION_SELECTED authorises paper-trading modification.
 - That Phase 5 findings will persist on future adj-price snapshots.
-- That ARM_C is as robust a selection as ARM_B.
+- That ARM_C is a deployable configuration. (ARM_C is reclassified to
+  CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED and is not a Phase 6
+  candidate.)
+- That RS-60d ranking and 10td holding are sub-additive in interaction.
+  (Working Hypothesis P5-4 is suggestive but not identified; see
+  P5-FOLLOWUP-001.)
+- That the +0.120 full-sample Sharpe shift in §3.4 was independently
+  attributed to the adj-price refresh. (Attribution is plausibility-
+  based; see §8.6.)
 - That Track C findings are authorised for production without SPEC.
 
 ---
 
-*End of r8_phase5_configuration_report.md v1.0.1*
+*End of r8_phase5_configuration_report.md v1.0.2*
