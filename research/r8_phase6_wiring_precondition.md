@@ -1,9 +1,9 @@
 # R8 MA5 Momentum — Phase 6 Wiring Precondition
 
 <!-- research/r8_phase6_wiring_precondition.md -->
-<!-- v0.1.0 — 2026-06-19 -->
+<!-- v0.1.1 — 2026-06-19 -->
 
-**Status:** LOCKED — v0.1.0 (2026-06-19)
+**Status:** LOCKED — v0.1.1 (2026-06-19)
 
 **Owned by:** `research/r8_phase6_spec.md` v0.1.1 (LOCKED)
 
@@ -43,10 +43,11 @@ SPEC amendment.
 
 ### 0.2 Authority and immutability
 
-This document is committed to main at v0.1.0 as governance content.
-Once LOCKED, its content (§1 hard gates, §2 wiring order, §3 risk
-register, §4 per-risk test discipline) is immutable. Modifications
-require a new minor version (v0.1.1, etc.) under the standard SPEC
+This document was initially LOCKED at v0.1.0; current version v0.1.1
+incorporates Step 0 discovery refinements (see §0.4 changelog). Once
+LOCKED, its content (§1 hard gates, §2 wiring order, §3 risk register,
+§4 per-risk test discipline, §4.1 Wiring Gates) is immutable.
+Modifications require a new minor version under the standard SPEC
 LOCK chain.
 
 Specifically:
@@ -67,6 +68,45 @@ v0.1.1 design decision. It operationalises the SPEC for the wiring
 phase: where the SPEC states "what must hold", this document states
 "what code must do to make it hold and how to verify".
 
+### 0.4 Version history
+
+**v0.1.1 (2026-06-19) — post-Step-0-discovery refinements:**
+
+Patch incorporates discovery findings from Step 0 (`r8_phase6_wiring_surface.md`
+v0.0.1 working memo). Five Working-Paper (WP) items applied:
+
+  - **WP-004 (R6 refinement, applied to §3):** Feature ABI clarified
+    as persistence-first. Phase 6 evaluation reads feature values from
+    the same persisted DuckDB tables (daily_features, bullish_features)
+    that Phase 5 ARM_B reads. Calculation functions (e.g.
+    features.technical.add_atr) are used only at compute-features time.
+    E4 Donchian exception clause added (Phase 6 first usage; on-the-fly
+    calculation acceptable with day-t exclusion unit test).
+  - **WP-005 (new gate WG-1, applied to §4):** Adaptive simulator
+    degenerate equivalence test added as Wiring Gate. Required before
+    any E1-E4 challenger evaluation. Operationalises R3 (admission
+    engine invariance) + R6 (NAV math invariance) for the unified
+    simulator structural-reuse pattern (per Cross-cutting Issue 6).
+  - **WP-001 (§2 Step 3 wording):** "expected direction" replaced
+    with "mechanistically interpretable direction" to avoid outcome
+    expectation contamination.
+  - **WP-002 (§3 R4 unit test wording):** Test description revised
+    from "CIs match analytical expectation" to "block length used
+    equals 20 rather than 5; CI generation is deterministic given
+    fixed seed" — more testable.
+  - **WP-003 (§3 R1 clarification):** Explicit "for adaptive exits
+    only" wording added to Required invariant. ARM_B fixed-horizon
+    same-day exit-and-admit is correctly excluded by the existing
+    "triggers exit" language, but the explicit clarification prevents
+    future misreading.
+
+v0.1.1 also incorporates six Cross-cutting Issues from Step 0 discovery
+as informational footnotes within affected sections (§3 R5, §3 R6, §4).
+
+**v0.1.0 (2026-06-19):** Initial LOCK. Six pre-registered risks
+(R1-R6). Hard gates HG-1 through HG-4. Wiring order Step 0 through
+Step 5.
+
 ---
 
 ## 1. Hard gates before any wiring code
@@ -79,7 +119,7 @@ written:
 | HG-1 | Monitored repo tree is clean | `git status --porcelain -- scripts/ core/ research/ strategies/ features/` returns empty |
 | HG-2 | Phase 5 canonical evaluation harness identified | `research/r8_phase6_wiring_surface.md` exists locally with non-empty content covering the seven items in §2 Step 0 |
 | HG-3 | Governance chain pushed to origin | `git log origin/main..main` returns empty (no local-only commits ahead of origin) |
-| HG-4 | This document (Phase 6 Wiring Precondition v0.1.0) is committed to main | `git log --grep "Phase 6 Wiring Precondition" --oneline` returns the LOCK commit |
+| HG-4 | This document (Phase 6 Wiring Precondition, latest version) is committed to main | `git log --grep "Phase 6 Wiring Precondition" --oneline` returns at least one LOCK commit |
 
 If any HG-N is unsatisfied, do not begin wiring. The runner skeleton's
 `verify_code_sha()` enforces HG-1 at runtime, but the other three are
@@ -154,7 +194,8 @@ after E1 produces non-trivial results).
 Phase 5 v1.0.2 ARM_B metrics (§2 of Phase 6 SPEC) within tolerance
 acceptable for floating-point determinism. E1 produces non-trivial
 metrics (admission rate, mean holding days, Sharpe) that differ from
-ARM_B in the expected direction.
+ARM_B in a mechanistically interpretable direction (per the candidate's
+exit policy semantics — not a pre-registered outcome expectation).
 
 ### Step 4 — `compute_metrics()` wiring
 
@@ -182,8 +223,10 @@ fixed seed. Provenance JSON records L per candidate.
 
 ## 3. Pre-registered risk register
 
-Six risks. Each is pre-registered at v0.1.0 LOCK. New risks may be
-added only via SPEC amendment before evaluation begins (§0.2).
+Six risks. Each was pre-registered at v0.1.0 LOCK; v0.1.1 refines
+R1 (WP-003), R4 unit test wording (WP-002), and R6 (WP-004,
+persistence-first hierarchy). New risks may be added only via SPEC
+amendment before evaluation begins (§0.2).
 
 ### Risk #1 — Slot release timing
 
@@ -195,7 +238,15 @@ as a single same-day step) collapses the timing distinction mandated
 by Phase 6 SPEC §3.1 and inflates admission count on dates with
 overlapping exit triggers and pending signals.
 
-**Required invariant:** For any position p that triggers exit at
+**Required invariant:** This invariant applies to **adaptive exits**
+only (E1-E4 candidates). ARM_B fixed-horizon exit is excluded: a
+fixed-horizon position does not "trigger" exit at close_t — its
+exit date is pre-scheduled at entry, with no decision moment.
+ARM_B same-day exit-and-admit semantics (per Phase 5 `schedule_positions`)
+are mathematically equivalent to t+1 admission for fixed-horizon
+and are preserved as-is by Phase 6 ARM_B baseline regeneration.
+
+For any **adaptive-exit candidate** position p that triggers exit at
 close_t, the slot p occupied:
   - MUST be unavailable for admission decisions evaluated at any
     point during day t (including at close_t when day-t signals are
@@ -203,12 +254,20 @@ close_t, the slot p occupied:
   - MUST be available for admission decisions evaluated at t+1 open
     or later.
 
-The daily loop ordering MUST be: (a) at close_t, evaluate exit
-signals on all open positions; (b) at t+1 open, execute exits (record
-exit price = day-(t+1) open), release slots, then evaluate admission
-decisions against day-t signal pool entries that have not yet been
-processed (or process day-(t+1) signal pool entries — convention to be
-locked in Step 0 deliverable).
+The daily loop ordering for adaptive-exit candidates MUST be: (a) at
+close_t, evaluate exit signals on all open positions; (b) at t+1
+open, execute exits (record exit price = day-(t+1) open), release
+slots, then evaluate admission decisions against day-t signal pool
+entries that have not yet been processed (or process day-(t+1) signal
+pool entries — convention to be locked in Step 0 deliverable).
+
+**Cross-cutting Issue 4 reference:** The asymmetry between ARM_B
+same-day semantics and challenger t+1 semantics is structural, not
+a defect. Phase 6 evaluation report §8 limitations must document
+this asymmetry. The `evaluate_candidate()` implementation must have
+a bifurcated internal path: ARM_B reuses Phase 5 `schedule_positions`
+directly; challengers use a unified daily simulator with explicit t+1
+admission per this invariant.
 
 **Required test / audit evidence:**
 
@@ -394,10 +453,11 @@ MUST NOT compute L internally based on only one side's data.
 - Bootstrap provenance JSON records L per candidate evaluation, with
   the source values (`mean_effective_hold_candidate`,
   `mean_effective_hold_ARM_B`) and the computed L.
-- Unit test: pass two daily NAV series with known autocorrelation
-  structure (one with horizon ≈ 20, one with horizon ≈ 5); verify
-  bootstrap CIs match analytical expectation under L = 20, not under
-  L = 5.
+- Unit test: pass two arms (one challenger candidate, one ARM_B) with
+  recorded `mean_effective_hold` values; verify the computed L equals
+  20 (driven by ARM_B's hold) rather than 5 (driven by challenger),
+  and that CI generation is deterministic given a fixed bootstrap seed
+  (same seed + same input → bit-identical CI bounds).
 
 **SPEC reference:** Phase 6 SPEC v0.1.1 §5.4 (stationary block
 bootstrap, `L = max(5, max(h_arm))`); Phase 5 v1.0.2 §3.3
@@ -461,62 +521,95 @@ evaluations including ARM_B regeneration.
 
 ---
 
-### Risk #6 — Feature pipeline reuse (no reimplementation)
+### Risk #6 — Feature pipeline reuse (persistence-first)
 
 **Status:** BLOCKING
 
-**Risk:** Phase 6 wiring reimplements ATR, MA20, RS_60d, or other
-feature computations instead of importing the existing production
-functions from `features.technical` (and other Phase 5 feature
-modules). Subtle differences in edge-case handling
-(first-N-day NaN treatment, suspension day handling, ex-dividend day
-handling, listing-date edge handling) drift between ARM_B and
-challengers. The drift may be invisible in unit tests but produces
-systematic differences in the LU window's stressed segments.
+**Risk:** Phase 6 wiring reads feature values from a different source
+than Phase 5 ARM_B reads, or reimplements feature calculation
+on-the-fly when persisted values exist. Subtle differences in
+edge-case handling (first-N-day NaN treatment, suspension day handling,
+ex-dividend day handling, listing-date edge handling) drift between
+ARM_B and challengers. The drift may be invisible in unit tests but
+produces systematic differences in the LU window's stressed segments.
 
-**Required invariant:** Phase 6 wiring MUST import ATR, MA, RS, and
-any other shared feature computation from `features.technical` and
-the relevant Phase 5 feature modules identified in Step 0
-deliverable. Adapter functions are permitted (e.g., to convert
-between polars DataFrame batch interface and per-row
-`MarketSnapshot` evaluation context) AS LONG AS the underlying
-calculation calls the production function unchanged. No fork. No
-reimplementation, even for performance reasons.
+**Required invariant — Feature reuse hierarchy:**
 
-If the production function has an ABI that is awkward for Phase 6
-evaluation, wrap it; do not rewrite it. Any modification to a
-production feature function must be a separate production-side
-commit reviewed independently of Phase 6 wiring.
+Phase 6 wiring resolves each feature in the following order:
+
+1. **Persisted feature values first.** If the feature exists in
+   `daily_features` (e.g. `atr_14`, `sma_20`) or `bullish_features`
+   (e.g. `beta_adj_rs_60d`), Phase 6 evaluation MUST query the
+   persisted value via DuckDB. This is the path used by Phase 5
+   ARM_B and inherits the L1 snapshot lineage convention
+   (per Cross-cutting Issue 5).
+2. **Production calculation functions** (e.g. `features.technical.add_atr`)
+   are used only at **compute-features time**
+   (`scripts/compute_features.py`) to populate persisted tables.
+   Phase 6 evaluation MUST NOT call these functions directly when the
+   feature is persisted.
+3. **On-the-fly calculation** is permitted only for **features not
+   in any persisted table**, namely:
+   - **E4 Donchian low** — Phase 6 first usage; not in `daily_features`
+     or `bullish_features`. The calculation function MUST be added to
+     `features/technical.py` with type hints, docstring matching
+     convention, and a unit test asserting the explicit exclusion of
+     day-t close (per Phase 6 SPEC §3.5 and Risk #2).
+
+Adapter functions are permitted (e.g., to convert between polars
+DataFrame batch interface and per-row `MarketSnapshot` evaluation
+context) AS LONG AS the underlying value comes from one of the three
+sources above. No alternative computation path. No fork. No
+reimplementation for performance reasons.
+
+**Concrete per-candidate reuse targets:**
+
+| Candidate | Feature | Source path |
+|---|---|---|
+| E1 ATR Trailing | `atr_14` | `daily_features.atr_14` (DuckDB query) |
+| E2 MA20 Failure | `sma_20` | `daily_features.sma_20` (DuckDB query) |
+| E3 RS Deterioration | `beta_adj_rs_60d` | `bullish_features.beta_adj_rs_60d` (DuckDB query; same column ARM_B ranking uses) |
+| E4 Donchian | `donchian_low_excl` | On-the-fly via `features.technical.donchian_low_excl` (NEW function added by Phase 6 wiring) |
 
 **Required test / audit evidence:**
 
 - Code review / lint check: `grep -rn "def .*atr\b\|def .*_ma\b\|def
-  .*rs_rank\b\|def .*donchian" scripts/run_phase6_evaluation.py`
-  must return empty. Functions with these names defined in the
-  Phase 6 runner are evidence of reimplementation and must be
-  refactored to import the corresponding `features.technical`
-  function.
-- Import audit: `grep -nE "^from features\.|^from strategies\."
-  scripts/run_phase6_evaluation.py` must show non-empty imports
-  consistent with the Step 0 wiring surface document.
-- Spot check: for one signal date, compute RS_60d via Phase 6
-  wiring and via Phase 5's persisted feature output for the same
-  date and symbol; values must match exactly.
+  .*rs_rank\b" scripts/run_phase6_evaluation.py` must return empty.
+  Functions with these names defined in the Phase 6 runner are
+  evidence of forbidden reimplementation. (Donchian is exempt — the
+  Phase 6 runner MAY contain `donchian_low_excl` IF the function is
+  also added to `features/technical.py` and imported from there.)
+- Import audit: `grep -nE "^from features\.|^from scripts\." 
+  scripts/run_phase6_evaluation.py` must show imports of feature
+  values via DuckDB query helpers and / or `features.technical.donchian_low_excl`.
+- Spot check (E3): for one signal date in the LU window, compare
+  `bullish_features.beta_adj_rs_60d` queried by Phase 6 wiring against
+  the value used by Phase 5 ARM_B admission at the same date and
+  symbol; values must match exactly (bit-identical).
+- E4 day-t exclusion unit test (per Risk #2 cross-reference):
+  synthetic scenario where `close_t` is the new all-time low over the
+  prior `n` days; assertion `donchian_low_excl_t > close_t` (i.e., the
+  lookback excludes day-t itself).
 
 **SPEC reference:** Phase 6 SPEC v0.1.1 §1.1 (entry/ranking/sizing
-frozen at ARM_B specification level — implies feature computation
-must be identical, not just specification-equivalent); Phase 6 SPEC
-v0.1.1 §3.2 (E1 ATR(14) per `features.technical.add_atr` default).
+frozen at ARM_B specification level — implies feature values must be
+bit-identical, not just calculation-equivalent); Phase 6 SPEC v0.1.1
+§3.2 (E1 ATR(14) baseline parameter); Phase 6 SPEC v0.1.1 §3.5
+(E4 Donchian day-t exclusion).
 
 **Failure consequence:** Silent feature drift between ARM_B and
 challenger evaluations. Most acute at universe edge cases (newly
 listed symbols, suspension days, ex-dividend days). Cross-arm
 comparability degrades; the degradation is invisible in headline
-metrics but biases per-position contributions. Over time as
-production code evolves, the Phase 6 fork stagnates and the drift
-accumulates. Remediation: replace reimplemented functions with
-adapter wrappers around production functions; re-run affected
-candidate evaluations.
+metrics but biases per-position contributions. Remediation: replace
+reimplemented or freshly-computed feature path with the persisted
+query path; re-run affected candidate evaluations.
+
+**Cross-cutting Issue 5 reference:** Helios feature architecture
+separates calculation (`compute_features.py` writes `daily_features`)
+from consumption (admission / evaluation reads `daily_features`).
+This is by design and inherits the L1 snapshot lineage convention.
+Phase 6 evaluation occupies the "consumption" role exclusively.
 
 ---
 
@@ -567,6 +660,120 @@ BLOCKING risks (R1, R2, R3, R5, R6) MUST be present and passing
 before `evaluate_candidate()` is run on any candidate other than
 ARM_B regeneration verification.
 
+### 4.1 Wiring Gates — cross-cutting structural-reuse tests
+
+Beyond per-risk tests in §4, certain cross-cutting tests gate
+specific wiring milestones. Wiring Gates (WG-N) are operationalisations
+of multi-risk invariants and apply at the structural-reuse pattern
+level (per Cross-cutting Issue 6).
+
+#### WG-1 — adaptive_simulator_degenerate_equivalence
+
+**Required before:** any E1-E4 challenger evaluation in Step 3.
+ARM_B baseline regeneration (Step 3 first half) may proceed without
+WG-1 because ARM_B uses Phase 5 `schedule_positions` + 
+`reconstruct_nav_for_horizon` directly, not the unified simulator.
+
+**Risks operationalised:** R3 (admission engine invariance) +
+R6 (feature pipeline reuse → NAV math reuse extension via Cross-cutting
+Issue 6).
+
+**Background:** Cross-cutting Issue 6 establishes that
+`reconstruct_nav_for_horizon` is h-scalar coupled (`for k in range(h)`
+loop bound applies uniformly to all positions). Adaptive exit requires
+per-position variable holding period and per-bar exit decision, which
+cannot be expressed via Phase 5's split admission-then-NAV pass. Phase 6
+challenger evaluation therefore implements a **unified daily simulator**
+that **structurally reuses** the admission decision block from
+`schedule_positions` and the NAV math block from
+`reconstruct_nav_for_horizon`, while substituting only the exit-trigger
+mechanism.
+
+Structural reuse means code-block copy with bit-identical semantics
+for the reused logic. It is weaker than function-call reuse and
+therefore requires explicit verification that the reused blocks
+preserve Phase 5 behaviour under conditions where Phase 6-specific
+modifications are inactive.
+
+**Test setup:**
+
+1. **Canonical path:** Run ARM_B baseline through Phase 5 canonical
+   call sequence:
+   ```
+   ledger      = build_signal_ledger_for_horizon(panel, prices,
+                                                  pool, scenario, h=20)
+   ranked      = _rank_ledger(ledger, "beta_adj_rs_60d", "arm_b")
+   sched, diag = schedule_positions(ranked, BASELINE_CAP, BASELINE_MAX_POS)
+   nav_canonical = reconstruct_nav_for_horizon(sched, prices, BASELINE_CAP, h=20)
+   ```
+
+2. **Adaptive path with degenerate policy:** Run ARM_B baseline
+   through Phase 6 unified simulator with exit policy that NEVER
+   triggers before T+20 (i.e., exit policy = "return False until k=20"):
+   ```
+   nav_adaptive = evaluate_candidate_adaptive(
+       ledger=ledger,
+       ranked=ranked,
+       exit_policy_fn=lambda pos, market: False,  # never triggers
+       hard_ceiling_h=20,
+       cap=BASELINE_CAP,
+       max_pos=BASELINE_MAX_POS,
+   )
+   ```
+   Under this degenerate policy, every position exits at the T+20
+   hard ceiling, which is mathematically equivalent to ARM_B
+   fixed-horizon exit.
+
+**Assertion:**
+
+  - Scheduled positions (set of (stock_id, signal_date, entry_date,
+    exit_date, weight)) MUST be set-equal between canonical and
+    adaptive paths.
+  - Daily NAV time series MUST be bit-identical between canonical
+    and adaptive paths.
+  - Computed metrics (Sharpe, MaxDD, admission_rate, mean_holding_days)
+    MUST be bit-identical.
+
+Tolerance: bit-identical means equality under default pandas/numpy
+float64 comparison — no epsilon. The two paths process the same
+inputs through the same arithmetic operations in the same order;
+any non-identity reveals admission drift, NAV math drift, or
+ordering non-determinism in the unified simulator.
+
+**Failure consequence:**
+
+If WG-1 fails:
+  - Phase 6 adaptive evaluation is INVALID. Do not run E1-E4
+    challengers.
+  - The Phase 6 unified simulator has drifted from Phase 5 semantics
+    in either admission logic, NAV math, or ordering.
+  - Diagnose by comparing per-position contributions (which positions
+    are admitted with what entry/exit dates) and per-day NAV
+    contributions until the drift point is localised.
+  - Remediation: fix the structural reuse code-block to bit-identity
+    with the corresponding Phase 5 function block.
+  - WG-1 must PASS before any non-ARM_B candidate evaluation
+    resumes.
+
+**Test placement:** Unit test
+`test_adaptive_simulator_degenerate_equivalence` in the Phase 6
+wiring test suite, with docstring:
+```python
+def test_adaptive_simulator_degenerate_equivalence():
+    """WG-1 — adaptive simulator degenerate equivalence.
+
+    Verifies that the unified daily simulator (used for E1-E4
+    challengers) produces bit-identical output to the Phase 5
+    canonical path (schedule_positions + reconstruct_nav_for_horizon)
+    under a degenerate exit policy that never triggers before the
+    T+20 hard ceiling.
+
+    See research/r8_phase6_wiring_precondition.md §4.1 WG-1.
+    Operationalises R3 + R6 invariance for the structural-reuse
+    pattern documented in Cross-cutting Issue 6.
+    """
+```
+
 ---
 
 ## 5. SPEC references summary
@@ -613,8 +820,8 @@ For convenience, all referenced SPEC sections collected here:
 | `research/r8_phase5_followup_001_spec.md` | v1.0.0 | LOCKED / EXECUTION SPEC |
 | `research/r8_phase6_spec.md` | v0.1.1 | LOCKED |
 | `scripts/run_phase6_evaluation.py` | v0.1.1 | APPROVED AS SKELETON |
-| `research/r8_phase6_wiring_precondition.md` | v0.1.0 | **THIS DOCUMENT — LOCKED** |
-| `research/r8_phase6_wiring_surface.md` | (TBD) | DISCOVERY MEMO — not committed during wiring |
+| `research/r8_phase6_wiring_precondition.md` | v0.1.1 | **THIS DOCUMENT — LOCKED** |
+| `research/r8_phase6_wiring_surface.md` | v0.0.1 | DISCOVERY MEMO — not committed during wiring (Step 0 ~100% complete; promotion to v1.0.0 deferred to evaluation report appendix) |
 
 This document does not authorise any Phase 6 evaluation execution.
 It defines the methodological constraints that wiring code must
@@ -624,4 +831,4 @@ evaluation time via the test suite specified in §4.
 
 ---
 
-*End of r8_phase6_wiring_precondition.md v0.1.0*
+*End of r8_phase6_wiring_precondition.md v0.1.1*
