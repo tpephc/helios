@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/run_phase6_evaluation.py
-"""Phase 6 Exit Policy Evaluation runner — v0.1.1.
+"""Phase 6 Exit Policy Evaluation runner — v0.1.2.
 
 Multi-arm champion-vs-challengers evaluation of four pre-registered
 exit policy candidates (E1 ATR Trailing, E2 MA20 Failure, E3 RS
@@ -92,6 +92,38 @@ Changelog:
         5. verify_arm_b_reference() renamed to
            verify_arm_a_lineage_reference() to match SPEC §8.1
            semantics (Arm A lineage check, not ARM_B baseline check).
+    v0.1.2 — Step 1 wiring (rename-only, no behavioural change):
+        1. verify_snapshot_id() renamed to verify_snapshot_lineage().
+           Helios architecture has no physical snapshot identity
+           mechanism; daily_price_adj is a live mutable DuckDB table
+           (per r8_phase5_price_snapshot_refresh_note.md 2023-07-14
+           retroactive adjustment event). Lineage identity is
+           established by recomputing Arm A LU + full_sample Sharpe
+           and admission_rate on the current snapshot and comparing
+           against persisted reference values within tolerance. The
+           rename reflects this architectural reality; the name
+           "snapshot_id" implied byte identity, which Helios cannot
+           provide.
+        2. Provenance JSON key "snapshot_id" replaced by
+           "lineage_check": {"anchor_label": ...}. emit_provenance()
+           parameter renamed accordingly.
+        3. CLI --snapshot-id flag retained for backward compatibility;
+           help text rewritten to clarify the value is a human-readable
+           lineage anchor label (e.g. "2026-06-08") recorded in
+           provenance, NOT a physical snapshot identifier participating
+           in verification logic.
+        4. Fail-closed contract preserved. verify_snapshot_lineage()
+           continues to raise NotImplementedError until Step 2 wires
+           verify_arm_a_lineage_reference() to the Phase 1/3/4
+           harness chain. NotImplementedError message updated to point
+           at Step 2 scope.
+        5. No new imports. No Phase 1/3/4/5 harness ABI consumption.
+           No recomputation logic. Phase 4 ABI confirmation and Arm A
+           regeneration wiring are Step 2 scope per
+           research/r8_phase6_wiring_precondition.md v0.1.1 §2.
+        See research/r8_phase6_wiring_precondition.md v0.1.1 §3 R5 and
+        Cross-cutting Issue 1 (snapshot identity = lineage equivalence,
+        not byte identity).
 """
 from __future__ import annotations
 
@@ -123,7 +155,7 @@ from typing import Callable
 # Versioning and provenance
 # =====================================================================
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 RUNNER_NAME = "run_phase6_evaluation"
 
 PHASE_6_SPEC_VERSION = "v0.1.1"
@@ -636,19 +668,43 @@ def verify_code_sha(expected_sha: str | None) -> str:
     return head_sha
 
 
-def verify_snapshot_id(expected_id: str) -> None:
-    """Verify the daily_price_adj snapshot ID matches expected.
+def verify_snapshot_lineage(lineage_anchor_label: str) -> None:
+    """Verify L1 snapshot lineage equivalence via Arm A fingerprint.
 
-    TODO(wiring): implement against data/_storage/helios.duckdb.
-    The snapshot ID convention is repository-specific; consult
-    data/database.py for the canonical metadata table.
+    Helios architecture has no physical snapshot identity mechanism;
+    `daily_price_adj` is a live mutable DuckDB table (per the
+    2023-07-14 retroactive adjustment event documented in
+    r8_phase5_price_snapshot_refresh_note.md). Lineage identity is
+    established by recomputing Arm A LU + full_sample Sharpe and
+    admission_rate on the current snapshot and comparing against
+    persisted reference values within tolerance (ARM_A_SHARPE_TOL,
+    ARM_A_ADMISSION_TOL from scripts.run_phase5_analysis).
+
+    The `lineage_anchor_label` parameter (passed in as --snapshot-id
+    on CLI) is a human-readable label like '2026-06-08' and is
+    recorded in provenance for audit traceability. It does NOT
+    participate in verification logic — verification is purely
+    fingerprint-based.
+
+    Verification logic is delegated to verify_arm_a_lineage_reference()
+    which is wired in Step 2 per
+    research/r8_phase6_wiring_precondition.md v0.1.1 §2 Step 2.
+    Until Step 2 completes, this function raises NotImplementedError
+    (fail-closed).
+
+    See:
+      research/r8_phase5_price_snapshot_refresh_note.md (reference origin)
+      research/r8_phase6_wiring_precondition.md v0.1.1 §3 R5
+        (universe membership consistency via lineage)
+      research/r8_phase6_wiring_precondition.md v0.1.1 §0.4 CCI-1
+        (snapshot identity = lineage equivalence, not byte identity)
     """
     raise NotImplementedError(
-        "Snapshot ID verification requires wiring to data/database.py. "
-        f"Expected snapshot_id: {expected_id}. "
-        "Implement by querying the snapshot metadata table or by "
-        "computing a content hash over daily_price_adj rows in the "
-        "Phase 5 evaluation window."
+        "Lineage verification requires Arm A fingerprint check "
+        "implemented in verify_arm_a_lineage_reference(). "
+        f"Lineage anchor label: {lineage_anchor_label}. "
+        "See research/r8_phase6_wiring_precondition.md v0.1.1 §2 "
+        "Step 2 for wiring scope."
     )
 
 
@@ -688,14 +744,20 @@ def evaluate_candidate(
     candidate: Candidate,
     scenario_start: date,
     scenario_end: date,
-    snapshot_id: str,
+    lineage_anchor_label: str,
 ) -> tuple[CandidateMetrics, "DailyNAV"]:
     """Evaluate one candidate over one scenario window.
 
     Returns (metrics, daily_nav_series).
 
     The evaluation orchestrates:
-      1. Load signal calendar and admission decisions (frozen per ARM_B).
+      1. Load frozen signal pool (per ARM_B): list of
+         (signal_date, symbol, rs_60d_rank, signal_metadata) — this is
+         the candidate set, NOT the admission outcome. Regenerate
+         admission decisions under this candidate's slot dynamics
+         (per research/r8_phase6_wiring_precondition.md v0.1.1 §3 R3
+         — frozen signal pool ≠ frozen admission schedule; ARM_B's
+         persisted admission schedule is an OUTCOME, not an INPUT).
       2. For each admitted position, simulate paper-price holding with
          the candidate's exit decision function applied daily.
       3. Aggregate position returns into portfolio daily NAV.
@@ -704,20 +766,26 @@ def evaluate_candidate(
     TODO(wiring): implement via the Phase 5 paper-price NAV
     reconstruction harness with adaptive exit overlay. Key integration
     points:
-      - Signal source: Phase 5 frozen signal pool (must match ARM_B).
-      - Admission rule: frozen per ARM_B (10-slot cap, 10% sizing).
+      - Signal source: Phase 5 frozen signal pool via
+        build_signal_ledger_for_horizon (must match ARM_B inputs).
+      - Admission: regenerate via schedule_positions for ARM_B path;
+        adaptive_release_engine (Step 3 new code) for E1-E4 challengers
+        with bit-identical admission semantics (per WG-1 degenerate
+        equivalence test).
       - Daily loop: for each open position, build MarketSnapshot from
-        adj-close + feature pipeline, call EXIT_FUNCTIONS[candidate].
+        adj-close + persisted feature columns (daily_features /
+        bullish_features per R6 persistence-first), call
+        EXIT_FUNCTIONS[candidate].
       - Position state update: max_close_since_entry trails upward;
         days_held increments; entry_atr never changes.
-      - Slot release: on exit, slot becomes available for the next
-        signal date's admission decision.
+      - Slot release: ARM_B same-day at exit_date; E1-E4 t+1 per
+        SPEC §3.1 (per R1 adaptive-exits-only invariant).
     """
     raise NotImplementedError(
         f"Candidate evaluation orchestration not yet wired. "
         f"Requires Phase 5 paper-price NAV reconstruction harness. "
         f"Candidate: {candidate}, scenario: {scenario_start}..{scenario_end}, "
-        f"snapshot: {snapshot_id}"
+        f"lineage_anchor: {lineage_anchor_label}"
     )
 
 
@@ -991,7 +1059,7 @@ def emit_provenance(
     output_dir: Path,
     runtime_head_sha: str,
     bootstrap_seed: int,
-    snapshot_id: str,
+    lineage_anchor_label: str,
     started_at: datetime,
 ) -> None:
     """Write provenance.json with full run identity."""
@@ -1003,7 +1071,9 @@ def emit_provenance(
         "helios_head_anchor_sha": HELIOS_HEAD_ANCHOR_SHA,
         "runtime_head_sha": runtime_head_sha,
         "sha_matches_anchor": runtime_head_sha == HELIOS_HEAD_ANCHOR_SHA,
-        "snapshot_id": snapshot_id,
+        "lineage_check": {
+            "anchor_label": lineage_anchor_label,
+        },
         "bootstrap_seed": bootstrap_seed,
         "started_at": started_at.isoformat(),
         "output_dir": str(output_dir),
@@ -1054,7 +1124,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--snapshot-id",
         required=True,
-        help="daily_price_adj snapshot identifier (e.g., 2026-06-08).",
+        metavar="LABEL",
+        help=(
+            "L1 snapshot lineage anchor label (e.g. '2026-06-08'). "
+            "Helios has no physical snapshot identity mechanism; this "
+            "label is recorded in provenance for audit traceability "
+            "and does NOT participate in lineage verification logic. "
+            "Verification is fingerprint-based via Arm A Sharpe + "
+            "admission_rate within tolerance per Phase 5 reference. "
+            "See research/r8_phase6_wiring_precondition.md v0.1.1 §3 R5."
+        ),
     )
     parser.add_argument(
         "--bootstrap-seed",
@@ -1104,7 +1183,7 @@ def main(argv: list[str] | None = None) -> int:
             checks all passed)
         1 — operational error (CLI parsing, unexpected exception)
         2 — output-directory conflict (non-empty existing output dir)
-        3 — pre-execution check stubbed or failed (verify_snapshot_id,
+        3 — pre-execution check stubbed or failed (verify_snapshot_lineage,
             verify_arm_a_lineage_reference). Distinct from operational
             error: indicates the runner cannot guarantee its
             pre-execution invariants under current code state.
@@ -1149,20 +1228,21 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     try:
-        verify_snapshot_id(args.snapshot_id)
-        logger.info("Snapshot ID verified: %s", args.snapshot_id)
+        verify_snapshot_lineage(args.snapshot_id)
+        logger.info("Snapshot lineage verified: %s", args.snapshot_id)
     except NotImplementedError as exc:
         logger.error(
-            "Snapshot ID verification is stubbed in this skeleton "
-            "(v0.1.1) and cannot guarantee pre-execution invariant. "
-            "Refusing to proceed even in --dry-run mode. Wire "
-            "verify_snapshot_id() to data/database.py before running. "
-            "Details: %s",
+            "Snapshot lineage verification is stubbed in this skeleton "
+            "(v0.1.2; Step 1 rename-only) and cannot guarantee "
+            "pre-execution invariant. Refusing to proceed even in "
+            "--dry-run mode. Wire verify_arm_a_lineage_reference() per "
+            "research/r8_phase6_wiring_precondition.md v0.1.1 §2 Step 2 "
+            "before running. Details: %s",
             exc,
         )
         return 3
     except RuntimeError as exc:
-        logger.error("Snapshot ID verification failed: %s", exc)
+        logger.error("Snapshot lineage verification failed: %s", exc)
         return 3
 
     try:
@@ -1211,7 +1291,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
         runtime_head_sha=runtime_sha,
         bootstrap_seed=args.bootstrap_seed,
-        snapshot_id=args.snapshot_id,
+        lineage_anchor_label=args.snapshot_id,
         started_at=started_at,
     )
 
