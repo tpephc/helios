@@ -1,9 +1,10 @@
 # Helios R8 MA5 Momentum — Research Roadmap
 
 <!-- research/helios_research_roadmap.md -->
-<!-- v0.1.0 — 2026-06-08 -->
+<!-- v0.1.1 — 2026-06-19 -->
 
-**Status:** ACTIVE — updated after Phase 5 completion
+**Status:** ACTIVE — updated after Phase 5 v1.0.2 governance patch
+  (ARM_C reclassified, P5-4 downgraded to working hypothesis)
 **Maintainer:** Governed by research SPEC chain; updates require rationale.
 
 ---
@@ -16,11 +17,17 @@ Phase 2A:   CLOSED / STABLE
 Phase 2B:   CLOSED / FEASIBLE
 Phase 3:    CLOSED / CHARACTERISED / LOCKED
 Phase 4:    CLOSED / OPTIMISATION_CHARACTERISED / LOCKED
-Phase 5:    CLOSED / CONFIGURATION_SELECTED / LOCKED
-Phase 6:    NOT STARTED — requires Phase 6 SPEC
+Phase 5:    CLOSED / CONFIGURATION_SELECTED / LOCKED (v1.0.2)
+            ARM_B SELECTED; ARM_C reclassified to
+            CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED
+Phase 6:    NOT STARTED — requires Phase 6 SPEC;
+            P5-FOLLOWUP-001 to be addressed (resolve or formally defer)
 ```
 
-**Phase 5 Verdict:** `CONFIGURATION_SELECTED / SELECTED: ARM_B, ARM_C`
+**Phase 5 Verdict (v1.0.2):**
+  Layer 1: `CONFIGURATION_SELECTED`
+  Layer 2: `SELECTED: ARM_B`
+  Reclassified: `ARM_C → CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED`
 
 ---
 
@@ -29,13 +36,17 @@ Phase 6:    NOT STARTED — requires Phase 6 SPEC
 | Finding | Description | Value |
 |---|---|---|
 | P5-1 | RS-60d ranking confirmed in Low-Uplift | Sharpe 1.569 → 2.204; MaxDD −3.23pp |
-| P5-2 | 10td holding materially increases capacity | Admission 17.5% → 32.4% (+14.83pp) |
-| P5-3 | Capacity gain from 10td is not free | Sharpe 1.569 → 1.476 (−0.093, marginal gate) |
-| P5-4 | RS-60d + 10td are not additive | H1/H2 both unsupported; ranking alpha degrades at shorter horizon |
-| P5-REF | Price snapshot refresh detected | daily_price_adj retroactive adj; first divergence 2023-07-14 |
+| P5-2 | 10td holding materially increases capacity | Admission 17.5% → 32.4% (+14.83pp, mechanical) |
+| P5-3 | Capacity gain from 10td is not free | Sharpe 1.569 → 1.476; difference within sampling error of Sharpe estimator |
+| P5-4 (WH) | Working hypothesis: RS-60d ranking and 10td holding may be sub-additive — pending P5-FOLLOWUP-001 (snapshot-consistent re-evaluation of Phase 4 single-factor arms) |
+| P5-REF | Price snapshot refresh detected | daily_price_adj retroactive adj; first divergence 2023-07-14; attribution plausibility-based (see Phase 5 §8.6) |
 
-**Recommended deployment baseline for Phase 6:** ARM_B (20td + RS-60d)
-**Secondary candidate:** ARM_C (10td + RS-60d) — marginal P5-G1 pass; capacity value confirmed
+**Phase 6 deployment baseline:** ARM_B (20td + RS-60d) — sole baseline
+**Capacity reference (not a candidate):** ARM_C (10td + RS-60d) —
+  CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED; admission gain confirmed
+  as mechanical and robust; Sharpe preservation is not statistically
+  distinguishable from noise at this sample size and is sensitive to
+  the adj-price snapshot
 
 ---
 
@@ -47,8 +58,10 @@ Phase 6:    NOT STARTED — requires Phase 6 SPEC
 ```
 Phase 6: Exit Policy Evaluation
 Status:  NOT STARTED
-Requires: Phase 6 SPEC (must address ARM_B as baseline,
-          ARM_C marginal passage note, price-snapshot refresh)
+Requires: Phase 6 SPEC (must address ARM_B as sole baseline,
+          ARM_C capacity-demonstration reference, price-snapshot
+          refresh, forward lineage-gate override governance, and
+          P5-FOLLOWUP-001 ownership — resolve or formally defer)
 Priority: HIGH — direct path to paper-trading candidate
 
 Phase 6 scope (anticipated, not pre-authorised):
@@ -62,13 +75,22 @@ Research question:
   Can an adaptive exit policy release capital occupancy without
   degrading Low-Uplift Sharpe vs ARM_B fixed-hold baseline?
 
-Rationale (from Phase 5):
-  ARM_B admission = 17.5% in Low-Uplift: 82.5% of signals rejected
-  due to capital lock-up. ARM_C demonstrated +14.83pp capacity gain
-  via shorter fixed hold, but at Sharpe cost. Exit policy hypothesis:
-  adaptive exit releases capital from underperforming positions early
-  while allowing strong positions to run to full 20td, preserving
-  both capacity and per-position alpha.
+Primary motivation (snapshot-robust, mechanical):
+  ARM_B LU admission = 17.5%: 82.5% of signals rejected due to
+  capital lock-up, not signal quality. This is the structural
+  bottleneck Phase 6 targets. The motivation is independent of
+  P5-4 and is robust to the P5-FOLLOWUP-001 outcome.
+
+Supplementary motivation (pending identification):
+  Working Hypothesis P5-4 suggests that RS-60d ranking and 10td
+  holding may be sub-additive; if confirmed by P5-FOLLOWUP-001,
+  this strengthens the case for adaptive (state-conditional) exit
+  over fixed shorter holding. If rejected, the Phase 6 direction
+  is not invalidated — capacity expansion via shorter fixed hold
+  was demonstrated by ARM_C (admission +14.83pp), but at Sharpe
+  cost that is not statistically distinguishable from noise. An
+  adaptive exit policy aims to recover capacity without imposing
+  a uniform truncation on all positions.
 ```
 
 ---
@@ -205,11 +227,15 @@ Phase 1 CONFIRMED
 - That Phase 6 findings will persist on future data.
 - That Track C findings will be incorporated into production without
   a Phase SPEC and formal research chain.
-- That ARM_C marginal passage authorises 10td as a production parameter
-  without Phase 6 evaluation.
+- That ARM_C's CAPACITY_DEMONSTRATED status authorises 10td as a
+  production parameter. ARM_C is a research reference for the scale
+  of admission gain achievable via shorter fixed hold; it is not a
+  Phase 6 candidate.
+- That Working Hypothesis P5-4 is an established finding. It is
+  retained pending P5-FOLLOWUP-001.
 - That Track C can proceed in parallel with Track A without SPEC
   authorisation for any production modification.
 
 ---
 
-*End of helios_research_roadmap.md v0.1.0*
+*End of helios_research_roadmap.md v0.1.1*
