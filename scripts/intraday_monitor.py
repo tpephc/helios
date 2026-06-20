@@ -39,12 +39,13 @@ from __future__ import annotations
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import structlog
 
 from data.database import connect
+from market.trading_calendar import is_trading_day
 from monitoring.intraday_monitor import run_monitor
 from monitoring.quote_source import ShioajiQuoteSource
 
@@ -237,6 +238,12 @@ def _write_fatal_run_row(
 
 
 def main() -> int:
+    today = date.today()
+    if not is_trading_day(today):
+        logger.info("intraday_monitor_non_trading_day", date=str(today))
+        print(f"{today} is not a trading day; exiting")
+        return 0
+
     acquired, lock_fd = _try_acquire_lock()
     if not acquired:
         logger.warning(

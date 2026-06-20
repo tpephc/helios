@@ -47,6 +47,7 @@ from communication.telegram import TelegramBot, TelegramConfig
 from communication.telegram.sender import push_simple
 from utils.logger import get_logger
 from utils.trading_dates import resolve_as_of
+from market.trading_calendar import is_trading_day
 
 logger = get_logger(__name__)
 
@@ -327,6 +328,13 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="Print only, do not send Telegram")
     args = parser.parse_args()
+
+    if args.as_of is None:
+        today = date_type.today()
+        if not is_trading_day(today):
+            logger.info("bullish_setups_non_trading_day", date=str(today))
+            print(f"{today} is not a trading day; exiting")
+            return 0
 
     as_of = resolve_as_of(args.as_of)
     logger.info("bullish_setups_start", as_of=str(as_of))

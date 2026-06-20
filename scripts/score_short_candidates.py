@@ -54,6 +54,7 @@ from data.database import connect
 from find_bearish_stocks import find_bearish_stocks
 from utils.logger import get_logger
 from utils.trading_dates import resolve_as_of
+from market.trading_calendar import is_trading_day
 
 logger = get_logger(__name__)
 
@@ -544,6 +545,13 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="Print only, do not send Telegram")
     args = parser.parse_args()
+
+    if args.as_of is None:
+        today = date_type.today()
+        if not is_trading_day(today):
+            logger.info("short_score_non_trading_day", date=str(today))
+            print(f"{today} is not a trading day; exiting")
+            return 0
 
     as_of = resolve_as_of(args.as_of)
     logger.info("short_score_start", as_of=str(as_of))

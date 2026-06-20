@@ -29,6 +29,7 @@ from communication.telegram.sender import push_simple
 from strategies.trend_breakout import TrendBreakoutStrategy
 from utils.logger import get_logger
 from utils.trading_dates import resolve_as_of
+from market.trading_calendar import is_trading_day
 
 logger = get_logger(__name__)
 
@@ -89,6 +90,13 @@ def main() -> int:
     parser.add_argument("--as-of", type=str, default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    if args.as_of is None:
+        today = date_type.today()
+        if not is_trading_day(today):
+            logger.info("signal_preview_non_trading_day", date=str(today))
+            print(f"{today} is not a trading day; exiting")
+            return 0
 
     as_of = resolve_as_of(args.as_of)
     logger.info("signal_preview_start", as_of=str(as_of))
