@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/run_phase6_evaluation.py
-"""Phase 6 Exit Policy Evaluation runner — v0.1.2.
+"""Phase 6 Exit Policy Evaluation runner — v0.1.3.
 
 Multi-arm champion-vs-challengers evaluation of four pre-registered
 exit policy candidates (E1 ATR Trailing, E2 MA20 Failure, E3 RS
@@ -64,7 +64,7 @@ between ARM_B and challengers E1-E4, the Phase 6 evaluation:
   - Enforces the 20td hard ceiling uniformly across baseline and all
     candidates (P6-INV-001).
 
-Version: v0.1.1 (2026-06-19)
+Version: v0.1.3 (2026-06-20)
 
 Changelog:
     v0.1.0 — Initial skeleton.
@@ -124,11 +124,76 @@ Changelog:
         See research/r8_phase6_wiring_precondition.md v0.1.1 §3 R5 and
         Cross-cutting Issue 1 (snapshot identity = lineage equivalence,
         not byte identity).
+    v0.1.3 — Step 2 wiring: verify_arm_a_lineage_reference implementation.
+        1. Phase 1/3/4/5 harness imports added (confirmed ABI per Step 2A
+           evidence collection). Specifically: load_panel,
+           load_price_series, compute_forward_returns from
+           scripts.run_r8_phase1_a3; compute_risk_metrics from
+           scripts.run_phase3_analysis; build_signal_ledger_for_horizon,
+           schedule_positions, reconstruct_nav_for_horizon, BASELINE_CAP,
+           BASELINE_MAX_POS from scripts.run_phase4_analysis;
+           ARM_A_REFERENCE, ARM_A_SHARPE_TOL, ARM_A_ADMISSION_TOL from
+           scripts.run_phase5_analysis (single source of truth).
+        2. LineageStatus dataclass introduced (frozen). Fields: verified,
+           lineage_anchor_label, results (per-scenario computed +
+           reference + deltas + gates), divergences (populated when not
+           verified), sharpe_tol, admission_tol.
+        3. verify_arm_a_lineage_reference() implemented. Recomputes
+           Arm A LU + full_sample fingerprints via canonical Phase 1/3/4
+           harness chain (load_panel + load_price_series +
+           compute_forward_returns + build_signal_ledger_for_horizon +
+           schedule_positions + reconstruct_nav_for_horizon +
+           compute_risk_metrics). Compares against ARM_A_REFERENCE
+           within ARM_A_SHARPE_TOL (±0.050) and ARM_A_ADMISSION_TOL
+           (±0.020). Returns per-scenario results dict with computed,
+           reference, deltas, gates. max_drawdown recorded but
+           informational only (lineage gates only on sharpe +
+           admission_rate per Phase 5 lineage practice).
+        4. verify_snapshot_lineage() rewritten as orchestrator: delegates
+           fingerprint computation to verify_arm_a_lineage_reference,
+           builds LineageStatus, returns. No more NotImplementedError.
+        5. main() opens DuckDB connection (HELIOS_DB_PATH constant),
+           passes to verify_snapshot_lineage, processes LineageStatus
+           (exit 3 on not verified, with structured divergence log per
+           Phase 5 v1.0.2 §9.4 item 5 forward governance protocol).
+        6. emit_provenance lineage_check block expanded to include
+           anchor_label, verified, results, divergences, tolerances,
+           reference_source, governance_ref.
+        7. ABI key mapping handled: compute_risk_metrics returns
+           "max_drawdown"; ARM_A_REFERENCE has "max_dd". The lineage
+           check maps these explicitly; max_dd is recorded as
+           informational diagnostic, not a gate criterion.
+        8. main() flow restructured for SPEC §8.2 documented-
+           evidence-chain guarantee:
+             a. output_dir conflict check (exit 2) moved to BEFORE
+                pre-execution checks. Previously the order
+                "lineage → output_dir check" meant a non-empty
+                output_dir + lineage divergence would exit 2 without
+                persisting the lineage evidence to provenance.
+             b. emit_provenance now runs BEFORE divergence/dry-run
+                exits. Both lineage divergence (exit 3) and dry-run
+                (exit 0) write provenance.json capturing
+                LineageStatus.
+           Behaviour change from v0.1.2: dry-run now writes
+           provenance (previously it exited 0 with no artifact).
+           Rationale: SPEC §8.2 requires "documented evidence chain"
+           for lineage divergence; logs alone are insufficient.
+        9. Removed v0.1.2-and-earlier module-local Arm A lineage
+           constants ARM_A_LU_SHARPE_EXPECTED and
+           ARM_A_LU_SHARPE_TOLERANCE. These would have constituted
+           a second source of truth alongside ARM_A_REFERENCE /
+           ARM_A_SHARPE_TOL imported from scripts.run_phase5_analysis
+           (per precondition v0.1.1 §3 R6 persistence-first).
+       10. Removed unused imports (hashlib, pandas as pd). pandas
+           DataFrames are used by harness functions internally but
+           Phase 6 runner does not type-annotate them or call pd.*
+           directly.
+        See research/r8_phase6_wiring_precondition.md v0.1.1 §3 R5 and
+        §2 Step 2 completion criterion.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import logging
 import subprocess
@@ -139,23 +204,41 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-# TODO(wiring): adjust import paths to match local Helios layout.
-# These imports are the integration surface with existing infrastructure.
-# - paper-price NAV reconstruction harness used by Phase 5 (canonical source)
-# - polars DataFrame infrastructure
-# - DuckDB snapshot access
+import duckdb
 
-# import polars as pl
-# from research.phase5_harness import paper_price_nav_reconstruction  # TODO
-# from features.technical import add_atr, add_ma  # TODO
-# from data.database import open_snapshot_connection  # TODO
+# Helios harness imports (per research/r8_phase6_wiring_precondition.md
+# v0.1.1 §3 R6 persistence-first hierarchy and Cross-cutting Issue 2
+# harness layering: Phase 1 loader + Phase 3 foundation + Phase 4
+# generalisation + Phase 5 references).
+#
+# ABI confirmed per Step 2A discovery (2026-06-20).
+from scripts.run_r8_phase1_a3 import (  # noqa: E402
+    compute_forward_returns,
+    load_panel,
+    load_price_series,
+)
+from scripts.run_phase3_analysis import (  # noqa: E402
+    compute_risk_metrics,
+)
+from scripts.run_phase4_analysis import (  # noqa: E402
+    BASELINE_CAP,
+    BASELINE_MAX_POS,
+    build_signal_ledger_for_horizon,
+    reconstruct_nav_for_horizon,
+    schedule_positions,
+)
+from scripts.run_phase5_analysis import (  # noqa: E402
+    ARM_A_ADMISSION_TOL,
+    ARM_A_REFERENCE,
+    ARM_A_SHARPE_TOL,
+)
 
 
 # =====================================================================
 # Versioning and provenance
 # =====================================================================
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 RUNNER_NAME = "run_phase6_evaluation"
 
 PHASE_6_SPEC_VERSION = "v0.1.1"
@@ -165,6 +248,16 @@ HELIOS_HEAD_ANCHOR_SHA = "edd42b14d1d5f2c858730ee140cbd7b5683b2d0a"
 """SHA at which Phase 6 SPEC v0.1.1 E1 parameter freeze was applied.
 Runtime SHA may differ; differences must be recorded in provenance
 and reviewed against the §3.2 E1 evidence chain."""
+
+HELIOS_DB_PATH = Path("data/_storage/helios.duckdb")
+"""Canonical Helios DuckDB path. Phase 6 verification queries
+daily_price_adj / daily_features / bullish_features via this
+connection. Lineage convention: the database is a live mutable
+table; identity is fingerprint-based (per Cross-cutting Issue 1)."""
+
+# Module-level logger used by functions outside main(). main() uses
+# the same logger after basicConfig is set up.
+_log = logging.getLogger(RUNNER_NAME)
 
 
 # =====================================================================
@@ -218,9 +311,14 @@ ARM_B_REFERENCE: dict[str, dict[str, float]] = {
     # against persisted Phase 5 artifacts before relying on these numbers.
 }
 
-# Lineage tolerance for Arm A LU Sharpe re-verification (per SPEC §8.1)
-ARM_A_LU_SHARPE_EXPECTED = 1.569
-ARM_A_LU_SHARPE_TOLERANCE = 0.050
+# Note: Arm A lineage reference (LU + full_sample sharpe / max_dd /
+# admission_rate) and tolerances are imported from
+# scripts.run_phase5_analysis (ARM_A_REFERENCE, ARM_A_SHARPE_TOL,
+# ARM_A_ADMISSION_TOL) — single source of truth per Phase 5 v1.0.2
+# §9.4 forward governance protocol. Previous v0.1.2-and-earlier
+# module-local constants ARM_A_LU_SHARPE_EXPECTED and
+# ARM_A_LU_SHARPE_TOLERANCE removed in v0.1.3 to prevent second
+# source of truth (per precondition v0.1.1 §3 R6).
 
 
 # =====================================================================
@@ -436,6 +534,51 @@ class CandidateVerdict:
     label: VerdictLabel
     gates: dict[str, GateResult]
     notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class LineageStatus:
+    """Result of L1 snapshot lineage verification via Arm A fingerprint.
+
+    Helios architecture has no physical snapshot identity mechanism
+    (daily_price_adj is a live mutable DuckDB table per Cross-cutting
+    Issue 1 in research/r8_phase6_wiring_precondition.md v0.1.1).
+    Lineage equivalence is established by recomputing Arm A LU +
+    full_sample fingerprints (sharpe + admission_rate) on the current
+    snapshot and comparing against persisted Phase 5 reference values
+    within tolerance.
+
+    Fields:
+        verified: True iff ALL per-scenario gates pass within tolerance.
+        lineage_anchor_label: Human-readable anchor label from CLI
+            (e.g. "2026-06-08"). Recorded in provenance for audit
+            traceability; does not participate in verification logic.
+        results: Per-scenario verification details. Schema per scenario:
+            {
+              "computed":  {sharpe, admission_rate, max_drawdown},
+              "reference": {sharpe, admission_rate, max_dd},
+              "deltas":    {sharpe, admission_rate, max_dd},
+              "gates":     {sharpe_within_tol, admission_within_tol},
+            }
+            Note the key naming asymmetry: compute_risk_metrics returns
+            "max_drawdown"; ARM_A_REFERENCE has "max_dd". Both
+            preserved as-emitted by their source.
+        divergences: Populated when not verified. Each entry:
+            {scenario, sharpe_delta, admission_delta, gates}.
+        sharpe_tol: ARM_A_SHARPE_TOL (±0.050) from Phase 5.
+        admission_tol: ARM_A_ADMISSION_TOL (±0.020) from Phase 5.
+
+    Lineage gates use ONLY sharpe + admission_rate per Phase 5 lineage
+    practice. max_dd is recorded as informational diagnostic but does
+    not affect verified status.
+    """
+
+    verified: bool
+    lineage_anchor_label: str
+    results: dict[str, dict]
+    divergences: list[dict]
+    sharpe_tol: float
+    admission_tol: float
 
 
 # =====================================================================
@@ -668,7 +811,10 @@ def verify_code_sha(expected_sha: str | None) -> str:
     return head_sha
 
 
-def verify_snapshot_lineage(lineage_anchor_label: str) -> None:
+def verify_snapshot_lineage(
+    lineage_anchor_label: str,
+    con: duckdb.DuckDBPyConnection,
+) -> LineageStatus:
     """Verify L1 snapshot lineage equivalence via Arm A fingerprint.
 
     Helios architecture has no physical snapshot identity mechanism;
@@ -686,11 +832,16 @@ def verify_snapshot_lineage(lineage_anchor_label: str) -> None:
     participate in verification logic — verification is purely
     fingerprint-based.
 
-    Verification logic is delegated to verify_arm_a_lineage_reference()
-    which is wired in Step 2 per
-    research/r8_phase6_wiring_precondition.md v0.1.1 §2 Step 2.
-    Until Step 2 completes, this function raises NotImplementedError
-    (fail-closed).
+    This function is an orchestrator: it delegates the actual
+    recomputation + tolerance comparison to
+    verify_arm_a_lineage_reference(), then wraps the per-scenario
+    results into a LineageStatus dataclass with the anchor label,
+    divergence list, and tolerance bounds.
+
+    Returns:
+        LineageStatus with verified=True iff ALL per-scenario gates
+        (sharpe_within_tol AND admission_within_tol for each scenario)
+        pass. Otherwise verified=False with populated divergences list.
 
     See:
       research/r8_phase5_price_snapshot_refresh_note.md (reference origin)
@@ -699,40 +850,229 @@ def verify_snapshot_lineage(lineage_anchor_label: str) -> None:
       research/r8_phase6_wiring_precondition.md v0.1.1 §0.4 CCI-1
         (snapshot identity = lineage equivalence, not byte identity)
     """
-    raise NotImplementedError(
-        "Lineage verification requires Arm A fingerprint check "
-        "implemented in verify_arm_a_lineage_reference(). "
-        f"Lineage anchor label: {lineage_anchor_label}. "
-        "See research/r8_phase6_wiring_precondition.md v0.1.1 §2 "
-        "Step 2 for wiring scope."
+    results = verify_arm_a_lineage_reference(con)
+
+    divergences: list[dict] = []
+    for scenario, r in results.items():
+        gates = r["gates"]
+        if not (gates["sharpe_within_tol"] and gates["admission_within_tol"]):
+            divergences.append({
+                "scenario": scenario,
+                "sharpe_delta": r["deltas"]["sharpe"],
+                "admission_delta": r["deltas"]["admission_rate"],
+                "max_dd_delta": r["deltas"]["max_dd"],
+                "gates": dict(gates),
+                "computed": dict(r["computed"]),
+                "reference": dict(r["reference"]),
+            })
+
+    verified = len(divergences) == 0
+
+    if verified:
+        _log.info(
+            "Snapshot lineage VERIFIED: anchor=%s; %d/%d scenarios "
+            "within tolerance (sharpe±%.3f, admission±%.3f)",
+            lineage_anchor_label,
+            len(results), len(results),
+            ARM_A_SHARPE_TOL, ARM_A_ADMISSION_TOL,
+        )
+    else:
+        _log.error(
+            "Snapshot lineage DIVERGED: anchor=%s; %d/%d scenarios "
+            "outside tolerance",
+            lineage_anchor_label,
+            len(divergences), len(results),
+        )
+
+    return LineageStatus(
+        verified=verified,
+        lineage_anchor_label=lineage_anchor_label,
+        results=results,
+        divergences=divergences,
+        sharpe_tol=ARM_A_SHARPE_TOL,
+        admission_tol=ARM_A_ADMISSION_TOL,
     )
 
 
-def verify_arm_a_lineage_reference(connection: object) -> None:
-    """Re-compute Arm A LU Sharpe on the current snapshot and verify
-    it matches Phase 5 v1.0.2 §4.1 within tolerance (per SPEC §8.1).
+def verify_arm_a_lineage_reference(
+    con: duckdb.DuckDBPyConnection,
+) -> dict[str, dict]:
+    """Recompute Arm A LU + full_sample fingerprints and verify lineage.
 
-    This is the L1 lineage check on the Phase 5 Arm A (FIFO 20td)
-    reference, NOT a re-verification of ARM_B baseline metrics. The
+    The L1 lineage check per SPEC §8.1: recompute Arm A (treatment_1,
+    FIFO, h=20) on the current snapshot via the canonical Phase 1/3/4
+    harness chain and compare against ARM_A_REFERENCE from
+    scripts.run_phase5_analysis (single source of truth) within
+    ARM_A_SHARPE_TOL (±0.050) and ARM_A_ADMISSION_TOL (±0.020).
+
+    This is NOT a re-verification of ARM_B baseline metrics. The
     Arm A → ARM_B baseline relationship is preserved if Arm A LU
-    Sharpe reproduces within ±ARM_A_LU_SHARPE_TOLERANCE of the
-    Phase 5-recorded value (ARM_A_LU_SHARPE_EXPECTED = 1.569).
+    Sharpe + admission_rate AND Arm A full_sample Sharpe +
+    admission_rate both reproduce within tolerance.
 
-    On failure, abort with a structured error indicating the L1
-    reproducibility check failed. Recovery paths per SPEC §8.1:
-    snapshot reconstruction, or L2 fallback. Per SPEC §8.2, plausibility
+    Harness call sequence (per Step 2A ABI confirmation):
+        1. load_panel(con) → treatment_1 + baseline_1 universe assignments
+        2. load_price_series(con) → (stock_id, date)-indexed adj prices
+        3. compute_forward_returns(panel, prices, horizons=[20])
+           → attaches fwd_20td column (REQUIRED prerequisite for
+           build_signal_ledger_for_horizon — see Step 2A discovery 1)
+        4. For each scenario ∈ {"low_uplift", "full_sample"}:
+           a. build_signal_ledger_for_horizon(panel, prices,
+              pool="treatment_1", scenario, h=20, con=con)
+           b. schedule_positions(ledger, BASELINE_CAP, BASELINE_MAX_POS)
+              — Arm A is FIFO (no _rank_ledger); ledger has no
+              rank_order column; schedule_positions uses FIFO branch
+              with stock_id tertiary tie-breaking
+           c. reconstruct_nav_for_horizon(scheduled, prices,
+              BASELINE_CAP, h=20)
+           d. compute_risk_metrics(nav_df, label)
+
+    ABI key mapping note (Step 2A discovery 2):
+        compute_risk_metrics returns dict with key "max_drawdown".
+        ARM_A_REFERENCE uses key "max_dd". Both preserved as-emitted;
+        delta computed via explicit cross-key access.
+
+    Gate criteria note (Step 2A discovery 3):
+        Lineage gates use ONLY sharpe + admission_rate. max_dd is
+        recorded as diagnostic but does not affect verified status.
+
+    Returns:
+        Per-scenario results dict suitable for LineageStatus.results.
+        Schema per scenario:
+            {
+              "computed":  {sharpe, admission_rate, max_drawdown},
+              "reference": {sharpe, admission_rate, max_dd},
+              "deltas":    {sharpe, admission_rate, max_dd},
+              "gates":     {sharpe_within_tol, admission_within_tol},
+            }
+
+    Raises:
+        RuntimeError if any harness call returns inconsistent shape
+        (e.g. compute_risk_metrics returns error dict).
+
+    On failure (lineage divergence), the caller
+    (verify_snapshot_lineage) populates LineageStatus.divergences and
+    sets verified=False. Recovery paths per SPEC §8.1: snapshot
+    reconstruction, or L2 fallback. Per SPEC §8.2, plausibility
     arguments are insufficient for lineage-gate override; requires
     divergence localisation + independent attribution + documented
     evidence chain.
-
-    TODO(wiring): implement Arm A re-evaluation via paper-price NAV
-    reconstruction harness.
     """
-    raise NotImplementedError(
-        "Arm A LU Sharpe re-verification requires Phase 5 paper-price "
-        "NAV reconstruction harness. Wire to research.phase5_harness "
-        "or equivalent module."
-    )
+    _log.info("Loading base panel for lineage verification ...")
+    panel = load_panel(con)
+
+    _log.info("Loading price series for lineage verification ...")
+    prices = load_price_series(con)
+
+    _log.info("Computing forward returns (horizons=[20]) ...")
+    panel = compute_forward_returns(panel, prices, horizons=[20])
+
+    results: dict[str, dict] = {}
+
+    for scenario in ("low_uplift", "full_sample"):
+        _log.info("Lineage verification: scenario=%s", scenario)
+
+        ledger = build_signal_ledger_for_horizon(
+            panel,
+            prices,
+            pool="treatment_1",
+            scenario=scenario,
+            h=20,
+            con=con,
+        )
+
+        # Arm A is FIFO: no _rank_ledger call. Ledger has no
+        # rank_order column; schedule_positions takes the FIFO branch
+        # (sort by signal_date, stock_id) per Phase 4 ABI.
+        scheduled, diag = schedule_positions(
+            ledger, BASELINE_CAP, BASELINE_MAX_POS,
+        )
+
+        nav = reconstruct_nav_for_horizon(
+            scheduled, prices, BASELINE_CAP, h=20,
+        )
+
+        metrics = compute_risk_metrics(
+            nav, f"arm_a_lineage_{scenario}",
+        )
+
+        if "error" in metrics:
+            raise RuntimeError(
+                f"compute_risk_metrics returned error for "
+                f"scenario={scenario}: {metrics['error']}. "
+                f"Cannot verify lineage."
+            )
+
+        # Computed fingerprints
+        c_sharpe = metrics["sharpe"]
+        c_admission = diag["admission_rate"]
+        c_max_dd = metrics["max_drawdown"]
+
+        # Reference fingerprints (note key naming asymmetry: ref uses
+        # "max_dd"; metrics dict uses "max_drawdown")
+        ref = ARM_A_REFERENCE[scenario]
+        r_sharpe = ref["sharpe"]
+        r_admission = ref["admission_rate"]
+        r_max_dd = ref["max_dd"]
+
+        # Handle None defensively: compute_risk_metrics returns None
+        # for NaN values via _f() helper. NaN/None implies degenerate
+        # NAV path (e.g. all-zero returns) — treat as lineage failure
+        # by setting delta to inf.
+        sharpe_delta = (
+            abs(c_sharpe - r_sharpe)
+            if c_sharpe is not None
+            else float("inf")
+        )
+        admission_delta = abs(c_admission - r_admission)
+        max_dd_delta = (
+            abs(c_max_dd - r_max_dd)
+            if c_max_dd is not None
+            else None
+        )
+
+        # Lineage gates: sharpe + admission_rate only (per Phase 5
+        # lineage practice + precondition v0.1.1 §3 R5)
+        sharpe_within = sharpe_delta <= ARM_A_SHARPE_TOL
+        admission_within = admission_delta <= ARM_A_ADMISSION_TOL
+
+        results[scenario] = {
+            "computed": {
+                "sharpe": c_sharpe,
+                "admission_rate": c_admission,
+                "max_drawdown": c_max_dd,
+            },
+            "reference": {
+                "sharpe": r_sharpe,
+                "admission_rate": r_admission,
+                "max_dd": r_max_dd,
+            },
+            "deltas": {
+                "sharpe": sharpe_delta if sharpe_delta != float("inf") else None,
+                "admission_rate": admission_delta,
+                "max_dd": max_dd_delta,
+            },
+            "gates": {
+                "sharpe_within_tol": sharpe_within,
+                "admission_within_tol": admission_within,
+            },
+        }
+
+        _log.info(
+            "lineage[%s]: sharpe=%s (ref=%.3f, Δ=%s, tol=%.3f) %s | "
+            "admission=%.3f (ref=%.3f, Δ=%.3f, tol=%.3f) %s",
+            scenario,
+            f"{c_sharpe:.3f}" if c_sharpe is not None else "NaN",
+            r_sharpe,
+            f"{sharpe_delta:.3f}" if sharpe_delta != float("inf") else "inf",
+            ARM_A_SHARPE_TOL,
+            "PASS" if sharpe_within else "FAIL",
+            c_admission, r_admission, admission_delta,
+            ARM_A_ADMISSION_TOL,
+            "PASS" if admission_within else "FAIL",
+        )
+
+    return results
 
 
 # =====================================================================
@@ -1059,10 +1399,17 @@ def emit_provenance(
     output_dir: Path,
     runtime_head_sha: str,
     bootstrap_seed: int,
-    lineage_anchor_label: str,
+    lineage: LineageStatus,
     started_at: datetime,
 ) -> None:
-    """Write provenance.json with full run identity."""
+    """Write provenance.json with full run identity + lineage record.
+
+    The lineage_check block contains the complete LineageStatus
+    (anchor label, per-scenario fingerprint results, divergences,
+    tolerances, governance references). On verified=False runs, this
+    captures the divergence evidence required by SPEC §8.2 (divergence
+    localisation + independent attribution + documented evidence chain).
+    """
     payload = {
         "runner": RUNNER_NAME,
         "runner_version": __version__,
@@ -1072,7 +1419,27 @@ def emit_provenance(
         "runtime_head_sha": runtime_head_sha,
         "sha_matches_anchor": runtime_head_sha == HELIOS_HEAD_ANCHOR_SHA,
         "lineage_check": {
-            "anchor_label": lineage_anchor_label,
+            "anchor_label": lineage.lineage_anchor_label,
+            "verified": lineage.verified,
+            "results": lineage.results,
+            "divergences": lineage.divergences,
+            "tolerances": {
+                "sharpe": lineage.sharpe_tol,
+                "admission_rate": lineage.admission_tol,
+            },
+            "reference_source": (
+                "research/r8_phase5_price_snapshot_refresh_note.md "
+                "(ARM_A_REFERENCE persisted in "
+                "scripts.run_phase5_analysis)"
+            ),
+            "governance_ref": (
+                "research/r8_phase6_wiring_precondition.md v0.1.1 §3 R5"
+            ),
+            "gate_criteria_note": (
+                "Lineage gates use sharpe + admission_rate only. "
+                "max_dd recorded as informational diagnostic, not "
+                "a gate criterion."
+            ),
         },
         "bootstrap_seed": bootstrap_seed,
         "started_at": started_at.isoformat(),
@@ -1163,8 +1530,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help=(
-            "Run pre-execution checks only. Exits 0 if all checks pass; "
-            "does not perform evaluation or emit artifacts."
+            "Run pre-execution checks + lineage verification only. "
+            "Exits 0 if lineage verifies. Emits provenance.json to "
+            "--output-dir capturing the lineage check result (v0.1.3+). "
+            "Skips evaluation orchestration."
         ),
     )
     parser.add_argument(
@@ -1183,10 +1552,13 @@ def main(argv: list[str] | None = None) -> int:
             checks all passed)
         1 — operational error (CLI parsing, unexpected exception)
         2 — output-directory conflict (non-empty existing output dir)
-        3 — pre-execution check stubbed or failed (verify_snapshot_lineage,
-            verify_arm_a_lineage_reference). Distinct from operational
-            error: indicates the runner cannot guarantee its
-            pre-execution invariants under current code state.
+        3 — pre-execution check failed: verify_snapshot_lineage /
+            verify_arm_a_lineage_reference raised, OR lineage
+            divergence detected (LineageStatus.verified == False).
+            Distinct from operational error: indicates the runner
+            cannot guarantee its pre-execution invariants under the
+            current snapshot. Provenance is written before exit (v0.1.3+)
+            to preserve divergence evidence per SPEC §8.2.
     """
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
@@ -1201,6 +1573,25 @@ def main(argv: list[str] | None = None) -> int:
     output_dir: Path = args.output_dir
     logger.info("Resolved output directory: %s", output_dir)
 
+    # --- Output directory (early — required as artifact destination
+    # for lineage divergence provenance per SPEC §8.2) ---
+    #
+    # The output-directory conflict check (exit code 2) must happen
+    # BEFORE any pre-execution check that could populate the lineage
+    # divergence record. Otherwise a non-empty output_dir + lineage
+    # divergence would exit 2 (output conflict) without persisting
+    # the lineage evidence, breaking the SPEC §8.2 documented
+    # evidence chain guarantee.
+    if output_dir.exists() and any(output_dir.iterdir()):
+        logger.error(
+            "Output directory %s exists and is non-empty. "
+            "Phase 6 evaluation refuses to overwrite prior outputs. "
+            "Move or remove the directory and re-run.",
+            output_dir,
+        )
+        return 2
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     # --- Pre-execution checks (fail-closed) ---
     #
     # Per SPEC §8.1 + §8.2, snapshot ID verification and Arm A lineage
@@ -1211,11 +1602,18 @@ def main(argv: list[str] | None = None) -> int:
     # silently propagate an unverified baseline into all downstream
     # gate evaluations.
     #
-    # Therefore, NotImplementedError from any pre-execution check
-    # aborts the run (or the dry-run) with exit code 3. This applies
-    # equally to --dry-run: dry-run is meant to verify pre-execution
-    # readiness, so a stubbed guard means dry-run is not actually
-    # verifying anything and must report failure.
+    # Therefore, ANY pre-execution check failure aborts the run (or
+    # the dry-run) with exit code 3. As of v0.1.3, this covers:
+    #   - verify_code_sha mismatch (RuntimeError)
+    #   - verify_snapshot_lineage raising (RuntimeError or unexpected
+    #     Exception from harness chain), OR
+    #   - LineageStatus.verified == False (divergence detected).
+    # Stubs raising NotImplementedError still apply to remaining
+    # unwired functions (evaluate_candidate, compute_metrics,
+    # bootstrap_delta_sharpe — Step 3 scope).
+    # This applies equally to --dry-run: dry-run is meant to verify
+    # pre-execution readiness, so a failed lineage check means
+    # dry-run is reporting genuine lineage failure, not stub failure.
 
     try:
         runtime_sha = verify_code_sha(args.code_sha)
@@ -1227,73 +1625,105 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("git invocation failed: %s", exc)
         return 3
 
-    try:
-        verify_snapshot_lineage(args.snapshot_id)
-        logger.info("Snapshot lineage verified: %s", args.snapshot_id)
-    except NotImplementedError as exc:
+    # --- Lineage verification (L1 snapshot fingerprint check) ---
+    # Per SPEC §8.1, recompute Arm A LU + full_sample on current snapshot
+    # and compare against Phase 5 reference within tolerance. On
+    # divergence, exit 3 — recovery paths per SPEC §8.2 require
+    # divergence localisation + independent attribution + documented
+    # evidence chain; plausibility arguments insufficient.
+    if not HELIOS_DB_PATH.exists():
         logger.error(
-            "Snapshot lineage verification is stubbed in this skeleton "
-            "(v0.1.2; Step 1 rename-only) and cannot guarantee "
-            "pre-execution invariant. Refusing to proceed even in "
-            "--dry-run mode. Wire verify_arm_a_lineage_reference() per "
-            "research/r8_phase6_wiring_precondition.md v0.1.1 §2 Step 2 "
-            "before running. Details: %s",
-            exc,
+            "Helios DuckDB not found at %s — cannot perform lineage "
+            "verification. Check data/_storage/ and confirm canonical "
+            "path matches HELIOS_DB_PATH constant.",
+            HELIOS_DB_PATH,
         )
-        return 3
-    except RuntimeError as exc:
-        logger.error("Snapshot lineage verification failed: %s", exc)
         return 3
 
     try:
-        verify_arm_a_lineage_reference(connection=None)
-        logger.info("Arm A LU Sharpe lineage re-verification passed")
-    except NotImplementedError as exc:
+        con = duckdb.connect(str(HELIOS_DB_PATH), read_only=True)
+    except Exception as exc:
         logger.error(
-            "Arm A LU Sharpe lineage re-verification is stubbed in "
-            "this skeleton (v0.1.1) and cannot guarantee L1 "
-            "reproducibility per SPEC §8.1. Refusing to proceed even "
-            "in --dry-run mode. Wire verify_arm_a_lineage_reference() "
-            "to the Phase 5 paper-price NAV reconstruction harness "
-            "before running. Details: %s",
-            exc,
-        )
-        return 3
-    except RuntimeError as exc:
-        logger.error(
-            "Arm A LU Sharpe lineage re-verification failed: %s. "
-            "Per SPEC §8.1, recovery requires either snapshot "
-            "reconstruction or L2 fallback with full four-cell rerun.",
-            exc,
+            "Failed to open Helios DuckDB at %s: %s",
+            HELIOS_DB_PATH, exc,
         )
         return 3
 
-    if args.dry_run:
-        logger.info(
-            "Dry-run mode: all pre-execution checks passed, exiting 0."
-        )
-        return 0
+    try:
+        try:
+            lineage = verify_snapshot_lineage(args.snapshot_id, con)
+        except RuntimeError as exc:
+            logger.error("Lineage verification error: %s", exc)
+            return 3
+        except Exception as exc:
+            logger.error(
+                "Unexpected error during lineage verification: %s "
+                "(type=%s). Refusing to proceed.",
+                exc, type(exc).__name__,
+            )
+            return 3
 
-    # --- Output directory ---
-    if output_dir.exists() and any(output_dir.iterdir()):
-        logger.error(
-            "Output directory %s exists and is non-empty. "
-            "Phase 6 evaluation refuses to overwrite prior outputs. "
-            "Move or remove the directory and re-run.",
-            output_dir,
-        )
-        return 2
-    output_dir.mkdir(parents=True, exist_ok=True)
+        if not lineage.verified:
+            logger.error(
+                "L1 lineage verification FAILED — %d/%d scenarios "
+                "outside tolerance (sharpe±%.3f, admission±%.3f). "
+                "Per SPEC §8.1, recovery requires either snapshot "
+                "reconstruction or L2 fallback with full four-cell "
+                "rerun. Per SPEC §8.2, plausibility arguments are "
+                "insufficient for lineage-gate override.",
+                len(lineage.divergences), len(lineage.results),
+                lineage.sharpe_tol, lineage.admission_tol,
+            )
+            for d in lineage.divergences:
+                logger.error(
+                    "  divergence[%s]: sharpe_delta=%s "
+                    "admission_delta=%.4f gates=%s",
+                    d["scenario"],
+                    f"{d['sharpe_delta']:.4f}"
+                    if d['sharpe_delta'] is not None else "None/NaN",
+                    d["admission_delta"],
+                    d["gates"],
+                )
 
-    # --- Provenance ---
+        # Always proceed to persist LineageStatus to provenance —
+        # divergence evidence is governance artifact per SPEC §8.2
+        # (documented evidence chain). The verified status determines
+        # whether we proceed to evaluation, but the lineage record
+        # itself is persisted regardless.
+        if lineage.verified:
+            logger.info(
+                "L1 lineage VERIFIED: anchor=%s; all scenarios within "
+                "tolerance.", args.snapshot_id,
+            )
+    finally:
+        con.close()
+
+    # --- Provenance (always written, before dry-run / divergence exits) ---
     started_at = datetime.now(tz=timezone.utc)
     emit_provenance(
         output_dir=output_dir,
         runtime_head_sha=runtime_sha,
         bootstrap_seed=args.bootstrap_seed,
-        lineage_anchor_label=args.snapshot_id,
+        lineage=lineage,
         started_at=started_at,
     )
+
+    if not lineage.verified:
+        logger.error(
+            "Provenance written to %s. Exiting with code 3 due to "
+            "lineage divergence. See provenance.json lineage_check "
+            "block for full evidence.",
+            output_dir / PROVENANCE_FILENAME,
+        )
+        return 3
+
+    if args.dry_run:
+        logger.info(
+            "Dry-run mode: all pre-execution checks passed; "
+            "provenance written to %s; exiting 0.",
+            output_dir / PROVENANCE_FILENAME,
+        )
+        return 0
 
     # --- Evaluation loop (stubbed) ---
     logger.warning(
