@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/run_phase6_evaluation.py
-"""Phase 6 Exit Policy Evaluation runner — v0.1.3.
+"""Phase 6 Exit Policy Evaluation runner — v0.1.4.
 
 Multi-arm champion-vs-challengers evaluation of four pre-registered
 exit policy candidates (E1 ATR Trailing, E2 MA20 Failure, E3 RS
@@ -64,7 +64,7 @@ between ARM_B and challengers E1-E4, the Phase 6 evaluation:
   - Enforces the 20td hard ceiling uniformly across baseline and all
     candidates (P6-INV-001).
 
-Version: v0.1.3 (2026-06-20)
+Version: v0.1.4 (2026-06-20)
 
 Changelog:
     v0.1.0 — Initial skeleton.
@@ -190,6 +190,53 @@ Changelog:
            directly.
         See research/r8_phase6_wiring_precondition.md v0.1.1 §3 R5 and
         §2 Step 2 completion criterion.
+    v0.1.4 — Step 2 fix (append-only commit on top of v0.1.3 dry-run
+        diagnosis 2026-06-20):
+        1. ABI shape fix: NAV reconstruction now uses
+           load_daily_price_paths(con, scheduled) instead of reusing
+           the load_price_series MultiIndex output. The two loaders
+           have different shapes and are NOT interchangeable:
+             - load_price_series: MultiIndex (stock_id, date) +
+               columns [adj_open, adj_close]. Consumed by
+               build_signal_ledger_for_horizon (full-universe input).
+             - load_daily_price_paths(con, scheduled): columnar
+               [stock_id, date, adj_close, adj_open]. Consumed by
+               reconstruct_nav / reconstruct_nav_for_horizon (which
+               do `price_df["stock_id"]`, `price_df["date"]` column
+               access; will KeyError on MultiIndex). Bulk single-query
+               loader (per Phase 3 governance: per-signal round-trips
+               prohibited).
+           v0.1.3 erroneously fed load_price_series output into
+           reconstruct_nav_for_horizon, causing KeyError("stock_id")
+           after schedule_positions returned. Fix mirrors Phase 5
+           caller pattern (scripts.run_phase5_analysis line 745:
+           price_t = load_daily_price_paths(con, sched_t)).
+           Root cause: Step 2A ABI discovery confirmed signature only;
+           did not read function body or caller-pattern. Lesson
+           recorded for Step 3: ABI confirmation = signature + body
+           access pattern + caller usage pattern.
+        2. Exception path now persists provenance. Previously a
+           harness RuntimeError or KeyError in verify_snapshot_lineage
+           would skip emit_provenance and exit 3 with logs only.
+           Per SPEC §8.2, lineage divergence requires documented
+           evidence chain; exception-during-verification is a
+           lineage-process failure that ALSO requires evidence
+           persistence. Fix: main() now catches Exception around
+           verify_snapshot_lineage, wraps the failure into a
+           LineageStatus with verified=False and a divergence entry
+           tagged status="lineage_verification_error". emit_provenance
+           runs unconditionally; exit 3 follows.
+        3. divergence entries now carry a "status" field for
+           triage: "data_lineage_divergence" (fingerprint sharpe/
+           admission outside tolerance) vs "lineage_verification_error"
+           (verification process raised). This distinguishes "snapshot
+           has drifted" from "verification code failed" in
+           provenance.json without ambiguity.
+        Boundary: this commit fixes ONLY the Step 2 wiring path. No
+        Step 3 work (E1-E4 adaptive simulator, evaluate_candidate,
+        bootstrap statistics, WG-1 degenerate equivalence test).
+        See research/r8_phase6_wiring_precondition.md v0.1.1 §3 R5
+        and Phase 5 caller pattern (run_phase5_analysis.py line 745).
 """
 from __future__ import annotations
 
@@ -219,6 +266,7 @@ from scripts.run_r8_phase1_a3 import (  # noqa: E402
 )
 from scripts.run_phase3_analysis import (  # noqa: E402
     compute_risk_metrics,
+    load_daily_price_paths,
 )
 from scripts.run_phase4_analysis import (  # noqa: E402
     BASELINE_CAP,
@@ -238,7 +286,7 @@ from scripts.run_phase5_analysis import (  # noqa: E402
 # Versioning and provenance
 # =====================================================================
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 RUNNER_NAME = "run_phase6_evaluation"
 
 PHASE_6_SPEC_VERSION = "v0.1.1"
@@ -857,6 +905,7 @@ def verify_snapshot_lineage(
         gates = r["gates"]
         if not (gates["sharpe_within_tol"] and gates["admission_within_tol"]):
             divergences.append({
+                "status": "data_lineage_divergence",
                 "scenario": scenario,
                 "sharpe_delta": r["deltas"]["sharpe"],
                 "admission_delta": r["deltas"]["admission_rate"],
@@ -910,22 +959,40 @@ def verify_arm_a_lineage_reference(
     Sharpe + admission_rate AND Arm A full_sample Sharpe +
     admission_rate both reproduce within tolerance.
 
-    Harness call sequence (per Step 2A ABI confirmation):
+    Harness call sequence (Step 2A ABI confirmation + Step 2 dry-run
+    diagnosis 2026-06-20):
         1. load_panel(con) → treatment_1 + baseline_1 universe assignments
-        2. load_price_series(con) → (stock_id, date)-indexed adj prices
-        3. compute_forward_returns(panel, prices, horizons=[20])
+        2. load_price_series(con) → panel_prices: MultiIndex
+           (stock_id, date) DataFrame. Used for ledger building only.
+        3. compute_forward_returns(panel, panel_prices, horizons=[20])
            → attaches fwd_20td column (REQUIRED prerequisite for
            build_signal_ledger_for_horizon — see Step 2A discovery 1)
         4. For each scenario ∈ {"low_uplift", "full_sample"}:
-           a. build_signal_ledger_for_horizon(panel, prices,
+           a. build_signal_ledger_for_horizon(panel, panel_prices,
               pool="treatment_1", scenario, h=20, con=con)
+              — accepts MultiIndex price input
            b. schedule_positions(ledger, BASELINE_CAP, BASELINE_MAX_POS)
               — Arm A is FIFO (no _rank_ledger); ledger has no
               rank_order column; schedule_positions uses FIFO branch
               with stock_id tertiary tie-breaking
-           c. reconstruct_nav_for_horizon(scheduled, prices,
+           c. nav_prices = load_daily_price_paths(con, scheduled)
+              → columnar [stock_id, date, adj_close, adj_open]
+              DataFrame, sliced to scheduled positions only.
+              REQUIRED because reconstruct_nav_for_horizon body does
+              `price_df["stock_id"]` (column access, not MultiIndex
+              level). Per Phase 3 governance: single bulk query, no
+              per-signal round-trips. Mirrors Phase 5 caller pattern
+              (scripts.run_phase5_analysis line 745).
+           d. reconstruct_nav_for_horizon(scheduled, nav_prices,
               BASELINE_CAP, h=20)
-           d. compute_risk_metrics(nav_df, label)
+           e. compute_risk_metrics(nav_df, label)
+
+    Note on dual price loaders: load_price_series and
+    load_daily_price_paths are NOT interchangeable. The first is for
+    ledger building (full universe, MultiIndex). The second is for
+    NAV reconstruction (scheduled-position slice, columnar). v0.1.3
+    incorrectly reused load_price_series for NAV reconstruction;
+    v0.1.4 corrected this to mirror Phase 5.
 
     ABI key mapping note (Step 2A discovery 2):
         compute_risk_metrics returns dict with key "max_drawdown".
@@ -961,11 +1028,11 @@ def verify_arm_a_lineage_reference(
     _log.info("Loading base panel for lineage verification ...")
     panel = load_panel(con)
 
-    _log.info("Loading price series for lineage verification ...")
-    prices = load_price_series(con)
+    _log.info("Loading panel price series (MultiIndex) for ledger building ...")
+    panel_prices = load_price_series(con)
 
     _log.info("Computing forward returns (horizons=[20]) ...")
-    panel = compute_forward_returns(panel, prices, horizons=[20])
+    panel = compute_forward_returns(panel, panel_prices, horizons=[20])
 
     results: dict[str, dict] = {}
 
@@ -974,7 +1041,7 @@ def verify_arm_a_lineage_reference(
 
         ledger = build_signal_ledger_for_horizon(
             panel,
-            prices,
+            panel_prices,
             pool="treatment_1",
             scenario=scenario,
             h=20,
@@ -988,8 +1055,20 @@ def verify_arm_a_lineage_reference(
             ledger, BASELINE_CAP, BASELINE_MAX_POS,
         )
 
+        # NAV reconstruction requires a DIFFERENT price shape than
+        # ledger building (per Phase 5 caller pattern at
+        # scripts.run_phase5_analysis.py:745). The reconstruct_nav /
+        # reconstruct_nav_for_horizon functions do columnar access:
+        #     _keys = list(zip(price_df["stock_id"], price_df["date"]))
+        # which requires stock_id and date as COLUMNS, not MultiIndex
+        # levels. load_price_series returns MultiIndex; we must re-
+        # query via load_daily_price_paths(con, scheduled) which
+        # returns columnar layout and (per Phase 3 governance) issues
+        # a single bulk query rather than per-position round-trips.
+        nav_prices = load_daily_price_paths(con, scheduled)
+
         nav = reconstruct_nav_for_horizon(
-            scheduled, prices, BASELINE_CAP, h=20,
+            scheduled, nav_prices, BASELINE_CAP, h=20,
         )
 
         metrics = compute_risk_metrics(
@@ -1652,38 +1731,78 @@ def main(argv: list[str] | None = None) -> int:
     try:
         try:
             lineage = verify_snapshot_lineage(args.snapshot_id, con)
-        except RuntimeError as exc:
-            logger.error("Lineage verification error: %s", exc)
-            return 3
         except Exception as exc:
+            # Per v0.1.4 fix: ANY exception during verification (RuntimeError
+            # from harness chain, KeyError from shape mismatch, etc.) must
+            # still produce a LineageStatus so that emit_provenance can
+            # persist evidence. The wrapping is tagged
+            # status="lineage_verification_error" in divergences[0] to
+            # distinguish from data_lineage_divergence (which is a
+            # tolerance breach on real fingerprints). Both result in
+            # verified=False + exit 3, but the triage path is different:
+            # data_lineage_divergence → snapshot reconstruction or
+            #   ARM_A_REFERENCE update (P5-PATCH).
+            # lineage_verification_error → wiring code bug or ABI drift;
+            #   diagnose via exception_type / exception_message and patch.
             logger.error(
-                "Unexpected error during lineage verification: %s "
-                "(type=%s). Refusing to proceed.",
-                exc, type(exc).__name__,
+                "Lineage verification raised %s: %s. "
+                "Wrapping as lineage_verification_error for provenance.",
+                type(exc).__name__, exc,
             )
-            return 3
+            lineage = LineageStatus(
+                verified=False,
+                lineage_anchor_label=args.snapshot_id,
+                results={},
+                divergences=[{
+                    "status": "lineage_verification_error",
+                    "scenario": "<verification_error>",
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                    "exception_phase": "verify_snapshot_lineage",
+                }],
+                sharpe_tol=ARM_A_SHARPE_TOL,
+                admission_tol=ARM_A_ADMISSION_TOL,
+            )
 
         if not lineage.verified:
             logger.error(
-                "L1 lineage verification FAILED — %d/%d scenarios "
-                "outside tolerance (sharpe±%.3f, admission±%.3f). "
+                "L1 lineage verification FAILED — %d divergence "
+                "record(s) (sharpe_tol=±%.3f, admission_tol=±%.3f). "
                 "Per SPEC §8.1, recovery requires either snapshot "
                 "reconstruction or L2 fallback with full four-cell "
                 "rerun. Per SPEC §8.2, plausibility arguments are "
                 "insufficient for lineage-gate override.",
-                len(lineage.divergences), len(lineage.results),
+                len(lineage.divergences),
                 lineage.sharpe_tol, lineage.admission_tol,
             )
+            # Status-aware divergence logging: data_lineage_divergence
+            # vs lineage_verification_error have different schemas.
             for d in lineage.divergences:
-                logger.error(
-                    "  divergence[%s]: sharpe_delta=%s "
-                    "admission_delta=%.4f gates=%s",
-                    d["scenario"],
-                    f"{d['sharpe_delta']:.4f}"
-                    if d['sharpe_delta'] is not None else "None/NaN",
-                    d["admission_delta"],
-                    d["gates"],
-                )
+                status = d.get("status", "<unknown>")
+                if status == "data_lineage_divergence":
+                    logger.error(
+                        "  [data_lineage_divergence] scenario=%s "
+                        "sharpe_delta=%s admission_delta=%.4f gates=%s",
+                        d["scenario"],
+                        f"{d['sharpe_delta']:.4f}"
+                        if d['sharpe_delta'] is not None else "None/NaN",
+                        d["admission_delta"],
+                        d["gates"],
+                    )
+                elif status == "lineage_verification_error":
+                    logger.error(
+                        "  [lineage_verification_error] "
+                        "exception_type=%s phase=%s message=%s",
+                        d.get("exception_type"),
+                        d.get("exception_phase"),
+                        d.get("exception_message"),
+                    )
+                else:
+                    logger.error(
+                        "  [%s] %s",
+                        status,
+                        {k: v for k, v in d.items() if k != "status"},
+                    )
 
         # Always proceed to persist LineageStatus to provenance —
         # divergence evidence is governance artifact per SPEC §8.2
