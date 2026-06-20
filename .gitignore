@@ -49,3 +49,15 @@ _v0_1_16_staging/
 # DuckDB and SQLite database files
 *.db
 *.duckdb
+
+# Local scratch (commit message files, dry-run outputs, transient
+# governance artifacts). Files under tmp/ are NOT part of the
+# repository audit trail; they are local working copies. Permanent
+# audit artifacts go to research/r8_phaseN/ instead.
+tmp/
+
+# Local scratch (commit message files, dry-run outputs, transient
+# governance artifacts). Files under tmp/ are NOT part of the
+# repository audit trail; they are local working copies. Permanent
+# audit artifacts go to research/r8_phaseN/ instead.
+tmp/
