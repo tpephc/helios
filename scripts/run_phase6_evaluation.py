@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # scripts/run_phase6_evaluation.py
-"""Phase 6 Exit Policy Evaluation runner — v0.1.4.
+"""Phase 6 Exit Policy Evaluation runner — v0.1.5.
 
 Multi-arm champion-vs-challengers evaluation of four pre-registered
 exit policy candidates (E1 ATR Trailing, E2 MA20 Failure, E3 RS
@@ -64,7 +64,7 @@ between ARM_B and challengers E1-E4, the Phase 6 evaluation:
   - Enforces the 20td hard ceiling uniformly across baseline and all
     candidates (P6-INV-001).
 
-Version: v0.1.4 (2026-06-20)
+Version: v0.1.5 (2026-06-20)
 
 Changelog:
     v0.1.0 — Initial skeleton.
@@ -237,12 +237,55 @@ Changelog:
         bootstrap statistics, WG-1 degenerate equivalence test).
         See research/r8_phase6_wiring_precondition.md v0.1.1 §3 R5
         and Phase 5 caller pattern (run_phase5_analysis.py line 745).
+    v0.1.5 — Step 2 fix (append-only commit on top of v0.1.4
+        post-dry-run-2 diagnosis 2026-06-20):
+        1. NumPy type → Python native cast at provenance boundary
+           (Option C primary fix). All values stored into
+           LineageStatus.results are cast to Python-native types
+           (float, bool, or None) before storage, via two helpers:
+             _py_float(value) — casts numpy.float64 / numpy.int64
+               etc. to Python float; preserves None.
+             _py_bool(value)  — casts numpy.bool_ to Python bool.
+           Rationale: LineageStatus is a governance artifact consumed
+           by emit_provenance and by future readers of
+           provenance.json. It should be a "lingua franca" object
+           expressed in Python-native types, not leaking numpy
+           implementation details from the harness chain.
+           v0.1.4 stored numpy.float64 for sharpe/admission_rate/
+           max_drawdown and numpy.bool_ for gates, causing
+           json.dumps to fall through to _json_default (which did
+           not handle numpy scalars) at the LAST step of a
+           successful dry-run.
+        2. _json_default extended for numpy types (Option A defensive
+           boundary). artifact writer is the last line of defence.
+           If any future LineageStatus producer / CandidateMetrics /
+           GateResult / bootstrap result accidentally retains a
+           numpy scalar, _json_default now converts it cleanly via
+           np.generic.item() instead of raising TypeError. Also
+           handles np.ndarray via tolist(), and normalises NaN → None
+           and ±Infinity → "inf"/"-inf" strings (json.dumps default
+           allow_nan emits invalid JSON tokens; explicit conversion
+           gives strict-JSON output).
+        3. Two new module-level imports:
+             import math   (for math.isnan / math.isinf in serializer)
+             import numpy as np  (for isinstance(np.generic) /
+                                  isinstance(np.ndarray) checks)
+        Boundary: Pure type-system fix at the provenance boundary.
+        No lineage logic change, no main() flow change, no
+        LineageStatus dataclass change, no emit_provenance schema
+        change. Step 2 substantive completion was achieved in v0.1.4
+        (lineage VERIFIED with sharpe Δ=0.000 / admission Δ ≤ 0.003
+        for both scenarios); v0.1.5 fixes the final-yard provenance
+        write failure that produced exit 1 in v0.1.4 dry-run.
+        See research/r8_phase6_wiring_precondition.md v0.1.1 §3 R5
+        and Phase 5 caller pattern.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import math
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
@@ -252,6 +295,7 @@ from pathlib import Path
 from typing import Callable
 
 import duckdb
+import numpy as np
 
 # Helios harness imports (per research/r8_phase6_wiring_precondition.md
 # v0.1.1 §3 R6 persistence-first hierarchy and Cross-cutting Issue 2
@@ -286,7 +330,7 @@ from scripts.run_phase5_analysis import (  # noqa: E402
 # Versioning and provenance
 # =====================================================================
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 RUNNER_NAME = "run_phase6_evaluation"
 
 PHASE_6_SPEC_VERSION = "v0.1.1"
@@ -1117,23 +1161,27 @@ def verify_arm_a_lineage_reference(
 
         results[scenario] = {
             "computed": {
-                "sharpe": c_sharpe,
-                "admission_rate": c_admission,
-                "max_drawdown": c_max_dd,
+                "sharpe": _py_float(c_sharpe),
+                "admission_rate": _py_float(c_admission),
+                "max_drawdown": _py_float(c_max_dd),
             },
             "reference": {
-                "sharpe": r_sharpe,
-                "admission_rate": r_admission,
-                "max_dd": r_max_dd,
+                "sharpe": _py_float(r_sharpe),
+                "admission_rate": _py_float(r_admission),
+                "max_dd": _py_float(r_max_dd),
             },
             "deltas": {
-                "sharpe": sharpe_delta if sharpe_delta != float("inf") else None,
-                "admission_rate": admission_delta,
-                "max_dd": max_dd_delta,
+                "sharpe": (
+                    _py_float(sharpe_delta)
+                    if sharpe_delta != float("inf")
+                    else None
+                ),
+                "admission_rate": _py_float(admission_delta),
+                "max_dd": _py_float(max_dd_delta),
             },
             "gates": {
-                "sharpe_within_tol": sharpe_within,
-                "admission_within_tol": admission_within,
+                "sharpe_within_tol": _py_bool(sharpe_within),
+                "admission_within_tol": _py_bool(admission_within),
             },
         }
 
@@ -1462,6 +1510,30 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(text + "\n", encoding="utf-8")
 
 
+def _py_float(value: object) -> float | None:
+    """Cast numpy scalar / Python numeric to Python-native float.
+
+    Returns None unchanged. Used at the provenance boundary so that
+    LineageStatus.results stores Python-native types rather than
+    numpy implementation types (per v0.1.5 governance fix). NaN is
+    preserved as NaN (caller may convert to None if desired); ±inf
+    is preserved as ±inf.
+    """
+    if value is None:
+        return None
+    return float(value)
+
+
+def _py_bool(value: object) -> bool:
+    """Cast numpy.bool_ / Python truthy to Python-native bool.
+
+    Used at the provenance boundary so that LineageStatus gates
+    sub-dict stores Python bool rather than numpy.bool_, which is
+    not JSON-native in newer numpy releases.
+    """
+    return bool(value)
+
+
 def _json_default(o: object) -> object:
     if isinstance(o, (date, datetime)):
         return o.isoformat()
@@ -1471,6 +1543,19 @@ def _json_default(o: object) -> object:
         return asdict(o)  # type: ignore[arg-type]
     if isinstance(o, Path):
         return str(o)
+    # NumPy types — defensive boundary (Option A per v0.1.5). Primary
+    # casts happen at data construction site (Option C). This branch
+    # ensures any leak still serialises cleanly rather than raising.
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if isinstance(o, np.generic):
+        value = o.item()
+        if isinstance(value, float):
+            if math.isnan(value):
+                return None
+            if math.isinf(value):
+                return "inf" if value > 0 else "-inf"
+        return value
     raise TypeError(f"Cannot serialise {type(o).__name__}")
 
 
