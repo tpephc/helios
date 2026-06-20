@@ -1,0 +1,68 @@
+{
+  "bootstrap_seed": 42,
+  "helios_head_anchor_sha": "edd42b14d1d5f2c858730ee140cbd7b5683b2d0a",
+  "lineage_check": {
+    "anchor_label": "2026-06-08",
+    "divergences": [],
+    "gate_criteria_note": "Lineage gates use sharpe + admission_rate only. max_dd recorded as informational diagnostic, not a gate criterion.",
+    "governance_ref": "research/r8_phase6_wiring_precondition.md v0.1.1 \u00a73 R5",
+    "reference_source": "research/r8_phase5_price_snapshot_refresh_note.md (ARM_A_REFERENCE persisted in scripts.run_phase5_analysis)",
+    "results": {
+      "full_sample": {
+        "computed": {
+          "admission_rate": 0.16,
+          "max_drawdown": 0.216498,
+          "sharpe": 2.49805
+        },
+        "deltas": {
+          "admission_rate": 0.0030000000000000027,
+          "max_dd": 2.000000000002e-06,
+          "sharpe": 4.999999999988347e-05
+        },
+        "gates": {
+          "admission_within_tol": true,
+          "sharpe_within_tol": true
+        },
+        "reference": {
+          "admission_rate": 0.163,
+          "max_dd": 0.2165,
+          "sharpe": 2.498
+        }
+      },
+      "low_uplift": {
+        "computed": {
+          "admission_rate": 0.1751,
+          "max_drawdown": 0.205372,
+          "sharpe": 1.569209
+        },
+        "deltas": {
+          "admission_rate": 0.00010000000000001674,
+          "max_dd": 2.8000000000000247e-05,
+          "sharpe": 0.00020900000000012575
+        },
+        "gates": {
+          "admission_within_tol": true,
+          "sharpe_within_tol": true
+        },
+        "reference": {
+          "admission_rate": 0.175,
+          "max_dd": 0.2054,
+          "sharpe": 1.569
+        }
+      }
+    },
+    "tolerances": {
+      "admission_rate": 0.02,
+      "sharpe": 0.05
+    },
+    "verified": true
+  },
+  "output_dir": "/tmp/phase6_dry_run",
+  "phase_6_spec_path": "research/r8_phase6_spec.md",
+  "phase_6_spec_version": "v0.1.1",
+  "runner": "run_phase6_evaluation",
+  "runner_version": "0.1.5",
+  "runtime_head_sha": "9121e2b743a61bb5d30ca2f5d582a04af1e04464",
+  "sha_matches_anchor": false,
+  "started_at": "2026-06-20T08:38:55.306678+00:00"
+}
