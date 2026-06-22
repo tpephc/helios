@@ -1,0 +1,162 @@
+{
+  "anchor": "r8_phase6_step3g_lu",
+  "block_length": 20,
+  "bootstrap_seed": 42,
+  "candidates": {
+    "arm_b": {
+      "admission_rate": 0.1751,
+      "candidates_count": 1028,
+      "max_dd": 0.17311,
+      "mean_holding_days": 20.0,
+      "scheduled_count": 180,
+      "sharpe": 2.203902
+    },
+    "e1_atr_trailing": {
+      "admission_rate": 0.2442,
+      "bootstrap_ci_025": -1.4846739799727662,
+      "bootstrap_ci_500": -0.7526875109374598,
+      "bootstrap_ci_975": -0.0838734787672476,
+      "bootstrap_n_obs": 454,
+      "bootstrap_n_valid": 5000,
+      "bootstrap_prob_le_0": 0.9862,
+      "candidates_count": 1028,
+      "delta_sharpe_obs": -0.747881021703771,
+      "gates": {
+        "P6-G1": {
+          "delta": -1.0350499999999998,
+          "margin": -0.8850499999999998,
+          "pass": false
+        },
+        "P6-G2": {
+          "delta": -0.03825200000000001,
+          "margin": 0.06825200000000001,
+          "pass": true
+        },
+        "P6-G3": {
+          "delta": 0.0691,
+          "margin": 0.019099999999999992,
+          "pass": true
+        }
+      },
+      "max_dd": 0.134858,
+      "mean_holding_days": 14.0876,
+      "notes": [
+        "Partial gate passage (2/3). Per SPEC \u00a76.3, CHARACTERISED candidates are not Phase 6 deployment candidates."
+      ],
+      "scheduled_count": 251,
+      "sharpe": 1.168852,
+      "verdict": "characterised"
+    },
+    "e2_ma20_failure": {
+      "admission_rate": 0.2461,
+      "bootstrap_ci_025": -2.2351651051407795,
+      "bootstrap_ci_500": -1.4371168890293284,
+      "bootstrap_ci_975": -0.6232965647800938,
+      "bootstrap_n_obs": 454,
+      "bootstrap_n_valid": 5000,
+      "bootstrap_prob_le_0": 0.9998,
+      "candidates_count": 1028,
+      "delta_sharpe_obs": -1.424975456952973,
+      "gates": {
+        "P6-G1": {
+          "delta": -1.8266449999999999,
+          "margin": -1.676645,
+          "pass": false
+        },
+        "P6-G2": {
+          "delta": 0.07049699999999998,
+          "margin": -0.04049699999999998,
+          "pass": false
+        },
+        "P6-G3": {
+          "delta": 0.07100000000000001,
+          "margin": 0.021000000000000005,
+          "pass": true
+        }
+      },
+      "max_dd": 0.243607,
+      "mean_holding_days": 13.9802,
+      "notes": [
+        "Partial gate passage (1/3). Per SPEC \u00a76.3, CHARACTERISED candidates are not Phase 6 deployment candidates."
+      ],
+      "scheduled_count": 253,
+      "sharpe": 0.377257,
+      "verdict": "characterised"
+    },
+    "e3_rs_deterioration": {
+      "admission_rate": 0.214,
+      "bootstrap_ci_025": -1.5516471341093534,
+      "bootstrap_ci_500": -0.7956386270249829,
+      "bootstrap_ci_975": -0.11701077645301997,
+      "bootstrap_n_obs": 454,
+      "bootstrap_n_valid": 5000,
+      "bootstrap_prob_le_0": 0.991,
+      "candidates_count": 1028,
+      "delta_sharpe_obs": -0.7850974516542386,
+      "gates": {
+        "P6-G1": {
+          "delta": -1.0696829999999997,
+          "margin": -0.9196829999999997,
+          "pass": false
+        },
+        "P6-G2": {
+          "delta": -0.004065000000000013,
+          "margin": 0.03406500000000001,
+          "pass": true
+        },
+        "P6-G3": {
+          "delta": 0.03889999999999999,
+          "margin": -0.011100000000000013,
+          "pass": false
+        }
+      },
+      "max_dd": 0.169045,
+      "mean_holding_days": 16.7409,
+      "notes": [
+        "Partial gate passage (1/3). Per SPEC \u00a76.3, CHARACTERISED candidates are not Phase 6 deployment candidates."
+      ],
+      "scheduled_count": 220,
+      "sharpe": 1.134219,
+      "verdict": "characterised"
+    },
+    "e4_donchian": {
+      "admission_rate": 0.1829,
+      "bootstrap_ci_025": -0.9013413581462976,
+      "bootstrap_ci_500": -0.37502308403501206,
+      "bootstrap_ci_975": 0.16875000412095792,
+      "bootstrap_n_obs": 454,
+      "bootstrap_n_valid": 5000,
+      "bootstrap_prob_le_0": 0.917,
+      "candidates_count": 1028,
+      "delta_sharpe_obs": -0.3540716497492633,
+      "gates": {
+        "P6-G1": {
+          "delta": -0.5197419999999997,
+          "margin": -0.3697419999999997,
+          "pass": false
+        },
+        "P6-G2": {
+          "delta": 0.007527999999999979,
+          "margin": 0.02247200000000002,
+          "pass": true
+        },
+        "P6-G3": {
+          "delta": 0.007800000000000001,
+          "margin": -0.0422,
+          "pass": false
+        }
+      },
+      "max_dd": 0.180638,
+      "mean_holding_days": 19.3404,
+      "notes": [
+        "Partial gate passage (1/3). Per SPEC \u00a76.3, CHARACTERISED candidates are not Phase 6 deployment candidates."
+      ],
+      "scheduled_count": 188,
+      "sharpe": 1.68416,
+      "verdict": "characterised"
+    }
+  },
+  "n_bootstrap": 5000,
+  "scenario_end": "2024-12-31",
+  "scenario_start": "2023-01-01"
+}
