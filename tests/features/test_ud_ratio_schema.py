@@ -237,11 +237,14 @@ class TestInputValidation:
 
     # ── happy path: empty panel passes validation ────────────────
 
-    def test_empty_panel_passes_input_validation(self) -> None:
-        """Empty panel has nothing to compute and nothing to validate
-        beyond schema. Phase 1A skips trading-day checks for empty
-        panels (no dates to validate) and proceeds to the
-        NotImplementedError body."""
+    def test_empty_panel_returns_empty_dataframe(self) -> None:
+        """Empty panel passes validation and returns an empty result
+        with the three appended columns present in the schema.
+        Phase 1B: function no longer raises NotImplementedError."""
         df = self._frame([])
-        with pytest.raises(NotImplementedError, match="Phase 1B"):
-            add_ud_ratio_21d(df)
+        out = add_ud_ratio_21d(df)
+        assert out.is_empty()
+        # The three appended columns must be in the output schema
+        # even when the panel is empty.
+        for col in ("ud_ratio_21d", "n_obs_21d", "n_up_21d"):
+            assert col in out.columns
