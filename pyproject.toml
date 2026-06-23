@@ -90,3 +90,6 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --cov=. --cov-report=term-missing"
+markers = [
+    "requires_db: tests that require helios.duckdb (read-only) to be present at data/_storage/helios.duckdb",
+]
