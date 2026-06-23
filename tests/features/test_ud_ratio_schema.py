@@ -235,6 +235,58 @@ class TestInputValidation:
         with pytest.raises(ValueError, match="duplicate"):
             add_ud_ratio_21d(df)
 
+    # ── (3b) shuffled multi-stock panel rejected ─────────────────
+
+    def test_shuffled_multi_stock_panel_rejected(self) -> None:
+        """A shuffled multi-stock panel must be rejected.
+
+        Stronger coverage than test_unsorted_by_date_rejected and
+        test_unsorted_by_stock_id_rejected (which use minimal 2-row
+        fixtures): this exercises a larger multi-stock panel that
+        more closely resembles production input shape.
+
+        Migrated from Phase 1C TestPIT2Determinism (where it was
+        tautological as a determinism check); it is correctly
+        classified as an input-contract test.
+        """
+        from datetime import timedelta
+
+        # Build 3 stocks x 10 consecutive weekday rows each.
+        # Weekday-only dates are sufficient here because the sort
+        # check fires BEFORE calendar validation; the rejection
+        # path is reached without any trading-day lookup.
+        rows: list[dict] = []
+        d0 = date(2026, 6, 22)
+        for ticker in ("AAA", "BBB", "CCC"):
+            collected: list[date] = []
+            cur = d0
+            while len(collected) < 10:
+                if cur.weekday() < 5:
+                    collected.append(cur)
+                cur = cur + timedelta(days=1)
+            for d in collected:
+                rows.append(
+                    {"stock_id": ticker, "date": d, "adj_close": 100.0}
+                )
+
+        df_sorted = self._frame(rows).sort(["stock_id", "date"])
+
+        # Use df.reverse() rather than df.sample(): in Polars 1.41.x,
+        # sample(n=height, with_replacement=False) and
+        # sample(fraction=1.0, shuffle=True, seed=...) can return rows
+        # in original order for specific size/seed combinations.
+        # Reverse is deterministic, guaranteed-non-trivial, and
+        # version-independent.
+        df_unsorted = df_sorted.reverse()
+
+        # Sanity: reversed really differs from sorted.
+        assert not df_unsorted.select(["stock_id", "date"]).equals(
+            df_sorted.select(["stock_id", "date"])
+        )
+
+        with pytest.raises(ValueError, match="sorted ascending"):
+            add_ud_ratio_21d(df_unsorted)
+
     # ── happy path: empty panel passes validation ────────────────
 
     def test_empty_panel_returns_empty_dataframe(self) -> None:

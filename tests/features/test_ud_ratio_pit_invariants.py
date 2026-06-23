@@ -53,6 +53,15 @@ def _trading_dates_ending(end: date, n_rows: int) -> list[date]:
     guaranteed to be on actual trading days (no weekends, no Taiwan
     public holidays, no typhoon closures). Spec §13.1.
 
+    Maintenance note:
+        The 90-calendar-day fixture buffer is INTENTIONALLY INDEPENDENT
+        from WINDOW_LOOKBACK_BUFFER_DAYS (= 45), which belongs to
+        production window construction (features/ud_ratio.py §12.3).
+        The fixture uses a wider buffer to avoid holiday-cluster
+        fragility while remaining deterministic. Do NOT unify the two
+        constants — they serve different layers with different
+        robustness requirements.
+
     Args:
         end: latest trading day (must be a trading day per the
              calendar; otherwise get_trading_days will not include
@@ -502,3 +511,273 @@ class TestPIT9MinObsParameter:
             add_ud_ratio_21d(df, 12)  # type: ignore[misc]
         out = add_ud_ratio_21d(df, min_obs=12)
         assert out.height == df.height
+
+
+# ── PIT-1 — Lookahead protection (Phase 1C) ─────────────────────────
+
+
+class TestPIT1LookaheadProtection:
+    """Spec §4.5: for any output row at (stock_id=i, date=t), only
+    data with timestamp <= t close is used. Future rows must NOT
+    influence past rows.
+
+    Test design (per Phase 1C Lock 1 sign-off):
+        Baseline output computed on a synthetic panel.
+        Future-row mutation: a row at index N+1 has its adj_close
+        replaced with an extreme value (or None). Re-compute.
+        Output rows 0..N MUST be bit-identical between baseline and
+        mutated runs.
+
+        Rationale: if the rolling window leaks future data into a
+        past row's computation, the past row's (n_obs_21d, n_up_21d,
+        ud_ratio_21d) would change after the future mutation.
+    """
+
+    def _build_full_panel(self) -> pl.DataFrame:
+        """30 valid returns, ending at _END. Mix of up/down for
+        non-trivial ud_ratio values across the panel."""
+        # Pattern designed so several rows in the middle have full
+        # 21-trading-day windows and non-degenerate ratios.
+        returns = (
+            [+0.01] * 8
+            + [-0.01] * 4
+            + [+0.01] * 6
+            + [-0.01] * 5
+            + [+0.01] * 7
+        )
+        assert len(returns) == 30
+        return _build_panel_ending("A", _END, returns)
+
+    def _assert_prefix_equal(
+        self,
+        baseline: pl.DataFrame,
+        mutated: pl.DataFrame,
+        n_prefix: int,
+    ) -> None:
+        """Assert baseline[:n_prefix] equals mutated[:n_prefix]
+        on all three appended columns."""
+        b_head = baseline.head(n_prefix)
+        m_head = mutated.head(n_prefix)
+        # Compare schema explicitly
+        assert b_head.schema == m_head.schema
+        # Use Polars row-wise equality on the panel including
+        # appended columns
+        for col in ("ud_ratio_21d", "n_obs_21d", "n_up_21d"):
+            assert b_head[col].equals(m_head[col]), (
+                f"Lookahead detected: column {col!r} differs in "
+                f"rows 0..{n_prefix - 1} after mutating a future row. "
+                f"baseline={b_head[col].to_list()}, "
+                f"mutated={m_head[col].to_list()}"
+            )
+
+    def test_future_extreme_value_does_not_affect_past_rows(self) -> None:
+        baseline_df = self._build_full_panel()
+        baseline_out = add_ud_ratio_21d(baseline_df)
+
+        # Mutate row at index 25 (a "future" row relative to row 24)
+        mutation_idx = 25
+        closes = baseline_df["adj_close"].to_list()
+        closes[mutation_idx] = 1.0e6  # Extreme upward jump
+        mutated_df = baseline_df.with_columns(
+            pl.Series("adj_close", closes, dtype=pl.Float64)
+        )
+        mutated_out = add_ud_ratio_21d(mutated_df)
+
+        # All rows BEFORE the mutation must be bit-identical
+        self._assert_prefix_equal(baseline_out, mutated_out, mutation_idx)
+
+    def test_future_null_does_not_affect_past_rows(self) -> None:
+        baseline_df = self._build_full_panel()
+        baseline_out = add_ud_ratio_21d(baseline_df)
+
+        mutation_idx = 25
+        closes = baseline_df["adj_close"].to_list()
+        closes[mutation_idx] = None
+        mutated_df = baseline_df.with_columns(
+            pl.Series("adj_close", closes, dtype=pl.Float64)
+        )
+        mutated_out = add_ud_ratio_21d(mutated_df)
+
+        self._assert_prefix_equal(baseline_out, mutated_out, mutation_idx)
+
+    def test_future_negative_sentinel_does_not_affect_past_rows(self) -> None:
+        """adj_close <= 0 invalidates the return. Past rows still
+        must not change."""
+        baseline_df = self._build_full_panel()
+        baseline_out = add_ud_ratio_21d(baseline_df)
+
+        mutation_idx = 25
+        closes = baseline_df["adj_close"].to_list()
+        closes[mutation_idx] = -1.0  # Invalidates per §4.2
+        mutated_df = baseline_df.with_columns(
+            pl.Series("adj_close", closes, dtype=pl.Float64)
+        )
+        mutated_out = add_ud_ratio_21d(mutated_df)
+
+        self._assert_prefix_equal(baseline_out, mutated_out, mutation_idx)
+
+
+# ── PIT-2 — Determinism (Phase 1C) ──────────────────────────────────
+
+
+class TestPIT2Determinism:
+    """Spec §13.1: synthetic fixtures and feature outputs must be
+    bit-exact reproducible.
+
+    Test design (per Phase 1C Lock 2 sign-off, with subsequent
+    re-scoping):
+        (a) Same input repeated 5 times -> all outputs exactly equal
+        (b) Polars DataFrame.equals on full output
+
+    Note on scope: an earlier draft included a third test
+    "shuffled input then re-sorted -> identical output". That test
+    was tautological (input equality implies output equality) AND
+    addressed a different invariant (input contract, not
+    determinism). The input-contract invariant is now covered by
+    TestInputValidation.test_shuffled_multi_stock_panel_rejected
+    in tests/features/test_ud_ratio_schema.py.
+
+    Cross-process determinism is NOT tested here (deferred to
+    PIT-10 SQL parity in Phase 1D). Rationale: ud_ratio_21d has no
+    randomness, no time dependency, no IO side effect; cross-process
+    drift is not a feature-layer concern.
+    """
+
+    def _build_multi_stock_panel(self) -> pl.DataFrame:
+        """3 stocks x 30 days, mixed returns, some NaN injection."""
+        frames: list[pl.DataFrame] = []
+        for ticker, pattern in [
+            ("A", [+0.01] * 15 + [-0.01] * 15),
+            ("B", [-0.005, +0.02, 0.0, +0.01, -0.005] * 6),
+            ("C", [+0.01] * 10 + [None] + [-0.01] * 9 + [+0.005] * 10),
+        ]:
+            assert len(pattern) == 30
+            frames.append(_build_panel_ending(ticker, _END, pattern))
+        return pl.concat(frames).sort(["stock_id", "date"])
+
+    def test_repeated_runs_yield_identical_output(self) -> None:
+        df = self._build_multi_stock_panel()
+        outputs = [add_ud_ratio_21d(df) for _ in range(5)]
+
+        first = outputs[0]
+        for i, other in enumerate(outputs[1:], start=1):
+            assert first.equals(other), (
+                f"Run {i} differs from run 0 — non-determinism detected"
+            )
+
+    def test_full_output_equality_via_polars_equals(self) -> None:
+        df = self._build_multi_stock_panel()
+        out1 = add_ud_ratio_21d(df)
+        out2 = add_ud_ratio_21d(df)
+        assert out1.equals(out2)
+        # Schema equality is a separate stronger check (equals() also
+        # requires schema match, but be explicit)
+        assert out1.schema == out2.schema
+
+
+# ── PIT-11 — Forbidden imports (Phase 1C) ───────────────────────────
+
+
+class TestPIT11ForbiddenImports:
+    """Spec §12.4: features/ud_ratio.py MUST NOT import
+    utils.trading_calendar or utils.trading_dates.
+
+    Enforcement via AST source inspection (NOT runtime sys.modules),
+    because:
+    - Runtime sys.modules contains transitive imports (a forbidden
+      module could be present because something else imports it),
+      yielding false positives.
+    - We want to assert what THE SOURCE FILE itself declares as its
+      direct imports, which is the contract spec §12.4 enforces.
+
+    Bonus positive lineage assertion: market.trading_calendar IS
+    imported (the canonical source).
+    """
+
+    FORBIDDEN_MODULES: frozenset[str] = frozenset({
+        "utils.trading_calendar",
+        "utils.trading_dates",
+    })
+
+    REQUIRED_MODULES: frozenset[str] = frozenset({
+        "market.trading_calendar",
+    })
+
+    def _collect_imports(self, source_path: str) -> set[str]:
+        """Parse source file and return the set of fully-qualified
+        module names that appear in `import` and `from ... import`
+        statements.
+
+        For `from a.b import c, d`, this collects "a.b" (the module
+        being imported FROM), not "a.b.c"/"a.b.d" (the names imported).
+        """
+        import ast
+        from pathlib import Path
+
+        source = Path(source_path).read_text()
+        tree = ast.parse(source)
+
+        modules: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                # `import x` or `import x.y`
+                for alias in node.names:
+                    modules.add(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                # `from x.y import a` -> module is "x.y"
+                # node.module is None for relative imports like
+                # `from . import foo`; that's not a forbidden case here.
+                if node.module is not None:
+                    modules.add(node.module)
+        return modules
+
+    def _resolve_source_path(self) -> str:
+        """Locate features/ud_ratio.py via the imported module."""
+        import features.ud_ratio as ur_mod
+        path = ur_mod.__file__
+        assert path is not None, "features.ud_ratio has no __file__"
+        return path
+
+    def test_no_forbidden_imports(self) -> None:
+        path = self._resolve_source_path()
+        imports = self._collect_imports(path)
+        offenders = self.FORBIDDEN_MODULES & imports
+        assert not offenders, (
+            f"features/ud_ratio.py imports forbidden module(s) "
+            f"{sorted(offenders)}. Spec §12.4: utils.trading_calendar "
+            f"and utils.trading_dates are forbidden; use "
+            f"market.trading_calendar instead."
+        )
+
+    def test_canonical_calendar_module_is_imported(self) -> None:
+        """Positive lineage check: the canonical calendar source
+        IS what the feature uses."""
+        path = self._resolve_source_path()
+        imports = self._collect_imports(path)
+        missing = self.REQUIRED_MODULES - imports
+        assert not missing, (
+            f"features/ud_ratio.py is missing required import(s) "
+            f"{sorted(missing)}. Spec §12.1 requires "
+            f"market.trading_calendar as the canonical source."
+        )
+
+    def test_ast_collector_handles_both_import_styles(self) -> None:
+        """Sanity check on the collector itself: a fixture string
+        containing both styles must produce the expected set."""
+        import ast
+        sample = (
+            "import os\n"
+            "import polars as pl\n"
+            "from datetime import date, timedelta\n"
+            "from market.trading_calendar import is_trading_day\n"
+        )
+        tree = ast.parse(sample)
+        modules: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    modules.add(alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module is not None:
+                    modules.add(node.module)
+        assert modules == {"os", "polars", "datetime", "market.trading_calendar"}
