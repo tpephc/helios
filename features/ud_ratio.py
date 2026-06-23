@@ -1,52 +1,202 @@
 # features/ud_ratio.py
-"""21D Up/Down Ratio — v0.1.4. Module skeleton (Phase B; Step 1 pending).
+"""21D Up/Down Ratio — v0.1.4. Phase 1A: entry-point validation only.
 
-DataFrame-native feature aligned with the features/* subsystem
-convention (panel-in, panel-out, pure function, Polars-native,
-LazyFrame-compatible).
+Phase 1A scope:
+    - Input contract validation (_validate_input)
+    - Window-end trading-day guard (_validate_window_calendar)
+    - K=45 lookback + len(all_td) >= WINDOW guard (_derive_window_dates)
+    - All guards execute before raising NotImplementedError for the
+      computation body, which is deferred to Phase 1B.
 
-This module currently exposes only:
-    - Module constants (MIN_OBS, WINDOW, FEATURE_ID, SPEC_VERSION,
-      WINDOW_LOOKBACK_BUFFER_DAYS)
-    - The public API signature for add_ud_ratio_21d
-
-The function body is intentionally unimplemented in Phase B. Step 1
-will fill in the computation under the contracts locked in
-docs/features/ud_ratio_21d_spec.md (v0.1.4).
+The function shape is locked at v0.1.4: DataFrame-native, panel-in,
+panel-out (when fully implemented). The validation layer is the
+boundary between "this call is well-formed" and "this call should
+produce a result". Phase 1A delivers the former.
 
 Spec reference: docs/features/ud_ratio_21d_spec.md (v0.1.4)
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import polars as pl
+
+from market.trading_calendar import get_trading_days, is_trading_day
 
 
 # ── Module constants (locked in spec v0.1.4) ─────────────────────────
 
-# Minimum number of valid daily-return observations required within
-# the 21-trading-day window for ud_ratio_21d to be non-null.
-# Spec §4.3. Heuristic, NOT empirically optimized.
 MIN_OBS: int = 15
-
-# Trailing window length in TRADING days (not calendar days).
-# Spec §3.1, §4.3. Locked.
 WINDOW: int = 21
-
-# Canonical feature identifier used by downstream consumers and
-# governance artefacts. Spec §5.1.
 FEATURE_ID: str = "ud_ratio_21d"
-
-# Spec version this module implements against. Bumped in lockstep
-# with docs/features/ud_ratio_21d_spec.md version history (§9).
 SPEC_VERSION: str = "v0.1.4"
-
-# Calendar-day buffer used by the window-construction algorithm.
-# Mechanical bound (not a research threshold) chosen so that
-# get_trading_days(t - K calendar days, t) reliably returns >= WINDOW
-# trading days even across Taiwan's longest holiday clusters.
-# Spec §12.3. Runtime guard inside add_ud_ratio_21d asserts the
-# returned length >= WINDOW and raises ValueError on regression.
 WINDOW_LOOKBACK_BUFFER_DAYS: int = 45
+
+
+# Required input column names with their canonical Polars dtypes.
+# Spec §5.1.
+_REQUIRED_INPUT_SCHEMA: dict[str, pl.DataType] = {
+    "stock_id":  pl.Utf8,
+    "date":      pl.Date,
+    "adj_close": pl.Float64,
+}
+
+
+# ── Input validation ──────────────────────────────────────────────────
+
+def _validate_input(df: pl.DataFrame) -> None:
+    """Validate the input DataFrame against the spec §5.1 contract.
+
+    Checks (Phase 1A scope per GATE-S1-IMPL-001 Q3):
+        1. Required columns present:  stock_id, date, adj_close
+        2. Dtypes exact:              Utf8, Date, Float64
+                                      (Float32 explicitly rejected
+                                      to avoid precision drift)
+        3. Sorted ascending by (stock_id, date)
+        4. No duplicate (stock_id, date) rows
+           (panel contract; required for unambiguous rolling-window
+           semantics)
+
+    The function is intentionally narrow: it does NOT check
+    adj_close > 0 (that is a row-level validity predicate inside the
+    canonical SQL recipe per spec §4.2), and does NOT check that
+    every date is a trading day (spec §12.2 narrows this to
+    window_end dates only).
+
+    Raises:
+        ValueError: on any of the four checks failing. Error messages
+                    identify which check and where (column names,
+                    first-offending row indices) so failures are
+                    diagnosable without re-running.
+    """
+    # 1. Required columns
+    missing = set(_REQUIRED_INPUT_SCHEMA) - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"add_ud_ratio_21d: input is missing required columns "
+            f"{sorted(missing)}; got columns {df.columns}"
+        )
+
+    # 2. Dtype exact match
+    actual_schema = dict(df.schema)
+    for col, expected_dtype in _REQUIRED_INPUT_SCHEMA.items():
+        actual = actual_schema[col]
+        if actual != expected_dtype:
+            raise ValueError(
+                f"add_ud_ratio_21d: column '{col}' has dtype "
+                f"{actual!r}, expected {expected_dtype!r}. "
+                f"Float32 / int variants are intentionally rejected "
+                f"to avoid precision drift in the daily-return "
+                f"computation."
+            )
+
+    # Empty panel is structurally valid (no rows to validate further)
+    if df.is_empty():
+        return
+
+    # 3. Sorted ascending by (stock_id, date)
+    sorted_df = df.sort(["stock_id", "date"])
+    if not df["stock_id"].equals(sorted_df["stock_id"]) or not df["date"].equals(
+        sorted_df["date"]
+    ):
+        raise ValueError(
+            "add_ud_ratio_21d: input is not sorted ascending by "
+            "(stock_id, date). Pre-sort with df.sort(['stock_id', "
+            "'date']) before calling."
+        )
+
+    # 4. No duplicate (stock_id, date)
+    n_total = df.height
+    n_unique = df.select(["stock_id", "date"]).unique().height
+    if n_unique != n_total:
+        n_dupes = n_total - n_unique
+        raise ValueError(
+            f"add_ud_ratio_21d: input contains {n_dupes} duplicate "
+            f"(stock_id, date) row(s). The panel contract requires "
+            f"exactly one row per (stock_id, date); duplicates would "
+            f"produce ambiguous rolling-window semantics."
+        )
+
+
+# ── Window calendar validation ────────────────────────────────────────
+
+def _validate_window_calendar(window_end: date) -> None:
+    """Spec §12.2: a date used as window_end must be a trading day.
+
+    Scope intentionally narrowed (vs every input row) per Edit A in
+    v0.1.4: the feature layer's responsibility is to validate
+    computation windows, not the entire dataset.
+
+    Raises:
+        ValueError: window_end is not a trading day per
+                    market.trading_calendar.is_trading_day.
+    """
+    if not is_trading_day(window_end):
+        raise ValueError(
+            f"add_ud_ratio_21d: date {window_end} is not a trading "
+            f"day (weekend, public holiday, or market closure). "
+            f"Per spec §12.2, dates used as window_end must be "
+            f"trading days."
+        )
+
+
+# ── Window date derivation ────────────────────────────────────────────
+
+def _derive_window_dates(window_end: date) -> list[date]:
+    """Derive the 21 trading days ending at window_end.
+
+    Spec §12.3 algorithm:
+        1. Look back K = WINDOW_LOOKBACK_BUFFER_DAYS (= 45) calendar days
+        2. Collect all trading days in
+           [window_end - K calendar days, window_end]
+        3. Fail-fast if fewer than WINDOW (= 21) trading days returned
+           (calendar regression or unusual holiday cluster)
+        4. Return the most recent WINDOW trading days
+
+    The fail-fast in step 3 is what guards against silent short-window
+    results if K is ever insufficient for an unusual holiday cluster.
+
+    Args:
+        window_end: trading-day end of the rolling window. Caller is
+                    responsible for calling _validate_window_calendar
+                    first; this function does NOT re-check.
+
+    Returns:
+        Exactly WINDOW = 21 trading days in ascending order, with
+        window[-1] == window_end.
+
+    Raises:
+        ValueError: the trading calendar returned fewer than WINDOW
+                    days within the buffer window. The error message
+                    includes the calendar interval and the count so
+                    operators can diagnose calendar regressions.
+    """
+    look_back_start = window_end - timedelta(days=WINDOW_LOOKBACK_BUFFER_DAYS)
+    all_td = get_trading_days(look_back_start, window_end)
+
+    if len(all_td) < WINDOW:
+        raise ValueError(
+            f"add_ud_ratio_21d: trading-day calendar returned "
+            f"{len(all_td)} days in [{look_back_start}, {window_end}], "
+            f"need >= {WINDOW}. Possible causes: extended holiday "
+            f"cluster, calendar regression, or "
+            f"WINDOW_LOOKBACK_BUFFER_DAYS (= {WINDOW_LOOKBACK_BUFFER_DAYS}) "
+            f"is too narrow. Investigate before adjusting the buffer."
+        )
+
+    # Defensive: the calendar should always return window_end as the
+    # last element when it is a trading day. If the calendar contract
+    # ever changes, fail loudly rather than silently producing a
+    # misaligned window.
+    if all_td[-1] != window_end:
+        raise RuntimeError(
+            f"add_ud_ratio_21d: internal consistency failure — "
+            f"trading-day calendar returned last day {all_td[-1]}, "
+            f"expected {window_end}. This indicates a calendar "
+            f"contract violation in market.trading_calendar."
+        )
+
+    return all_td[-WINDOW:]
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -58,87 +208,34 @@ def add_ud_ratio_21d(
 ) -> pl.DataFrame:
     """Append ud_ratio_21d, n_obs_21d, n_up_21d columns to a panel.
 
-    Sign-frequency persistence feature: fraction of valid trading days
-    within the trailing 21-trading-day window on which the daily simple
-    return on adjusted close was strictly positive.
+    See docs/features/ud_ratio_21d_spec.md (v0.1.4) for the full
+    contract. Phase 1A status: entry-point validation only. The
+    computation body is delivered in Phase 1B.
 
-    Input contract
-    --------------
-    df : pl.DataFrame
-        Panel with at least:
-            stock_id  (Utf8)
-            date      (Date)
-            adj_close (Float64)
-        Sorted ascending by (stock_id, date). One row per
-        (stock_id, date) trading-day observation. adj_close sourced
-        from listed_market_daily_price_adj (spec §4.4). Direct
-        queries against daily_price_adj are FORBIDDEN.
-
-    min_obs : int
-        Minimum |S_{i,t}| required for ud_ratio_21d to be non-null.
-        Defaults to MIN_OBS (= 15). Exposed for Step 2 sensitivity
-        testing in {12, 15, 18}; do NOT mutate the module-level
-        constant.
-
-    Output contract
-    ---------------
-    pl.DataFrame
-        Input columns preserved with three appended columns:
-
-            ud_ratio_21d : Float64
-                Ratio in [0.0, 1.0] when n_obs_21d >= min_obs,
-                else null.
-            n_obs_21d : UInt8
-                Number of valid return days in the 21d window.
-                Range [0, 21].
-            n_up_21d : UInt8
-                Number of strictly-positive return days.
-                Range [0, n_obs_21d] per row.
-
-    Row-level invariants (spec §5.3)
-    --------------------------------
-    I1  0 <= n_up_21d <= n_obs_21d <= 21
-    I2  ud_ratio_21d in [0.0, 1.0]  OR  null
-    I3  ud_ratio_21d is null  iff  n_obs_21d < min_obs
-    I4  if ud_ratio_21d is not null:
-            |ud_ratio_21d - n_up_21d / n_obs_21d| < 1e-12
-
-    Lineage
-    -------
-    Daily simple returns computed via the canonical R8/Phase 1–6 recipe
-    (spec §4.1). Lineage equivalence enforced by PIT-10 (bit-exact
-    parity with research/r8_event_builder.py price_panel CTE).
-
-    Trading calendar
-    ----------------
-    Uses market.trading_calendar (>= v0.2.0). Forbidden imports:
-    utils.trading_calendar, utils.trading_dates (spec §12.4).
-
-    Raises
-    ------
-    ValueError
-        Input contract violation: missing columns, wrong dtypes, or
-        unsorted panel.
-    ValueError
-        A date used as window_end is not a trading day (spec §12.2).
-        Scope is intentionally narrowed: only rows that participate
-        as window_end in computation are validated. Rows that do not
-        participate (e.g. insufficient lookback) need not be trading
-        days.
-    ValueError
-        Calendar regression: get_trading_days returned fewer than
-        WINDOW (= 21) trading days within
-        [date - WINDOW_LOOKBACK_BUFFER_DAYS, date] (spec §12.3).
-    NotImplementedError
-        Phase B placeholder. Step 1 implementation pending.
-
-    Notes
-    -----
-    Phase B status: signature and constants are locked. Body is
-    NotImplementedError until Step 1 PR lands the computation +
-    PIT-1..13 tests.
+    Raises:
+        ValueError: input contract violation (missing columns, wrong
+                    dtypes, unsorted, duplicate rows).
+        ValueError: a date used as window_end is not a trading day.
+        ValueError: trading-day calendar returned fewer than WINDOW
+                    days within the lookback buffer.
+        NotImplementedError: Phase 1B body not yet implemented.
     """
+    _validate_input(df)
+
+    # Phase 1A: validate window-end / calendar for each unique date
+    # in the panel. Phase 1B may refine the set of "window_end" dates
+    # (e.g. exclude rows that won't be computed due to insufficient
+    # history); for now we validate ALL unique dates as a strict
+    # upper bound. This is intentionally stricter than the eventual
+    # behaviour and ensures Phase 1A test fixtures are clean.
+    if not df.is_empty():
+        unique_dates = df["date"].unique().sort().to_list()
+        for window_end in unique_dates:
+            _validate_window_calendar(window_end)
+            _derive_window_dates(window_end)
+
     raise NotImplementedError(
-        "add_ud_ratio_21d is a Phase B skeleton. Step 1 implementation "
-        "pending. See docs/features/ud_ratio_21d_spec.md (v0.1.4)."
+        "add_ud_ratio_21d: Phase 1A delivers entry-point validation "
+        "only. Computation body (Phase 1B) is pending. See "
+        "docs/features/ud_ratio_21d_spec.md (v0.1.4)."
     )

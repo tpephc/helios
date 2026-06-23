@@ -1,16 +1,23 @@
 # tests/features/test_ud_ratio_schema.py
-"""Schema tests for ud_ratio_21d — v0.1.4 (Phase B scope).
+"""Schema tests for ud_ratio_21d — v0.1.4 (Phase 1A).
 
-Asserts module constants and public API signature for
-features.ud_ratio. Row-level invariants on actual output are
-deferred to Step 1 PR (alongside the implementation), per
-GATE-S1-IMPL-001 / spec §8.
+Asserts module constants, public API signature, and input contract
+validation for features.ud_ratio.
+
+Phase B (committed): TestConstants, TestPublicAPISignature,
+                     TestPhaseBPlaceholder (the last now removed
+                     since Phase 1A delivers entry-point validation
+                     before the NotImplementedError body).
+Phase 1A (this file): TestInputValidation added.
+PIT calendar/window tests live in
+    tests/features/test_ud_ratio_pit_invariants.py.
 
 Spec reference: docs/features/ud_ratio_21d_spec.md (v0.1.4)
 """
 from __future__ import annotations
 
 import inspect
+from datetime import date
 from typing import get_type_hints
 
 import polars as pl
@@ -28,6 +35,7 @@ from features.ud_ratio import (
 
 # ── Module-level constants ────────────────────────────────────────────
 
+
 class TestConstants:
     """Spec-locked constants must match v0.1.4 exactly."""
 
@@ -44,22 +52,17 @@ class TestConstants:
         assert SPEC_VERSION == "v0.1.4"
 
     def test_window_lookback_buffer_locked(self) -> None:
-        # Mechanical bound (spec §12.3); not a research threshold.
         assert WINDOW_LOOKBACK_BUFFER_DAYS == 45
 
     def test_min_obs_le_window(self) -> None:
-        # Structural sanity: min_obs must not exceed window.
         assert MIN_OBS <= WINDOW
 
     def test_window_lookback_buffer_exceeds_window(self) -> None:
-        # The buffer must comfortably exceed WINDOW in calendar days.
-        # Taiwan's longest holiday cluster yields ~10 non-trading days;
-        # 45 calendar days provides ~30+ trading days. Strict
-        # `>` here catches accidental equality.
         assert WINDOW_LOOKBACK_BUFFER_DAYS > WINDOW
 
 
 # ── Public API signature ──────────────────────────────────────────────
+
 
 class TestPublicAPISignature:
     """add_ud_ratio_21d signature must match the locked contract."""
@@ -71,34 +74,24 @@ class TestPublicAPISignature:
         sig = inspect.signature(add_ud_ratio_21d)
         params = sig.parameters
 
-        # df is positional-or-keyword
         assert "df" in params
         df_param = params["df"]
         assert df_param.kind in (
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             inspect.Parameter.POSITIONAL_ONLY,
         )
-        assert df_param.default is inspect.Parameter.empty, (
-            "df must be a required parameter (no default)"
-        )
+        assert df_param.default is inspect.Parameter.empty
 
-        # min_obs is keyword-only with default == MIN_OBS
         assert "min_obs" in params
         min_obs_param = params["min_obs"]
-        assert min_obs_param.kind == inspect.Parameter.KEYWORD_ONLY, (
-            "min_obs must be keyword-only (after `*`)"
-        )
+        assert min_obs_param.kind == inspect.Parameter.KEYWORD_ONLY
         assert min_obs_param.default == MIN_OBS
 
     def test_only_expected_parameters(self) -> None:
-        # Lock the parameter set: any new public parameter requires
-        # a spec change, not a silent API drift.
         sig = inspect.signature(add_ud_ratio_21d)
         assert set(sig.parameters.keys()) == {"df", "min_obs"}
 
     def test_return_annotation_is_polars_dataframe(self) -> None:
-        # Use get_type_hints to resolve PEP 563 string annotations
-        # (the module uses `from __future__ import annotations`).
         hints = get_type_hints(add_ud_ratio_21d)
         assert hints.get("return") is pl.DataFrame
 
@@ -111,26 +104,144 @@ class TestPublicAPISignature:
         assert hints.get("df") is pl.DataFrame
 
 
-# ── Phase B placeholder behaviour ────────────────────────────────────
+# ── Input validation (Phase 1A) ───────────────────────────────────────
 
-class TestPhaseBPlaceholder:
-    """While Step 1 is pending, the function must raise
-    NotImplementedError. When Step 1 lands and implementation
-    replaces the placeholder, this test will start FAILING — that
-    failure is the signal to remove this test (or replace it with
-    real behavioural tests under tests/features/test_ud_ratio_*).
+
+class TestInputValidation:
+    """Spec §5.1 input contract enforcement.
+
+    Phase 1A scope (per GATE-S1-IMPL-001 Q3):
+        1. Required columns present
+        2. Dtypes exact (Utf8, Date, Float64; Float32 rejected)
+        3. Sorted ascending by (stock_id, date)
+        4. No duplicate (stock_id, date)
     """
 
-    def test_raises_not_implemented(self) -> None:
-        # Minimal valid-shape input so we get past any input-validation
-        # that Step 1 may add before raising NotImplementedError.
-        # Phase B body raises immediately regardless of input.
-        df = pl.DataFrame(
+    def _row(self, ticker: str, d: date, close: float) -> dict:
+        return {"stock_id": ticker, "date": d, "adj_close": close}
+
+    def _frame(self, rows: list[dict]) -> pl.DataFrame:
+        return pl.DataFrame(
+            rows,
             schema={
-                "stock_id": pl.Utf8,
-                "date": pl.Date,
+                "stock_id":  pl.Utf8,
+                "date":      pl.Date,
                 "adj_close": pl.Float64,
-            }
+            },
         )
-        with pytest.raises(NotImplementedError, match="Phase B skeleton"):
+
+    # ── (1) required columns ──────────────────────────────────────
+
+    def test_missing_stock_id_rejected(self) -> None:
+        df = pl.DataFrame(
+            {"date": [date(2026, 6, 22)], "adj_close": [100.0]},
+            schema={"date": pl.Date, "adj_close": pl.Float64},
+        )
+        with pytest.raises(ValueError, match="missing required columns"):
+            add_ud_ratio_21d(df)
+
+    def test_missing_date_rejected(self) -> None:
+        df = pl.DataFrame(
+            {"stock_id": ["2330"], "adj_close": [100.0]},
+            schema={"stock_id": pl.Utf8, "adj_close": pl.Float64},
+        )
+        with pytest.raises(ValueError, match="missing required columns"):
+            add_ud_ratio_21d(df)
+
+    def test_missing_adj_close_rejected(self) -> None:
+        df = pl.DataFrame(
+            {"stock_id": ["2330"], "date": [date(2026, 6, 22)]},
+            schema={"stock_id": pl.Utf8, "date": pl.Date},
+        )
+        with pytest.raises(ValueError, match="missing required columns"):
+            add_ud_ratio_21d(df)
+
+    # ── (2) dtype enforcement ─────────────────────────────────────
+
+    def test_float32_adj_close_rejected(self) -> None:
+        df = pl.DataFrame(
+            {
+                "stock_id":  ["2330"],
+                "date":      [date(2026, 6, 22)],
+                "adj_close": [100.0],
+            },
+            schema={
+                "stock_id":  pl.Utf8,
+                "date":      pl.Date,
+                "adj_close": pl.Float32,  # WRONG
+            },
+        )
+        with pytest.raises(ValueError, match="adj_close.*Float32"):
+            add_ud_ratio_21d(df)
+
+    def test_int_adj_close_rejected(self) -> None:
+        df = pl.DataFrame(
+            {
+                "stock_id":  ["2330"],
+                "date":      [date(2026, 6, 22)],
+                "adj_close": [100],
+            },
+            schema={
+                "stock_id":  pl.Utf8,
+                "date":      pl.Date,
+                "adj_close": pl.Int64,  # WRONG
+            },
+        )
+        with pytest.raises(ValueError, match="adj_close"):
+            add_ud_ratio_21d(df)
+
+    def test_datetime_date_column_rejected(self) -> None:
+        # Date column must be pl.Date, not pl.Datetime
+        df = pl.DataFrame(
+            {
+                "stock_id":  ["2330"],
+                "date":      [date(2026, 6, 22)],
+                "adj_close": [100.0],
+            },
+            schema={
+                "stock_id":  pl.Utf8,
+                "date":      pl.Datetime,  # WRONG
+                "adj_close": pl.Float64,
+            },
+        )
+        with pytest.raises(ValueError, match="date.*Datetime"):
+            add_ud_ratio_21d(df)
+
+    # ── (3) sort order ────────────────────────────────────────────
+
+    def test_unsorted_by_date_rejected(self) -> None:
+        df = self._frame([
+            self._row("2330", date(2026, 6, 22), 100.0),
+            self._row("2330", date(2026, 6, 20), 99.0),  # earlier date AFTER later
+        ])
+        with pytest.raises(ValueError, match="sorted ascending"):
+            add_ud_ratio_21d(df)
+
+    def test_unsorted_by_stock_id_rejected(self) -> None:
+        df = self._frame([
+            self._row("2330", date(2026, 6, 22), 100.0),
+            self._row("1101", date(2026, 6, 22), 50.0),  # earlier ticker AFTER later
+        ])
+        with pytest.raises(ValueError, match="sorted ascending"):
+            add_ud_ratio_21d(df)
+
+    # ── (4) duplicate (stock_id, date) ───────────────────────────
+
+    def test_duplicate_stock_date_rejected(self) -> None:
+        df = self._frame([
+            self._row("2330", date(2026, 6, 22), 100.0),
+            self._row("2330", date(2026, 6, 22), 101.0),  # duplicate key
+        ])
+        with pytest.raises(ValueError, match="duplicate"):
+            add_ud_ratio_21d(df)
+
+    # ── happy path: empty panel passes validation ────────────────
+
+    def test_empty_panel_passes_input_validation(self) -> None:
+        """Empty panel has nothing to compute and nothing to validate
+        beyond schema. Phase 1A skips trading-day checks for empty
+        panels (no dates to validate) and proceeds to the
+        NotImplementedError body."""
+        df = self._frame([])
+        with pytest.raises(NotImplementedError, match="Phase 1B"):
             add_ud_ratio_21d(df)
