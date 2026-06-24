@@ -275,10 +275,27 @@ of the following hold:
    a statistic from which it can be reconstructed)
 3. used cross-sectional statistics (not pooled, not time-series)
 4. evidence is reproducible from a git commit (commit SHA on record)
+5. anchor case must originate from a research lineage independent of
+   Track-C / ud_ratio_21d. Track-C own sub-steps (including but not
+   limited to Step 1 closeout) are not U7B-eligible.
 ```
 
 Studies failing any of these criteria are ineligible regardless of
 narrative relevance.
+
+**Rationale for criterion (5):** U7B is designed for cross-lineage
+validation. Permitting same-lineage self-anchoring would defeat the
+purpose. Same-lineage self-anchoring is analogous to the §15
+prohibited-actions discipline against fabricating an orthogonal
+anchor (§9.2 trailing paragraph): both substitute the independence
+requirement with a self-referential construct.
+
+**Operational enforcement:** see
+`docs/research/ud_ratio_21d_r1_u7b_enumeration_boundary.md` §1.
+
+**Amendment record:** criterion (5) amended 2026-06-23, BEFORE
+R1-U7B enumeration begins. This is a pre-enumeration eligibility
+clarification, not a post-result modification.
 
 ### 9.2 R1-U7B — Selected Historical Anchors
 
@@ -503,7 +520,7 @@ Before first Spearman query:
 [ ] R1-U5 N_MIN_REGIME_DATES filled
 [X] R1-U6 sequencing accepted (threshold + decision-state boundaries
         deferred to threshold-lock event)
-[X] R1-U7A eligibility rule accepted
+[X] R1-U7A eligibility rule accepted (criteria 1-5, amended 2026-06-23)
 [ ] R1-U7B anchors filled (or single-anchor disclosure made)
 [X] R1-U7C comparison statistic and interpretation rule locked
 [X] §12 inspection order accepted
@@ -536,8 +553,9 @@ Next governance event:
 
 ```text
 R1-U7B eligibility audit
-  - enumerate candidate historical Track-C studies
-  - test each against R1-U7A criteria (1)-(4)
+  - enumerate candidate historical Track-C studies per
+    docs/research/ud_ratio_21d_r1_u7b_enumeration_boundary.md
+  - test each against R1-U7A criteria (1)-(5)
   - record eligible anchor pool (may be empty for orthogonal side)
   - if no eligible orthogonal anchor exists, apply single-anchor
     disclosure per §9.2
@@ -545,6 +563,17 @@ R1-U7B eligibility audit
 
 R1 may begin only after this document is reviewed, completed, locked,
 and committed.
+
+---
+
+## Amendment Log
+
+```text
+2026-06-23  R1-U7A criterion (5) added — lineage independence.
+            Pre-enumeration eligibility clarification.
+            Status remains DRAFT — NOT LOCKED.
+            Cross-reference: ud_ratio_21d_r1_u7b_enumeration_boundary.md
+```
 
 ---
 
