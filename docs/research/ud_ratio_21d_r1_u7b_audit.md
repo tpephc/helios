@@ -5001,7 +5001,7 @@ view. It does not introduce new protocol or new findings.
 [✓]  §B   Orphan Scan                                      : PASS
 [✓]  §C   Commit 3 Readiness Gate                          : THIS SECTION
 [✓]  §D   Phase 2 — U7A Evaluation                        : COMPLETE
-[ ]  §E   Phase 3 — Synthesis                             : NOT STARTED
+[X]  §E   Phase 3 — Synthesis                             : COMPLETE
 ```
 
 ### C.2 Phase 1 Headline Totals
@@ -7349,25 +7349,153 @@ in Phase 3 (§E).
 ## §E. Phase 3 — Synthesis
 
 ```text
-STATUS: NOT STARTED
+STATUS: COMPLETE
+Commit: 5 of 5
+Input: §D Phase 2 U7A evaluation (Commit 4, f0a9383)
+```
 
-This section is intentionally left empty.
+---
 
-Phase 3 begins only after §D is committed (commit 4 of 5).
-Phase 3 output forms commit 5 of 5, potentially bundled with
-R1 prereg LOCK (including N_MIN_CROSS_SECTION and
-N_MIN_REGIME_DATES finalisation).
+### E.1 Pass Count
+
+```text
+Total §A.3 rows evaluated:      41
+  Primary sources:              36
+  Secondary aggregators:         5  (NOT_ANCHOR_AGGREGATOR)
+
+U7A verdicts (primary rows only):
+  PROVISIONALLY_ELIGIBLE:        0
+  REJECT:                       36
+
+Pass count:                      0
+```
+
+---
+
+### E.2 Disclosure Path Determination
 
 Per boundary spec v0.1.1 §5.4:
-  - Compute pass count
-  - Determine disclosure path:
-      * multi-anchor   (>= 2 eligible candidates, at least one
-                        collapse + one orthogonal)
-      * single-anchor  (1 eligible candidate, or candidates only
-                        on collapse side)
-      * zero-anchor    (no eligible candidate; apply §9.2
-                        single-anchor disclosure with explicit
-                        zero-eligible note)
+
+```text
+multi-anchor   >= 2 eligible candidates (collapse + orthogonal)
+single-anchor  1 eligible candidate, or collapse-side only
+zero-anchor    no eligible candidate
+
+Pass count = 0  →  ZERO-ANCHOR disclosure path
+```
+
+---
+
+### E.3 R1-U7B Zero-Anchor Disclosure
+
+```text
+No prior historical comparison candidate meets full R1-U7A
+eligibility under prereg §9.1 criteria (1)–(5) as evaluated
+in Phase 2 §D.
+
+No collapse anchor is designated.
+No orthogonal anchor is designated.
+
+Accordingly, R1-U7B provides no historical relative-position
+comparison for R1.
+
+Interpretation of R1 must rest entirely on the R1-U6 absolute
+threshold and decision-state boundaries. No statement about
+"closer to collapse" or "closer to orthogonality" is permitted.
+```
+
+**Relation to §9.2 single-anchor fallback:**
+
+```text
+The §9.2 trailing paragraph ("No prior confirmed-orthogonal
+Track-C case meets R1-U7A eligibility...") applies only to
+the single-anchor case, where one eligible collapse anchor
+and no eligible orthogonal anchor exist.
+
+Phase 2 established that no eligible historical comparison
+candidate exists on either side. Accordingly, the ZERO-ANCHOR
+disclosure is the applicable disclosure for this
+preregistration.
+
+This is not a modification of §9.2; the §9.2 trailing
+paragraph addresses a different case (single-anchor) and is
+inapplicable here. The ZERO-ANCHOR disclosure is selected
+per boundary spec §5.4 disclosure path determination.
+```
+
+**Primary rejection reasons (from §D.4):**
+
+```text
+C3 FAIL (Rows 5, 7, 8):
+  The only three candidates with archived Spearman statistics
+  use pooled panel Spearman with date-clustered bootstrap CI.
+  This does not satisfy §9.1 C3 (cross-sectional statistics,
+  not pooled). Confirmed via source code inspection
+  (rs_persistence_decay.py, pullback_quality.py,
+  rs_acceleration.py).
+
+C2 FAIL (Rows 1–4, 6, 10–14):
+  Archived findings use forward return delta, enrichment
+  ratio, rolling-window statistics, or count metrics. None
+  constitute per-day Spearman rho or a reconstructible
+  correlation statistic per §9.1 C2.
+
+F0 FAIL (Rows 15–25, 29–32, 34–41):
+  23 rows characterise portfolio-construction, capital-
+  allocation, operational-capacity, data-governance, or
+  strategy-level outcomes. These fall outside the alpha /
+  feature-discovery / signal-validation scope required by
+  boundary spec §2.
+```
+
+---
+
+### E.4 §9.2 Anchor Field Resolution
+
+```text
+Collapse anchor:
+  Study:              — (no eligible candidate)
+  Phase / commit:     — (no eligible candidate)
+  Pair:               — (no eligible candidate)
+  Median per-day rho: — (no eligible candidate)
+
+Orthogonal anchor:
+  Study:              — (no eligible candidate)
+  Phase / commit:     — (no eligible candidate)
+  Pair:               — (no eligible candidate)
+  Median per-day rho: — (no eligible candidate)
+
+Disclosure note (per §9.2):
+  No prior Track-C study meets R1-U7A eligibility.
+  Eligible pool = 0 on both collapse and orthogonal sides.
+  R1 comparison is ZERO-ANCHOR.
+  Decision rests entirely on R1-U6 absolute threshold.
+```
+
+---
+
+### E.5 Prereg Lock Inputs Confirmed
+
+```text
+N_MIN_CROSS_SECTION:    20  (LOCKED, Commit 5)
+N_MIN_REGIME_DATES:     30  (LOCKED, Commit 5)
+R1-U7B anchors:         ZERO-ANCHOR disclosure (see §E.3–E.4)
+```
+
+These three items complete the outstanding §16 lock checklist
+entries. R1 prereg may now be locked.
+
+---
+
+### E.6 Phase 3 Outcome
+
+```text
+R1-U7B audit:     COMPLETE (Commits 1–5)
+Disclosure path:  ZERO-ANCHOR
+§9.2 status:      Filled — zero-anchor disclosure (see §E.4)
+Prereg LOCK:      READY (all §16 checklist items resolved)
+Spearman gate:    OPEN — R1 query may now proceed after
+                  prereg LOCK commit
 ```
 
 ---

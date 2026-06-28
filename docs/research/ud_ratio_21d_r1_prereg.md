@@ -3,8 +3,10 @@
 **Feature:** `ud_ratio_21d`
 **Track:** C
 **Step:** 2 / R1 Correlation Analysis
-**Status:** DRAFT — NOT LOCKED
+**Status:** LOCKED
 **Date:** 2026-06-23
+**Lock date:** 2026-06-28
+**Lock commit:** Commit 5 (R1-U7B audit complete)
 **Spec:** `docs/features/ud_ratio_21d_spec.md` v0.1.4
 **Prior closeout:** `research/track_c_step1_closeout.md`
 
@@ -168,9 +170,12 @@ n_pairs_day >= N_MIN_CROSS_SECTION
 Constant:
 
 ```text
-N_MIN_CROSS_SECTION = TBD before lock
+N_MIN_CROSS_SECTION = 20
 Recommended range:    20 <= N <= 30
-Current working value (NOT LOCKED): 20
+Locked value: 20 (Commit 5, 2026-06-28)
+Rationale: lower bound of recommended range; preserves maximum
+           signal dates in R8 panel; locked before any coverage
+           inspection per §6a / §15.
 ```
 
 Dates failing this threshold are excluded from the primary summary
@@ -210,9 +215,12 @@ Secondary report:  joint conditioning (2 x 3 = 6 cells)
 Constant:
 
 ```text
-N_MIN_REGIME_DATES = TBD before lock
+N_MIN_REGIME_DATES = 30
 Recommended:         30
-Current working value (NOT LOCKED): 30
+Locked value: 30 (Commit 5, 2026-06-28)
+Rationale: equals recommended value; ensures regime-conditioned
+           cells have sufficient dates for stable rho summary;
+           locked before any R1 query per §15.
 ```
 
 Forbidden post-hoc conditioning variables:
@@ -300,31 +308,54 @@ clarification, not a post-result modification.
 ### 9.2 R1-U7B — Selected Historical Anchors
 
 ```text
-Eligible anchors (filled before lock):
+R1-U7B eligibility audit result (Commit 4, f0a9383):
+  Eligible pool: 0
+  Disclosure path: ZERO-ANCHOR
 
   Collapse anchor:
-    Study:                TBD
-    Phase / commit:       TBD
-    Pair:                 TBD
-    Median per-day rho:   TBD
+    Study:                — (no eligible candidate)
+    Phase / commit:       — (no eligible candidate)
+    Pair:                 — (no eligible candidate)
+    Median per-day rho:   — (no eligible candidate)
 
   Orthogonal anchor:
-    Study:                TBD
-    Phase / commit:       TBD
-    Pair:                 TBD
-    Median per-day rho:   TBD
+    Study:                — (no eligible candidate)
+    Phase / commit:       — (no eligible candidate)
+    Pair:                 — (no eligible candidate)
+    Median per-day rho:   — (no eligible candidate)
 ```
 
-If no eligible orthogonal anchor exists in historical record, this
-section must explicitly state:
+No prior Track-C study meets full R1-U7A eligibility under
+criteria (1)–(5). Eligible pool = 0 on both collapse and
+orthogonal sides.
 
 ```text
-No prior confirmed-orthogonal Track-C case meets R1-U7A eligibility.
-Comparison is single-anchor (collapse only).
-Interpretation: distance from collapse anchor is descriptive only,
-                not classificatory. Decision rests on R1-U6 absolute
-                threshold, not on relative position.
+ZERO-ANCHOR disclosure (per boundary spec §5.4 path determination):
+
+No prior historical comparison candidate meets full R1-U7A
+eligibility.
+
+No collapse anchor is designated.
+No orthogonal anchor is designated.
+
+Accordingly, R1-U7B provides no historical relative-position
+comparison for R1.
+
+Interpretation of R1 must rest entirely on the R1-U6 absolute
+threshold and decision-state boundaries. No statement about
+"closer to collapse" or "closer to orthogonality" is permitted.
 ```
+
+Note: the single-anchor fallback paragraph below applies only
+to the single-anchor case (one eligible collapse anchor, no
+eligible orthogonal anchor). Phase 2 found zero eligible anchors
+on either side; the §9.2 trailing paragraph is inapplicable
+here. The ZERO-ANCHOR disclosure above is the applicable
+disclosure for this preregistration, selected per boundary
+spec §5.4 disclosure path determination.
+
+This is not a modification of §9.2; it is a disclosure-path
+selection based on Phase 2 eligibility audit results.
 
 Single-anchor framing is acceptable; fabricating an orthogonal
 anchor to achieve two-sided comparison is not.
@@ -515,18 +546,18 @@ Before first Spearman query:
 [X] R1-U2 locked
 [X] R1-U3 locked
 [X] R1-U4 locked
-[ ] R1-U4a N_MIN_CROSS_SECTION filled
+[X] R1-U4a N_MIN_CROSS_SECTION filled (= 20, Commit 5)
 [X] R1-U5 marginal + joint structure locked
-[ ] R1-U5 N_MIN_REGIME_DATES filled
+[X] R1-U5 N_MIN_REGIME_DATES filled (= 30, Commit 5)
 [X] R1-U6 sequencing accepted (threshold + decision-state boundaries
         deferred to threshold-lock event)
 [X] R1-U7A eligibility rule accepted (criteria 1-5, amended 2026-06-23)
-[ ] R1-U7B anchors filled (or single-anchor disclosure made)
+[X] R1-U7B anchors filled (ZERO-ANCHOR disclosure, Commit 5)
 [X] R1-U7C comparison statistic and interpretation rule locked
 [X] §12 inspection order accepted
 [X] §13 manifest schema accepted
 [X] §14 outcome routing accepted
-[ ] document committed to git with message indicating LOCKED status
+[X] document committed to git with message indicating LOCKED status
 ```
 
 ---
@@ -534,35 +565,30 @@ Before first Spearman query:
 ## 17. Status
 
 ```text
-Status: DRAFT — NOT LOCKED
+Status: LOCKED
 Numbers inspected: NO
 Threshold locked: NO
-Ready to run R1: NO
+Ready to run R1: YES
+Lock commit: Commit 5 (2026-06-28)
 ```
 
-Outstanding decisions required for LOCK:
+All outstanding decisions resolved:
 
 ```text
-N_MIN_CROSS_SECTION       (§6a)  — working value 20, requires audit
-N_MIN_REGIME_DATES        (§7)   — working value 30, requires audit
-R1-U7B historical anchors (§9.2) — requires U7A eligibility audit
-                                    against Track-C history
+N_MIN_CROSS_SECTION = 20       (§6a, Commit 5)
+N_MIN_REGIME_DATES  = 30       (§7,  Commit 5)
+R1-U7B anchors      = ZERO-ANCHOR disclosure (§9.2, Commit 5)
 ```
 
-Next governance event:
-
-```text
-R1-U7B eligibility audit
-  - enumerate candidate historical Track-C studies per
-    docs/research/ud_ratio_21d_r1_u7b_enumeration_boundary.md
-  - test each against R1-U7A criteria (1)-(5)
-  - record eligible anchor pool (may be empty for orthogonal side)
-  - if no eligible orthogonal anchor exists, apply single-anchor
-    disclosure per §9.2
-```
-
-R1 may begin only after this document is reviewed, completed, locked,
-and committed.
+R1 may now begin. Execution follows §12 inspection order:
+  1. sample coverage table
+  2. missing-value summary
+  3. unconditioned primary table
+  4. year-stratified table
+  5. regime-conditioned table (marginal, then joint)
+  6. proxy-collapse comparison
+  7. threshold + decision-state boundary lock (per R1-U6)
+  8. decision
 
 ---
 
@@ -573,6 +599,14 @@ and committed.
             Pre-enumeration eligibility clarification.
             Status remains DRAFT — NOT LOCKED.
             Cross-reference: ud_ratio_21d_r1_u7b_enumeration_boundary.md
+
+2026-06-28  LOCKED (Commit 5).
+            N_MIN_CROSS_SECTION = 20 (§6a).
+            N_MIN_REGIME_DATES = 30 (§7).
+            R1-U7B: ZERO-ANCHOR disclosure — eligible pool = 0
+            after Phase 2 U7A audit (Commit 4, f0a9383).
+            All §16 checklist items resolved.
+            Status: DRAFT → LOCKED.
 ```
 
 ---
