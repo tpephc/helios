@@ -5000,6 +5000,8 @@ view. It does not introduce new protocol or new findings.
 [✓]  §A.5 Source File Exhaustiveness Check                 : PASS
 [✓]  §B   Orphan Scan                                      : PASS
 [✓]  §C   Commit 3 Readiness Gate                          : THIS SECTION
+[✓]  §D   Phase 2 — U7A Evaluation                        : COMPLETE
+[ ]  §E   Phase 3 — Synthesis                             : NOT STARTED
 ```
 
 ### C.2 Phase 1 Headline Totals
@@ -5118,18 +5120,2228 @@ input (retrospective notes → 3-Core-Principle template).
 ## §D. Phase 2 — U7A Evaluation
 
 ```text
-STATUS: NOT STARTED
+STATUS: COMPLETE
+Reviewer chain: Batches D1–D9, all APPROVED.
+Commit: 4 of 5
+Invariants: 11/11 PASS (machine-verified, see §D.3)
+```
 
-This section is intentionally left empty.
+---
 
-Phase 2 begins only after §A and §B are committed (commit 3 of 5).
-Phase 2 output forms commit 4 of 5.
+### D.0 Evaluation Schema
 
-Per boundary spec v0.1.1 §5.3:
-  - Apply U7A criteria (1)-(5) per candidate
-  - Evidence-driven verdict
-  - Per-criterion record, not aggregate verdict
-  - A candidate is eligible only if ALL five criteria pass
+Phase 2 applies the U7A eligibility criteria from prereg §9.1 to
+every primary §A.3 row. An additional pre-filter (F0) is applied
+first per boundary spec §2.
+
+**Evaluation order per row:**
+
+```text
+F0_anchor_type_filter   boundary spec §2 — alpha / feature-discovery /
+                        signal-validation finding required;
+                        risk / exit / capital / governance findings
+                        are not U7A-eligible.
+
+C1_governance_decision          §9.1 criterion (1)
+C2_archived_correlation_evidence  §9.1 criterion (2)
+C3_cross_sectional_statistic    §9.1 criterion (3)
+C4_git_reproducible             §9.1 criterion (4)
+C5_independent_lineage          §9.1 criterion (5)
+
+u7a_verdict
+  PROVISIONALLY_ELIGIBLE   all of F0 + C1–C5 = PASS
+  REJECT                   any of F0 or C1–C5 = FAIL
+  NOT_ANCHOR_AGGREGATOR    pre-filter exclusion; C1–C5 not evaluated
+
+spearman_eligible
+  YES   u7a_verdict = PROVISIONALLY_ELIGIBLE
+  NO    otherwise
+```
+
+**C3 notation rule (locked in Batch D1):**
+
+```text
+If C2 = FAIL:
+  C3_cross_sectional_statistic: NOT_ASSESSED_AFTER_C2_FAIL
+  reasoning: C2 FAIL is the binding rejection criterion;
+             C3 is not decision-relevant and is not used
+             as a rejection basis for this row.
+```
+
+**Verdict rules:**
+
+```text
+u7a_verdict = PROVISIONALLY_ELIGIBLE  iff  F0=PASS and C1–C5 all PASS
+u7a_verdict = REJECT                  iff  any of F0, C1–C5 = FAIL
+  (all FAIL criteria recorded independently; multiple FAIL criteria
+   are recorded as independent rejection bases)
+```
+
+**Scope boundary (durable):**
+
+```text
+PROVISIONALLY_ELIGIBLE does not imply:
+  - orthogonality to ud_ratio_21d
+  - selection as §9.2 collapse or orthogonal anchor
+  - any alpha or forward-return claim
+Final anchor designation is reserved for Phase 3 §E synthesis.
+```
+
+**Terminology (binding for this document):**
+
+```text
+PROVISIONALLY_ELIGIBLE   (not ADMIT / eligible / admitted)
+REJECT                   (not rejected / ineligible)
+NOT_ANCHOR_AGGREGATOR    (not aggregator skip)
+ZERO-ANCHOR              (not zero anchor / no anchor)
+NOT_ASSESSED_AFTER_C2_FAIL  (not MOOT / N/A / cannot be evaluated)
+```
+
+---
+
+### D.1 NOT_ANCHOR_AGGREGATOR Rows (9, 26, 27, 28, 33)
+
+Secondary aggregator rows do not enter U7A evaluation. They are
+excluded at the pre-enumeration stage per the durable principle:
+canonical owner = the document that locks the finding for governance
+purposes. Aggregators summarise findings already counted via primary
+sources and introduce no independent empirical evidence.
+
+Per prereg §9.1: no explicit aggregator carve-out exists. The §9.1
+eligibility rule operates on canonical owners only.
+
+**Row 9 — `docs/research/roadmap.md`**
+
+```text
+anchor_candidate_id:   D-009
+source_row:            §A.3 Row 9
+canonical_artifact:    docs/research/roadmap.md
+
+u7a_verdict:   NOT_ANCHOR_AGGREGATOR
+
+basis:
+  §A.3 Row 9 one_line_description:
+    "Secondary aggregator of phase0_findings.md (and downstream
+     Phase A studies); summarises registered findings into the
+     governance 'Confirmed Alpha' synthesis; introduces no
+     independent empirical evidence."
+  Batch 1 Summary: "Secondary aggregators: 1 (Row 9, roadmap.md)"
+
+audit_internal_inconsistency (non-blocking):
+  classification_type field = "Primary finding source"
+  differs from one_line_description and Batch 1 Summary.
+  For U7A eligibility, substantive evidence ownership is followed
+  per Reviewer Ruling R1 (this session). Inconsistency recorded
+  here; §A.3 field not corrected in Commit 4 (Protocol Freeze).
+
+spearman_eligible: NO
+```
+
+**Row 26 — `research/r8_phase6_candidate_disposition.md`**
+
+```text
+anchor_candidate_id:   D-026
+source_row:            §A.3 Row 26
+canonical_artifact:    research/r8_phase6_candidate_disposition.md
+
+u7a_verdict:   NOT_ANCHOR_AGGREGATOR
+
+basis:
+  §A.3 Row 26 classification_type: Secondary aggregator
+  one_line_description: "Secondary aggregator of
+    r8_phase6_findings.md; summarises registered findings and
+    governance dispositions; introduces no independent empirical
+    evidence."
+  classification_type and one_line_description consistent.
+
+spearman_eligible: NO
+```
+
+**Row 27 — `research/r8_phase6_governance_report.md`**
+
+```text
+anchor_candidate_id:   D-027
+source_row:            §A.3 Row 27
+canonical_artifact:    research/r8_phase6_governance_report.md
+
+u7a_verdict:   NOT_ANCHOR_AGGREGATOR
+
+basis:
+  §A.3 Row 27 classification_type: Secondary aggregator
+  one_line_description: "Secondary aggregator of
+    r8_phase6_findings.md and r8_phase6_candidate_disposition.md;
+    summarises registered findings and governance dispositions;
+    introduces no independent empirical evidence."
+  classification_type and one_line_description consistent.
+
+spearman_eligible: NO
+```
+
+**Row 28 — `research/r8_phase6_closeout.md`**
+
+```text
+anchor_candidate_id:   D-028
+source_row:            §A.3 Row 28
+canonical_artifact:    research/r8_phase6_closeout.md
+
+u7a_verdict:   NOT_ANCHOR_AGGREGATOR
+
+basis:
+  §A.3 Row 28 classification_type: Secondary aggregator
+  one_line_description: "Secondary aggregator of
+    r8_phase6_findings.md and r8_phase6_candidate_disposition.md;
+    summarises registered findings and governance dispositions
+    (Phase 6 CLOSED declaration); introduces no independent
+    empirical evidence."
+  classification_type and one_line_description consistent.
+
+spearman_eligible: NO
+```
+
+**Row 33 — `research/helios_research_roadmap.md`**
+
+```text
+anchor_candidate_id:   D-033
+source_row:            §A.3 Row 33
+canonical_artifact:    research/helios_research_roadmap.md
+
+u7a_verdict:   NOT_ANCHOR_AGGREGATOR
+
+basis:
+  §A.3 Row 33 classification_type: Secondary aggregator
+  one_line_description: "Secondary aggregator of
+    r8_phase5_configuration_report.md (and downstream R8 Phase
+    chain); summarises registered findings and governance
+    dispositions; introduces no independent empirical evidence."
+  §A.1 file list: confirmed in scope (line 627).
+  classification_type and one_line_description consistent.
+
+spearman_eligible: NO
+```
+
+---
+
+### D.2 Primary Row Evaluations
+
+36 primary §A.3 rows evaluated. All rows record F0 + C1–C5 +
+u7a_verdict regardless of F0 outcome, per Reviewer Ruling R2.
+
+C5 ruling (all primary rows): boundary spec §1 exclusion list
+covers only `docs/research/ud_ratio_21d_*.md`,
+`research/track_c_step1_closeout.md`, and
+`research/ud_ratio_21d/*`. No primary row matches any exclusion.
+C5 = PASS for all 36 primary rows; individual C5 cells are
+recorded per row but not repeated in the summary.
+
+---
+
+#### D.2.1 Batch D1–D2 — Rows 1–8
+
+**Row 1 — `phase0_findings / confirmed_observations`**
+
+```text
+anchor_candidate_id:   D-001
+source_row:            §A.3 Row 1
+canonical_artifact:    docs/research/phase0_findings.md
+finding_cluster:       Phase 0 confirmed observations (§3.1–§3.7)
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: Phase 0 confirmed observations are feature-discovery
+             / signal-validation findings (RS persistence quintile
+             returns, RS_T3 + Dist_T1 interaction cell returns).
+             Not risk / exit / capital / governance per boundary
+             spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 1, Text (a):
+             "Status: Final (v4 — post per-horizon spacing fix)"
+             governance_state_commit_sha: b7eee75 (2026-05-29)
+             Formal status "Final" = closed phase under §9.1 C1.
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 1 classification_evidence:
+             "Q5 | +2.83% | 54.7%"
+             "RS_T3 + Dist_T1 | +4.32% | +1.66% | 62.3% | 366"
+             Archived evidence is cross-sectional quintile return
+             statistics. No Spearman rho; no statistic from which
+             per-day Spearman rho can be reconstructed.
+             §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  file_first_commit_sha: af4f9b5 (2026-05-28)
+             Primary governance SHA: b7eee75 (2026-05-29) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C2 FAIL — no archived Spearman correlation evidence
+spearman_eligible: NO
+```
+
+**Row 2 — `phase0_findings / rejected_hypotheses`**
+
+```text
+anchor_candidate_id:   D-002
+source_row:            §A.3 Row 2
+canonical_artifact:    docs/research/phase0_findings.md
+finding_cluster:       Phase 0 rejected hypotheses (§4.1–§4.4)
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: Rejected hypotheses (Compression Breakout Edge,
+             Volume Breakout Continuation, etc.) are negative
+             signal-validation findings. Within feature-discovery
+             scope per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  Same file; "Status: Final (v4)" at b7eee75. ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 2 classification_evidence:
+             "v4 update: absorption finding overturned"
+             "v3 absorption bear lift (+0.94%) was a spacing artifact"
+             Archived evidence is return% claims and narrative verdict.
+             No Spearman rho; no reconstructible statistic.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: b7eee75 (2026-05-29) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C2 FAIL — no archived Spearman correlation evidence
+spearman_eligible: NO
+```
+
+**Row 3 — `phase0_findings / taxonomy_synthesis`**
+
+```text
+anchor_candidate_id:   D-003
+source_row:            §A.3 Row 3
+canonical_artifact:    docs/research/phase0_findings.md
+finding_cluster:       Phase 0 taxonomy + regime-dependent synthesis
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: Feature taxonomy and regime-dependent interaction
+             matrix = feature-discovery / signal-validation.
+             Not risk / exit / capital / governance per boundary
+             spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  Same file; "Status: Final (v4)" at b7eee75. ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 3 classification_evidence:
+             "RS_T3 + Dist_T1 (pullback) | bear | -2.30%, 40.6% hit"
+             "Beta_T3 + RS_T3 | Strongest cell (+5.56%)"
+             Archived evidence is return% and win-rate statistics.
+             No Spearman rho; no reconstructible statistic.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: b7eee75 (2026-05-29) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C2 FAIL — no archived Spearman correlation evidence
+spearman_eligible: NO
+```
+
+**Row 4 — `r8_phase0_feasibility / feasibility_audit`**
+
+```text
+anchor_candidate_id:   D-004
+source_row:            §A.3 Row 4
+canonical_artifact:    research/r8_phase0_feasibility.md
+finding_cluster:       R8 MA5 momentum Phase 0 feasibility audit
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: Phase 0 feasibility audit = feature-discovery /
+             alpha-adjacent findings. "5/5 PASS against predefined
+             feasibility gates" + T-1 RS60 enrichment measurement
+             = signal-validation finding. Not risk / exit / capital
+             / governance per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 4, Text (a):
+             "Status: Phase 0 CLOSED (2026-06-01, rev2)"
+             "Decision gate is 5/5 PASS"
+             Primary governance SHA: 0226c09 (2026-06-02) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 4 classification_evidence:
+             "T-1 RS60 top-tertile enrichment = 1.63 (vs base 0.33)"
+             Archived evidence is enrichment ratio (selection-level
+             statistic). No Spearman rho; no reconstructible
+             correlation statistic. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 0226c09 (2026-06-02) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C2 FAIL — enrichment ratio is not Spearman rho or
+               reconstructible correlation statistic
+spearman_eligible: NO
+```
+
+**Row 5 — `research_handoff_2026_05 / R1_rs_persistence_decay`**
+
+```text
+anchor_candidate_id:   D-005
+source_row:            §A.3 Row 5
+canonical_artifact:    docs/research/research_handoff_2026_05.md
+finding_cluster:       R1 RS persistence decay study
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: R1 RS persistence decay = signal-validation study.
+             Tests whether time-in-leadership (age) predicts
+             forward return decay within RS_T3. Negative result
+             is a signal-validation finding per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 5, Text (a): "Result | Negative"
+             Primary governance SHA: a583a88 (2026-06-23) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   PASS
+  evidence:  §A.3 Row 5, Text (b):
+             "Spearman(age, fwd_ret) ≈ +0.03-0.04"
+             "within-band (0.67-0.75) rho ≈ 0, CI spans zero"
+             "Spearman" named explicitly; rho values archived.
+             §9.1 C2 satisfied independently.
+             Note: underlying estimator form assessed separately
+             under C3.
+
+C3_cross_sectional_statistic:
+  verdict:   FAIL
+  evidence:  Source code research/rs_persistence_decay.py
+             (verified via nexus grep, this session):
+             line 424: point = _spearman(age, val)
+               → single pooled scalar over all stock×date obs
+             line 418: "Circular moving-block bootstrap CI for
+               Spearman(age, val), grouped by date."
+               → bootstrap resamples whole dates to obtain CI
+                 on pooled scalar; NOT a per-day rho distribution
+             Estimator = pooled panel Spearman with date-clustered
+             bootstrap CI.
+             §9.1 C3 forbidden: "pooled panel correlation"
+             Reviewer Ruling R3 (this session):
+             "Pooled panel Spearman = C3 FAIL"
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: a583a88 (2026-06-23) ✓
+             Asset: research/rs_persistence_decay.py v0.1.4
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C3 FAIL — pooled panel Spearman (date-block
+               bootstrap CI), not per-day cross-sectional
+               statistic per §9.1 C3
+spearman_eligible: NO
+```
+
+**Row 6 — `research_handoff_2026_05 / R2_failed_breakdown`**
+
+```text
+anchor_candidate_id:   D-006
+source_row:            §A.3 Row 6
+canonical_artifact:    docs/research/research_handoff_2026_05.md
+finding_cluster:       R2 failed breakdown / MA20 reclaim quality
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: R2 = signal-validation study testing whether
+             failed_breakdown_count_10d predicts forward returns.
+             Feature-discovery scope per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 6, Text (a): "Result | Weak Negative"
+             Primary governance SHA: a583a88 (2026-06-23) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  R2 original text verified via nexus
+             (docs/research/research_handoff_2026_05.md, R2 section):
+             Finding field: "h60 point estimate −2.1% but CI spans zero"
+             "monotone dose in broad universe at 60d (CI excludes zero)"
+             CI is on forward return (%), not on Spearman rho.
+             No Spearman rho value present in archived finding.
+             one_line_description "Cross-sectional Spearman with CI"
+             describes method only; does not constitute archived
+             Spearman rho per §9.1 C2.
+             Distinction from Rows 5/7/8: those entries explicitly
+             archive rho values; R2 does not.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: a583a88 (2026-06-23) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C2 FAIL — archived finding records return% CI,
+               not Spearman rho or reconstructible correlation
+               statistic; method description alone is insufficient
+spearman_eligible: NO
+```
+
+**Row 7 — `research_handoff_2026_05 / R5_pullback_quality`**
+
+```text
+anchor_candidate_id:   D-007
+source_row:            §A.3 Row 7
+canonical_artifact:    docs/research/research_handoff_2026_05.md
+finding_cluster:       R5 pullback quality transfer study
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: R5 = signal-validation / feature-discovery testing
+             whether consolidation/trend features transfer across
+             universes. Within boundary spec §2 scope.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 7, Text (a):
+             "Result | Weak Positive (1 of 3 axes survived)"
+             Primary governance SHA: a583a88 (2026-06-23) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   PASS
+  evidence:  §A.3 Row 7, Text (b):
+             "h60 Spearman CI excludes zero (barely: +0.010
+             to +0.139)"
+             Source verified via nexus (research_handoff_2026_05.md
+             R5 section): "h60 Spearman CI excludes zero (barely:
+             +0.010 to +0.139)" — "Spearman" named explicitly;
+             CI on Spearman statistic archived.
+             §9.1 C2 satisfied independently.
+             Note: underlying estimator form assessed separately
+             under C3.
+
+C3_cross_sectional_statistic:
+  verdict:   FAIL
+  evidence:  Source code research/pullback_quality.py
+             (verified via nexus grep, this session):
+             line 194: rho = _spearman(feat, resid)
+               → single pooled scalar
+             line 199: boots[b] = _spearman(feat[idx], resid[idx])
+               → date-block bootstrap on pooled scalar
+             line 193: "Spearman(feature, cohort_resid) + date-block
+               bootstrap CI"
+             Estimator = pooled panel Spearman.
+             §9.1 C3 forbidden: "pooled panel correlation"
+             Reviewer Ruling R3: FAIL.
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: a583a88 (2026-06-23) ✓
+             Asset: research/pullback_quality.py v0.1.1
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C3 FAIL — pooled panel Spearman, not per-day
+               cross-sectional statistic per §9.1 C3
+spearman_eligible: NO
+```
+
+**Row 8 — `research_handoff_2026_05 / StudyB_rs_acceleration`**
+
+```text
+anchor_candidate_id:   D-008
+source_row:            §A.3 Row 8
+canonical_artifact:    docs/research/research_handoff_2026_05.md
+finding_cluster:       Study B RS acceleration
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: Study B = signal-validation testing whether RS rank
+             velocity (Δ5) predicts forward returns within RS_T3.
+             Within boundary spec §2 scope.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 8, Text (a): "Result | Negative"
+             Primary governance SHA: a583a88 (2026-06-23) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   PASS
+  evidence:  §A.3 Row 8, Text (b):
+             "Spearman rho ≈ -0.01, all three horizons CI span zero"
+             "Spearman rho" named explicitly with value archived.
+             §9.1 C2 satisfied independently.
+             Note: underlying estimator form assessed separately
+             under C3.
+
+C3_cross_sectional_statistic:
+  verdict:   FAIL
+  evidence:  Source code research/rs_acceleration.py
+             (verified via nexus grep, this session):
+             line 121: rho = _spearman(feat, outcome)
+               → single pooled scalar
+             line 125: boots[b] = _spearman(feat[idx], outcome[idx])
+               → date-block bootstrap on pooled scalar
+             line 120: "Spearman(feat, outcome) + date-block
+               bootstrap CI"
+             Identical run_spearman() pattern to Rows 5 and 7.
+             Estimator = pooled panel Spearman.
+             Reviewer Ruling R3: FAIL.
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: a583a88 (2026-06-23) ✓
+             Asset: research/rs_acceleration.py
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C3 FAIL — pooled panel Spearman, not per-day
+               cross-sectional statistic per §9.1 C3
+spearman_eligible: NO
+```
+
+---
+
+#### D.2.2 Batch D4 — Rows 10–12
+
+**Row 10 — `r8_phase1_interim_findings / A1_RS_T3_hold`**
+
+```text
+anchor_candidate_id:   D-010
+source_row:            §A.3 Row 10
+canonical_artifact:    research/r8_phase1_interim_findings.md
+finding_cluster:       Phase 1 A-1 RS_T3 Hold benchmark
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: A-1 RS_T3 Hold benchmark = signal-validation /
+             alpha-adjacent finding. Tests whether RS_T3 hold
+             produces forward returns above adequacy threshold.
+             Not risk / exit / capital / governance per boundary
+             spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 10, Text (a):
+             "Status: CONFIRMED — v1.0.0 (2026-06-07)"
+             "Three cells reached joint adequacy PASS"
+             Primary governance SHA: 539cb41 (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 10 classification_evidence:
+             "Bull regime, nlu=0 ... 20td | +3.03% |
+              [+1.84%, +4.17%] | n_eff 71"
+             Archived evidence is forward return delta with
+             bootstrap CI. No Spearman rho; no reconstructible
+             correlation statistic. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 539cb41 (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C2 FAIL — forward return delta with bootstrap CI
+               is not Spearman rho or reconstructible correlation
+               statistic
+spearman_eligible: NO
+```
+
+**Row 11 — `r8_phase1_interim_findings / A2_pullback_sparsity`**
+
+```text
+anchor_candidate_id:   D-011
+source_row:            §A.3 Row 11
+canonical_artifact:    research/r8_phase1_interim_findings.md
+finding_cluster:       Phase 1 A-2 RS_T3 + Pullback structural
+                       sparsity finding
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: A-2 = signal-validation / feature-discovery.
+             Finding is structural sparsity (zero adequacy-PASS
+             cells) — a negative signal-validation result within
+             boundary spec §2 scope.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 11, Text (a):
+             "Result: 0 PASS cells. A-2 cannot be evaluated
+              inferentially under the [adequacy criteria]"
+             Structural finding with formal status CONFIRMED.
+             Primary governance SHA: 539cb41 (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 11 classification_evidence:
+             "Treatment_2 ... contains only 262 observations
+              across 109 dates — 4.9% of Treatment_1"
+             Archived evidence is observation count / sparsity
+             metric. No Spearman rho; no reconstructible
+             correlation statistic. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 539cb41 (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C2 FAIL — observation count / sparsity metric is
+               not Spearman rho or reconstructible correlation
+               statistic
+spearman_eligible: NO
+```
+
+**Row 12 — `r8_phase1_interim_findings / A3_R8_within_RS_T3`**
+
+```text
+anchor_candidate_id:   D-012
+source_row:            §A.3 Row 12
+canonical_artifact:    research/r8_phase1_interim_findings.md
+finding_cluster:       Phase 1 A-3 R8 within RS_T3 vs RS_T3
+                       unconditional
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: A-3 = core alpha-finding of R8 Phase 1. Tests
+             incremental forward return of R8 signal within
+             RS_T3. CONFIRMED bull regime Δ = primary alpha
+             evidence. Not risk / exit / capital / governance
+             per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 12, Text (a):
+             "Bull | YES (CONFIRMED) | A-3 Tier 1: Δ_obs =
+              +1.21% / +1.92% at 10td / 20td (v0.2.0 clean
+              panel); CI strictly positive at all block lengths"
+             Primary governance SHA: 539cb41 (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 12 classification_evidence:
+             "Δ_obs = +1.21% / +1.92% at 10td / 20td"
+             "CI strictly positive at all block lengths"
+             "ROBUST. At all block lengths L={5,10,20,40},
+              95% CI strictly positive"
+             Archived evidence is forward return delta (Δ%) with
+             block-bootstrap CI. Estimand is mean return
+             differential, not rank correlation.
+             No Spearman rho; no reconstructible correlation
+             statistic. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 539cb41 (2026-06-07) ✓
+             Supporting rerun lineage: 4a307e6 (clean-panel
+             re-run, referenced in §A.3 one_line_description)
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C2 FAIL — forward return delta (Δ%) with block-
+               bootstrap CI; estimand is mean return differential,
+               not Spearman rank correlation
+spearman_eligible: NO
+```
+
+---
+
+#### D.2.3 Batch D5–D8 — Rows 13–25
+
+**Row 13 — `r8_phase2a_validation_report / stability_validation`**
+
+```text
+anchor_candidate_id:   D-013
+source_row:            §A.3 Row 13
+canonical_artifact:    research/r8_phase2a_validation_report.md
+finding_cluster:       Phase 2A stability validation — STABLE verdict
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: Phase 2A = rolling-window stability validation of
+             bull-regime R8 uplift. Signal-validation scope per
+             boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 13, Text (a):
+             "Status: CONFIRMED — v1.0.0 (2026-06-07)"
+             "Verdict: STABLE"
+             Primary governance SHA: a1a3959 (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 13, Text (b):
+             "27/27 windows positive; median +1.12%;
+              minimum +0.33%; zero negative windows"
+             "top-1 = 49.4%, top-2 = 89.9%; material concentration"
+             Archived evidence is rolling-window positive rate and
+             return% summary. No Spearman rho; no reconstructible
+             correlation statistic. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: a1a3959 (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C2 FAIL — rolling-window positive rate and return%
+               summary are not Spearman rho or reconstructible
+               correlation statistics
+spearman_eligible: NO
+```
+
+**Row 14 — `r8_phase2b_feasibility_memo / execution_feasibility`**
+
+```text
+anchor_candidate_id:   D-014
+source_row:            §A.3 Row 14
+canonical_artifact:    research/r8_phase2b_feasibility_memo.md
+finding_cluster:       Phase 2B execution feasibility — FEASIBLE
+
+F0_anchor_type_filter:
+  verdict:   PASS
+  reasoning: Phase 2B = execution feasibility testing of R8
+             signal under realistic friction. Signal-validation
+             scope: tests whether alpha survives execution per
+             boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 14, Text (a):
+             "Status: CONFIRMED — v1.0.0 (2026-06-07)"
+             "Verdict: FEASIBLE"
+             Primary governance SHA: 792dceb (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 14, Text (b):
+             "All 12 scenario × slippage combinations produce
+              positive net returns"
+             "net return is +0.55%"
+             Archived evidence is scenario × slippage net return
+             combinations. No Spearman rho; no reconstructible
+             correlation statistic. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 792dceb (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: C2 FAIL — scenario × slippage net return
+               combinations are not Spearman rho or
+               reconstructible correlation statistics
+spearman_eligible: NO
+```
+
+**Row 15 — `r8_phase3_risk_report / FindingA_capital_lockup`**
+
+```text
+anchor_candidate_id:   D-015
+source_row:            §A.3 Row 15
+canonical_artifact:    research/r8_phase3_risk_report.md
+finding_cluster:       Phase 3 Finding A — capital lock-up
+                       characterisation
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding A characterises holding-period-induced capital
+             lock-up (admission rate 16.3%, FIFO slot occupancy).
+             The finding is classified as a portfolio-construction /
+             capital-allocation / operational-capacity
+             characterisation rather than an alpha / feature-
+             discovery / signal-validation finding under the
+             boundary spec §2 filter.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 15, Text (a):
+             "Status: LOCKED — v1.0.1 (2026-06-07)"
+             "Verdict: CHARACTERISED"
+             Primary governance SHA: 4c8f60d (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 15, Text (b):
+             "admitted only 16.3% of R8 candidate signals"
+             "Only 2.1% of signal dates produced more than 10
+              simultaneous R8 signals"
+             Archived evidence is admission rate % and signal-count
+             distribution. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 4c8f60d (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (admission rate % is not
+               Spearman rho). Both are independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 16 — `r8_phase3_risk_report / FindingB_low_uplift_convergence`**
+
+```text
+anchor_candidate_id:   D-016
+source_row:            §A.3 Row 16
+canonical_artifact:    research/r8_phase3_risk_report.md
+finding_cluster:       Phase 3 Finding B — Low-Uplift Sharpe
+                       convergence
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding B characterises portfolio behaviour under the
+             Low-Uplift environment. The study evaluates portfolio-
+             level risk-adjusted performance rather than signal
+             validity. Accordingly it is classified as a
+             portfolio-construction / capital-allocation /
+             operational-capacity characterisation under boundary
+             spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 16 heading: "Finding B — Risk-adjusted edge
+             disappears in the Low-Uplift environment"
+             Primary governance SHA: 4c8f60d (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 16, Text (b):
+             "Full Sample (Sharpe 2.378 vs 1.313)"
+             "Low-Uplift environment ... (1.613 vs 1.606, Δ = 0.007)"
+             Archived evidence is Sharpe ratio comparison. No
+             Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 4c8f60d (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (Sharpe ratio comparison is
+               not Spearman rho). Both independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 17 — `r8_phase3_risk_report / FindingC_position_cap_insensitivity`**
+
+```text
+anchor_candidate_id:   D-017
+source_row:            §A.3 Row 17
+canonical_artifact:    research/r8_phase3_risk_report.md
+finding_cluster:       Phase 3 Finding C — position cap
+                       insensitivity
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding C evaluates the effect of relaxing the
+             per-position cap (10% → 15%/20%/25%) on Sharpe
+             and MaxDD. This is a portfolio-construction /
+             capital-allocation / operational-capacity
+             characterisation under boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 17 heading: "Finding C — Higher position
+             caps did not improve risk-adjusted performance"
+             Primary governance SHA: 4c8f60d (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 17, Text (b):
+             "increasing the per-position cap above 10% baseline
+              degraded the Sharpe ratio across all variants"
+             "MaxDD: 21.65% → 41.56% in Full Sample"
+             Archived evidence is Sharpe ratio and max drawdown.
+             No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 4c8f60d (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (Sharpe/MaxDD are not Spearman
+               rho). Both independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 18 — `r8_phase4_optimisation / FindingA1_lockup_confirmation`**
+
+```text
+anchor_candidate_id:   D-018
+source_row:            §A.3 Row 18
+canonical_artifact:    research/r8_phase4_optimisation_report.md
+finding_cluster:       Phase 4 Finding A1 — holding-period lock-up
+                       hypothesis confirmed
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding A1 confirms the Phase 3 capital lock-up
+             hypothesis via admission rate response to holding-
+             period reduction. Portfolio-construction /
+             capital-allocation / operational-capacity
+             characterisation per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 18, Text (a):
+             "Status: LOCKED — v1.0.0 (2026-06-07)"
+             "Verdict: OPTIMISATION_CHARACTERISED"
+             Primary governance SHA: d918be5 (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 18, Text (b):
+             "Admission rate responds strongly to holding-period
+              reduction: 16.3% (20td) → 30.0% (10td) → 52.8% (5td)"
+             Archived evidence is admission rate % across holding-
+             period variants. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: d918be5 (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (admission rate % is not
+               Spearman rho). Both independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 19 — `r8_phase4_optimisation / FindingA2_edge_time_dependence`**
+
+```text
+anchor_candidate_id:   D-019
+source_row:            §A.3 Row 19
+canonical_artifact:    research/r8_phase4_optimisation_report.md
+finding_cluster:       Phase 4 Finding A2 — R8 edge requires time
+                       to materialise
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding A2 characterises the holding-period threshold
+             below which R8 forward-return edge disappears (5td CI
+             crosses zero, Sharpe 2.38 → 1.17). Research question
+             is "how long must a position be held for the edge to
+             appear?" — portfolio-construction / capital-allocation /
+             operational-capacity characterisation per boundary
+             spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 19 heading: "Finding A2 — R8 edge requires
+             time to materialise"
+             Primary governance SHA: d918be5 (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 19, Text (b):
+             "5td bootstrap Δ_A3 CI crosses zero (full sample)"
+             "Sharpe degradation (2.38 → 1.17, full sample)"
+             Archived evidence is bootstrap CI on return delta
+             and Sharpe ratio. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: d918be5 (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (bootstrap CI on return delta
+               + Sharpe ratio are not Spearman rho). Both
+               independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 20 — `r8_phase4_optimisation / FindingA3_10td_optimum`**
+
+```text
+anchor_candidate_id:   D-020
+source_row:            §A.3 Row 20
+canonical_artifact:    research/r8_phase4_optimisation_report.md
+finding_cluster:       Phase 4 Finding A3 — 10td as utilisation-
+                       performance optimum
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding A3 identifies 10td holding period as the
+             optimal utilisation-performance trade-off point.
+             Research question is parameter optimisation of a
+             portfolio construction variable (holding period).
+             Portfolio-construction / capital-allocation /
+             operational-capacity characterisation per boundary
+             spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 20, Text (a):
+             "CANDIDATE: 10td_holding_period | Admission +13.7pp;
+              Sharpe decline < 0.25; bootstrap CI positive"
+             Primary governance SHA: d918be5 (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 20, Text (b):
+             "admission rate nearly doubles (16.3% → 30.0%)"
+             "Sharpe declines only modestly (2.38 → 2.13)"
+             Archived evidence is admission rate % and Sharpe
+             ratio comparison. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: d918be5 (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation — holding-period
+               parameter optimisation per boundary spec §2) AND
+               C2 FAIL (admission rate % + Sharpe ratio are not
+               Spearman rho). Both independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 21 — `r8_phase4_optimisation / FindingB1_rs_ranking_dominance`**
+
+```text
+anchor_candidate_id:   D-021
+source_row:            §A.3 Row 21
+canonical_artifact:    research/r8_phase4_optimisation_report.md
+finding_cluster:       Phase 4 Finding B1 — RS-based ranking
+                       dominates FIFO
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding B1 evaluates the portfolio admission policy
+             (FIFO versus RS-based prioritisation) applied to an
+             existing signal set. The estimand is portfolio-level
+             performance after changing the allocation rule rather
+             than the predictive quality of the RS feature itself.
+             Accordingly the finding is classified as a
+             portfolio-construction / capital-allocation /
+             operational-capacity characterisation under boundary
+             spec §2.
+             Reviewer Ruling (Batch D7): option (b) confirmed.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 21, Text (a):
+             "CANDIDATE: rs_60d_ranking | Low-Uplift Sharpe
+              +0.52; no admission cost; RS-20d also viable"
+             Primary governance SHA: d918be5 (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 21, Text (b):
+             "RS-60d Sharpe in Low-Uplift = 2.13 vs FIFO = 1.61
+              (+0.52)"
+             Archived evidence is Sharpe uplift comparison. No
+             Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: d918be5 (2026-06-07) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (Sharpe uplift comparison is
+               not Spearman rho). Both independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 22 — `r8_phase5_configuration / Finding_P5-1_rs60d_confirmed`**
+
+```text
+anchor_candidate_id:   D-022
+source_row:            §A.3 Row 22
+canonical_artifact:    research/r8_phase5_configuration_report.md
+finding_cluster:       Phase 5 Finding P5-1 — RS-60d ranking
+                       confirmed
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding P5-1 confirms RS-60d ranking as a robust
+             improvement over FIFO baseline (ARM_B vs ARM_A).
+             The research question evaluates the portfolio
+             admission policy applied to an existing signal set,
+             not the predictive quality of the RS-60d feature
+             itself. Consistent with Reviewer Ruling on D-021.
+             Portfolio-construction / capital-allocation /
+             operational-capacity characterisation per boundary
+             spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 22, Text (a):
+             "Status: LOCKED — v1.0.2 (2026-06-19)"
+             "Verdict: CONFIGURATION_SELECTED"
+             Primary governance SHA: 98315a6 (2026-06-19) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 22, Text (b):
+             "ARM_B ... demonstrated a substantial improvement
+              in Low-Uplift Sharpe (+0.635 vs Arm A)"
+             Archived evidence is Sharpe uplift comparison. No
+             Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 98315a6 (2026-06-19) ✓
+             Supporting rerun lineage: edd42b1 (2026-06-19,
+             file_first_commit)
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (Sharpe uplift comparison is
+               not Spearman rho). Both independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 23 — `r8_phase5_configuration / Finding_P5-2_10td_capacity`**
+
+```text
+anchor_candidate_id:   D-023
+source_row:            §A.3 Row 23
+canonical_artifact:    research/r8_phase5_configuration_report.md
+finding_cluster:       Phase 5 Finding P5-2 — 10td holding
+                       increases capital utilisation
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding P5-2 quantifies the mechanical effect of
+             shorter holding period on capital utilisation
+             (admission rate 17.5% → 32.4%). The
+             one_line_description itself classifies this as
+             "a mechanical effect of capital turnover, not a
+             signal-quality finding." Portfolio-construction /
+             capital-allocation / operational-capacity
+             characterisation per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  Same file; "Status: LOCKED — v1.0.2 (2026-06-19)"
+             at Primary governance SHA: 98315a6 (2026-06-19) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 23, Text (b):
+             "10td holding substantially increases admission
+              rate (17.5% → 32.4%)"
+             Archived evidence is admission rate % change. No
+             Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 98315a6 (2026-06-19) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation; document
+               self-classifies as mechanical capital turnover
+               effect per boundary spec §2) AND C2 FAIL
+               (admission rate % is not Spearman rho). Both
+               independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 24 — `r8_phase5_configuration / Finding_P5-3_capacity_sharpe_tradeoff`**
+
+```text
+anchor_candidate_id:   D-024
+source_row:            §A.3 Row 24
+canonical_artifact:    research/r8_phase5_configuration_report.md
+finding_cluster:       Phase 5 Finding P5-3 — capacity gain
+                       accompanied by snapshot-sensitive Sharpe
+                       degradation
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding P5-3 characterises the Sharpe cost of the
+             capacity gain from shorter holding (ARM_C 10td).
+             Research question: "is the capacity gain free in
+             risk-adjusted terms?" Portfolio-construction /
+             capital-allocation / operational-capacity
+             characterisation per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 24, Text (a):
+             "ARM_C reclassified from SELECTED (marginal P5-G1)
+              to CAPACITY_DEMONSTRATED / SHARPE_UNRESOLVED"
+             Primary governance SHA: 98315a6 (2026-06-19) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 24, Text (b):
+             "marginally satisfied the Sharpe gate (P5-G1,
+              Δ = −0.093 against a threshold of −0.10)"
+             "Under the locked Phase 3 price snapshot, Arm C's
+              P5-G1 Δ would be −0.137, which would not pass"
+             Archived evidence is Sharpe delta gate margin. No
+             Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 98315a6 (2026-06-19) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (Sharpe delta gate margin is
+               not Spearman rho). Both independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 25 — `r8_phase6_findings / F-P6-01_adaptive_exits`**
+
+```text
+anchor_candidate_id:   D-025
+source_row:            §A.3 Row 25
+canonical_artifact:    research/r8_phase6_findings.md
+finding_cluster:       Phase 6 Finding F-P6-01 — adaptive exit
+                       policies do not improve ARM_B
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding F-P6-01 evaluates whether adaptive exit
+             policies (E1–E4) improve ARM_B vs fixed 20td hold.
+             Research question: "does changing the exit rule
+             improve portfolio outcomes?" Exit policy selection
+             is explicitly listed in boundary spec §2 as a
+             non-eligible finding type ("risk, exit, capital,
+             or governance findings are not U7A-eligible").
+             The primary finding type matches a boundary spec §2
+             exclusion verbatim ("exit").
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 25, Text (a):
+             "Status: FINDING REGISTERED / Step 3 COMPLETE"
+             "All four adaptive exit policies are CHARACTERISED,
+              not SELECTED"
+             Primary governance SHA: 901c0de (2026-06-22) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 25, Text (b):
+             "E1 ATR Trailing | 1.1689 | −1.035 | FAIL | ..."
+             "E2 MA20 Failure | 0.3773 | −1.825 | FAIL | ..."
+             Archived evidence is ΔSharpe gate results (P6-G1)
+             for E1–E4. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 901c0de (2026-06-22) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (primary finding type matches boundary
+               spec §2 exclusion verbatim: "exit") AND C2 FAIL
+               (ΔSharpe gate results are not Spearman rho). Both
+               independent rejection bases.
+spearman_eligible: NO
+```
+
+---
+
+#### D.2.4 Batch D9A — Rows 29–32
+
+**Row 29 — `P1-DATA_panel_integrity / IF1_pre_listing_contamination`**
+
+```text
+anchor_candidate_id:   D-029
+source_row:            §A.3 Row 29
+canonical_artifact:    research/P1-DATA_panel_integrity_assessment.md
+finding_cluster:       IF-1 pre-listing / emerging-board
+                       contamination
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: IF-1 is a data governance / data integrity finding:
+             18 stocks with pre-listing price history in
+             daily_price_adj. Research question is data pipeline
+             correctness, not signal predictive quality.
+             Governance finding per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 29, Text (a):
+             "IF-1: ... High | Confirmed, measured | Open"
+             Subsequent: "remediation closeout (CLOSED, AC-1
+             through AC-7 PASS)"
+             Primary governance SHA: b41d56b (2026-06-04) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 29, Text (b):
+             "18 stocks ... predates their listing_date"
+             "135 of 338 DQ events trace to IF-1"
+             Archived evidence is stock count, row count, DQ
+             event count. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: b41d56b (2026-06-04) ✓
+             Supporting rerun lineage: fb38ae4 (2026-06-02)
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (data governance / data integrity finding
+               per boundary spec §2) AND C2 FAIL (row/DQ event
+               counts are not Spearman rho). Both independent
+               rejection bases.
+spearman_eligible: NO
+```
+
+**Row 30 — `P1-DATA_panel_integrity / IF2_empty_stock_info`**
+
+```text
+anchor_candidate_id:   D-030
+source_row:            §A.3 Row 30
+canonical_artifact:    research/P1-DATA_panel_integrity_assessment.md
+finding_cluster:       IF-2 empty stock_info table
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: IF-2 is a data governance / data integrity finding.
+             Governance finding per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  "IF-2: ... Medium | Confirmed | Open — workaround
+             in use" → reclassified P2 non-binding.
+             Primary governance SHA: 77fb3c1 (2026-06-06) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 30, Text (b):
+             "Confirmed. Table is empty; this is directly
+              observable."
+             Archived evidence is observational data-presence
+             check. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 77fb3c1 (2026-06-06) ✓
+             Supporting rerun lineage: fb38ae4 (2026-06-02)
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (data governance / data integrity finding
+               per boundary spec §2) AND C2 FAIL (observational
+               presence check is not Spearman rho). Both
+               independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 31 — `P1-DATA_panel_integrity / IF3_empty_corporate_actions`**
+
+```text
+anchor_candidate_id:   D-031
+source_row:            §A.3 Row 31
+canonical_artifact:    research/P1-DATA_panel_integrity_assessment.md
+finding_cluster:       IF-3 empty corporate_actions table
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: IF-3 is a data governance / data integrity finding.
+             Governance finding per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  "IF-3: ... Medium | Confirmed | Open" → split into
+             IF-3A (CLOSED, commit 76f1f45) and IF-3B
+             (reclassified P2 non-binding, commit 39ba6c2).
+             Primary governance SHA: 39ba6c2 (2026-06-07) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 31, Text (b):
+             "203 SUSPENSION_GAP rows across 90 stocks"
+             "338 signals in the R8 population have ret_1d >= +10%"
+             Archived evidence is row and event counts. No
+             Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 39ba6c2 (2026-06-07) ✓
+             Supporting rerun lineage: fb38ae4 (2026-06-02)
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (data governance / data integrity finding
+               per boundary spec §2) AND C2 FAIL (row/event
+               counts are not Spearman rho). Both independent
+               rejection bases.
+spearman_eligible: NO
+```
+
+**Row 32 — `p1_data_remediation / Benchmark_C_robustness_after_IF1`**
+
+```text
+anchor_candidate_id:   D-032
+source_row:            §A.3 Row 32
+canonical_artifact:    research/p1_data_remediation_closeout_2026-06-04.md
+finding_cluster:       IF-1 remediation robustness — Benchmark C
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Row 32 validates the robustness of a previously
+             established finding after data remediation. Research
+             question: "did IF-1 contamination materially affect
+             Benchmark C?" Data governance / remediation
+             validation per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 32, Text (a):
+             "Status: CLOSED"
+             "All acceptance criteria satisfied. R8 Phase 1
+              findings upgraded from PROVISIONAL to CONDITIONAL"
+             Primary governance SHA: b41d56b (2026-06-04) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 32, Text (b):
+             "C: R8 within RS_T3 (ret_20d) | +6.84% | +6.77% |
+              -0.07pp"
+             "Net event count change after rebuild (Δ) | -418
+              (-4.96%)"
+             Archived evidence is return% before/after comparison
+             (Δ = −0.07pp) and event count delta. No Spearman
+             rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: b41d56b (2026-06-04) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (data governance / remediation validation
+               per boundary spec §2) AND C2 FAIL (return%
+               before/after delta is not Spearman rho). Both
+               independent rejection bases.
+spearman_eligible: NO
+```
+
+---
+
+#### D.2.5 Batch D9B — Rows 34–41
+
+**Row 34 — `JOURNAL / v0.1.10.2_yfinance_splits_TW_broken`**
+
+```text
+anchor_candidate_id:   D-034
+source_row:            §A.3 Row 34
+canonical_artifact:    docs/JOURNAL.md
+finding_cluster:       Data-quality discovery — yfinance.splits
+                       broken for TW
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Data pipeline data-quality discovery (yfinance.splits
+             broken for TW market). Governance / data-integrity
+             finding per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 34: "Key insight" heading registered as
+             named finding at commit 955d71d (2026-05-17) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 34, Text (b):
+             "TWT49U has same dividend values as FinMind"
+             Archived evidence is cross-source value comparison.
+             No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 955d71d (2026-05-17) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (data governance / data-quality finding
+               per boundary spec §2) AND C2 FAIL (cross-source
+               value comparison is not Spearman rho). Both
+               independent rejection bases.
+spearman_eligible: NO
+```
+
+**Row 35 — `JOURNAL / v0.1.11_regime_distribution`**
+
+```text
+anchor_candidate_id:   D-035
+source_row:            §A.3 Row 35
+canonical_artifact:    docs/JOURNAL.md
+finding_cluster:       Regime distribution validates market
+                       intuition
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding characterises the empirical distribution of
+             regime labels and notes alignment with market
+             intuition. Research question: "does the regime
+             detector produce plausible output?" — system
+             validation / instrument calibration finding.
+             Governance / instrument-validation scope per
+             boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 35: "Key insight — Regime distribution
+             validates market intuition" registered at
+             commit 955d71d (2026-05-17) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 35 classification_evidence contains only
+             heading references; no numeric evidence cell
+             recorded. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 955d71d (2026-05-17) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (system validation / instrument calibration
+               per boundary spec §2) AND C2 FAIL (no numeric
+               correlation evidence archived). Both independent
+               rejection bases.
+spearman_eligible: NO
+```
+
+**Row 36 — `JOURNAL / v0.1.12_trendbreakout_strategy`**
+
+```text
+anchor_candidate_id:   D-036
+source_row:            §A.3 Row 36
+canonical_artifact:    docs/JOURNAL.md
+finding_cluster:       TrendBreakout strategy initial release —
+                       entry-condition set curated and locked
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding records strategy entry-condition curation
+             (curated with reviewer, decision loop locked).
+             Research question: "what entry conditions should
+             the strategy use?" Portfolio-construction /
+             strategy design per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 36: "Strategy condition curation reviewed
+             and locked with reviewer participation" at commit
+             955d71d (2026-05-17) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 36 classification_evidence contains only
+             heading and governance-process text; no numeric
+             evidence cell. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 955d71d (2026-05-17) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / strategy design
+               per boundary spec §2) AND C2 FAIL (no numeric
+               correlation evidence). Both independent rejection
+               bases.
+spearman_eligible: NO
+```
+
+**Row 37 — `JOURNAL / v0.1.13.1_OOS_validation_REAL_ALPHA`**
+
+```text
+anchor_candidate_id:   D-037
+source_row:            §A.3 Row 37
+canonical_artifact:    docs/JOURNAL.md
+finding_cluster:       TrendBreakout OOS validation — REAL ALPHA
+                       verdict
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding evaluates the performance of a complete
+             assembled trading strategy rather than the
+             predictive validity of an individual feature.
+             Accordingly it falls outside the alpha /
+             feature-discovery / signal-validation scope
+             defined in boundary spec §2.
+             Note: "REAL ALPHA" verdict label does not change
+             the finding-type classification; the estimand
+             remains strategy-level backtest statistics
+             (PF, win rate, W/L ratio).
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 37: "Verdict: ✓✓ REAL ALPHA (not
+             curve-fit AI bull noise)" registered at commit
+             955d71d (2026-05-17) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 37, Text (b):
+             "132 trades over 5 years, profit factor 2.67,
+              MFE/|MAE| 4.47"
+             "Win rate 53.8%"
+             "Avg win 5.62% / avg loss -2.45% (W/L 2.29)"
+             Archived evidence is backtest performance metrics.
+             No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 955d71d (2026-05-17) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (strategy-level validation rather than
+               feature-level validation per boundary spec §2;
+               "REAL ALPHA" label does not reclassify the
+               finding type) AND C2 FAIL (backtest PF / win
+               rate are not Spearman rho). Both independent
+               rejection bases.
+spearman_eligible: NO
+```
+
+**Row 38 — `JOURNAL / v0.1.13.2_textbook_trend_signature`**
+
+```text
+anchor_candidate_id:   D-038
+source_row:            §A.3 Row 38
+canonical_artifact:    docs/JOURNAL.md
+finding_cluster:       Exit logic + round-trip backtest —
+                       textbook trend signature
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding characterises the payoff shape of the
+             TrendBreakout strategy (MFE/MAE, W/L ratio).
+             Portfolio-construction / capital-allocation /
+             operational-capacity characterisation per boundary
+             spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 38: "Key insight — Textbook trend
+             signature" at commit 955d71d (2026-05-17) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 38, Text (b):
+             "132 trades over 5 years, profit factor 2.67,
+              MFE/|MAE| 4.47"
+             "Win rate 53.8% (≈ coin flip)"
+             Archived evidence is backtest payoff statistics.
+             No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 955d71d (2026-05-17) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (backtest payoff statistics
+               are not Spearman rho). Both independent rejection
+               bases.
+spearman_eligible: NO
+```
+
+**Row 39 — `JOURNAL / v0.1.13.3_cost_resistant_alpha`**
+
+```text
+anchor_candidate_id:   D-039
+source_row:            §A.3 Row 39
+canonical_artifact:    docs/JOURNAL.md
+finding_cluster:       Cost + OOS round-trip — alpha is
+                       cost-resistant
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding characterises TrendBreakout OOS net returns
+             at realistic cost levels (PF at 0.585% and 0.785%
+             round-trip). Portfolio-construction / capital-
+             allocation / operational-capacity characterisation
+             per boundary spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 39: "Key insight — Alpha is cost-resistant"
+             at commit 955d71d (2026-05-17) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 39, Text (b):
+             "0.585% cost | +1.99% | 2.50 | ✓✓ STRONG"
+             "0.785% with slippage | +1.79% | 2.25 | ✓✓ STRONG"
+             Archived evidence is net return and PF at cost
+             levels. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 955d71d (2026-05-17) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (net return / PF at cost
+               levels are not Spearman rho). Both independent
+               rejection bases.
+spearman_eligible: NO
+```
+
+**Row 40 — `JOURNAL / v0.1.14.1_portfolio_constrained_STRONG_PASS`**
+
+```text
+anchor_candidate_id:   D-040
+source_row:            §A.3 Row 40
+canonical_artifact:    docs/JOURNAL.md
+finding_cluster:       Portfolio constrained backtest —
+                       STRONG PASS
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding records the effect of portfolio constraints
+             on trade count, PF, and MaxDD (constrained trade-
+             count 132→72, PF 2.50→4.13, MaxDD ratio 1.4x).
+             Portfolio-construction / capital-allocation /
+             operational-capacity characterisation per boundary
+             spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 40: "Decision: ✓ Substantively STRONG PASS
+             → proceed to v0.1.14.2" at commit 955d71d
+             (2026-05-17) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 40, Text (b):
+             "Trade count: 132 (unconstrained) → 72 (constrained)"
+             "Profit factor: 2.50 → 4.13 (+65% on gross basis)"
+             "Max DD: -7.73% → -11.01%"
+             Archived evidence is constrained backtest statistics.
+             No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 955d71d (2026-05-17) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (constrained backtest
+               statistics are not Spearman rho). Both independent
+               rejection bases.
+spearman_eligible: NO
+```
+
+**Row 41 — `RESEARCH_JOURNAL / v0.1.14.1.2_F_budget_sweep`**
+
+```text
+anchor_candidate_id:   D-041
+source_row:            §A.3 Row 41
+canonical_artifact:    docs/RESEARCH_JOURNAL.md
+finding_cluster:       F Budget Sweep — CONCENTRATED dominates
+                       CURRENT
+
+F0_anchor_type_filter:
+  verdict:   FAIL
+  reasoning: Finding compares five risk-budget configurations
+             (CONCENTRATED 3×30% vs CURRENT 5×20% and others)
+             on backtest metrics (CAGR, MaxDD, PF, win rate).
+             Portfolio-construction / capital-allocation /
+             operational-capacity characterisation per boundary
+             spec §2.
+
+C1_governance_decision:
+  verdict:   PASS
+  evidence:  §A.3 Row 41: "Three structural findings" registered
+             under "F Budget Sweep Findings" at commit
+             955d71d (2026-05-17) ✓
+
+C2_archived_correlation_evidence:
+  verdict:   FAIL
+  evidence:  §A.3 Row 41, Text (b):
+             "CAGR | +5.86% | +7.23% | +1.37pp"
+             "Max DD | -11.71% | -9.57% | better"
+             "PF (gross) | 4.13 | 7.08 | +71%"
+             "Win rate | 54.5% | 60.7% | +6.2pp"
+             Archived evidence is risk-budget comparison
+             statistics. No Spearman rho. §9.1 C2 NOT satisfied.
+
+C3_cross_sectional_statistic:
+  verdict:   NOT_ASSESSED_AFTER_C2_FAIL
+
+C4_git_reproducible:
+  verdict:   PASS
+  evidence:  Primary governance SHA: 955d71d (2026-05-17) ✓
+
+C5_independent_lineage:
+  verdict:   PASS
+  evidence:  Not in boundary spec §1 exclusion list.
+
+u7a_verdict:   REJECT
+reject_reason: F0 FAIL (portfolio-construction / capital-allocation /
+               operational-capacity characterisation per boundary
+               spec §2) AND C2 FAIL (risk-budget comparison
+               statistics are not Spearman rho). Both independent
+               rejection bases.
+spearman_eligible: NO
+```
+
+---
+
+### D.3 Arithmetic Verification
+
+Machine-verified from row-level records above. Summary is
+derived, not independently maintained.
+
+```text
+Total §A.3 rows:              41
+  Primary sources:            36
+  Secondary aggregators:       5
+
+Verdict summary:
+  REJECT:                     36
+  NOT_ANCHOR_AGGREGATOR:       5
+  PROVISIONALLY_ELIGIBLE:      0
+  Partition: 36 + 5 + 0 = 41  ✓
+
+Reject breakdown by primary criterion:
+  C3_FAIL (C2 PASS, F0 PASS):   3  rows [5, 7, 8]
+    → pooled panel Spearman confirmed via source code
+       (rs_persistence_decay.py, pullback_quality.py,
+        rs_acceleration.py); nexus grep verified this session
+  C2_FAIL (F0 PASS):            10  rows [1, 2, 3, 4, 6,
+                                          10, 11, 12, 13, 14]
+    → no Spearman rho or reconstructible correlation statistic
+       in archived finding evidence
+  F0_FAIL (+ C2 FAIL):          23  rows [15, 16, 17, 18, 19,
+                                          20, 21, 22, 23, 24,
+                                          25, 29, 30, 31, 32,
+                                          34, 35, 36, 37, 38,
+                                          39, 40, 41]
+    → portfolio-construction / capital-allocation /
+       operational-capacity / data-governance /
+       strategy-level characterisations per boundary spec §2
+  Sum: 3 + 10 + 23 = 36  ✓
+
+C5 (independent lineage):
+  PASS on all 36 primary rows.
+  Boundary spec §1 exclusion list covers only:
+    docs/research/ud_ratio_21d_*.md
+    research/track_c_step1_closeout.md
+    research/ud_ratio_21d/*
+  No primary row matches any exclusion.
+
+Eligible pool:                0
+§9.2 disclosure path:         ZERO-ANCHOR
+```
+
+**Invariant record (11/11 PASS, machine-verified this session):**
+
+```text
+I1   total rows = 41                          PASS
+I2   IDs 1-41 contiguous                      PASS
+I3   partition 36+5+0 = 41                    PASS
+I4   primary=36, aggregators=5                PASS
+I5   aggregator IDs = {9,26,27,28,33}         PASS
+I6   reject breakdown 3+10+23 = 36            PASS
+I7   C3_FAIL rows = {5,7,8}                   PASS
+I8   C5 PASS all 36 primary rows              PASS
+I9   C1 PASS all 36 primary rows              PASS
+I10  PROVISIONALLY_ELIGIBLE = 0               PASS
+I11  n_reject = 36                            PASS
+```
+
+---
+
+### D.4 Phase 2 Outcome
+
+**U7A eligibility audit result:**
+
+```text
+Eligible pool size:   0
+Disclosure path:      ZERO-ANCHOR
+
+No prior Track-C study meets all five §9.1 U7A eligibility
+criteria under the strict ruling applied in Phase 2.
+
+Primary rejection reasons across the 36-row evaluated set:
+  - C2 FAIL: archived findings use forward return delta, Sharpe
+    ratio, admission rate, backtest statistics, or count
+    metrics — none constitute per-day Spearman rho or a
+    statistic from which it can be reconstructed (§9.1 C2).
+  - C3 FAIL: the three studies that archive explicit Spearman
+    rho values (Rows 5, 7, 8) use pooled panel Spearman with
+    date-clustered bootstrap CI — confirmed by source code
+    inspection. Per §9.1 C3 and Reviewer Ruling R3, pooled
+    panel Spearman does not satisfy the cross-sectional
+    statistics requirement.
+  - F0 FAIL: 23 rows characterise portfolio-construction,
+    capital-allocation, operational-capacity, data-governance,
+    or strategy-level outcomes — outside the alpha /
+    feature-discovery / signal-validation scope required by
+    boundary spec §2.
+```
+
+**Scope closure:**
+
+```text
+Phase 2 (§D) establishes U7A eligibility only.
+
+No §9.2 historical anchor designation is made in this phase.
+No new R1 Spearman computation was executed.
+No threshold or pre-registration decision is made here.
+No claim of orthogonality direction is made from U7A verdicts.
+
+The confirmed outcome of Phase 2 is an eligible pool size of zero.
+Subsequent handling follows the §9.2 zero-anchor disclosure path
+in Phase 3 (§E).
 ```
 
 ---
