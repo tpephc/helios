@@ -454,6 +454,12 @@ Produce and lock a specification for `win_rate_21d` sufficient to support implem
 | A1-C8   | Specification reviewed and approved                                                  |
 | A1-C9   | Specification committed to the repository; repository history serves as the canonical record of the lock commit; status set to LOCKED |
 
+### Closure
+
+Gate A1 CLOSED at commit `1cf8365` (2026-06-30).
+All exit criteria A1-C1 through A1-C9 satisfied; specification
+`docs/features/win_rate_21d_spec.md` v0.1.0 LOCKED at the same commit.
+
 Gate A2 may not begin until A1-C1 through A1-C9 are all satisfied.
 
 ## 7.3 Gate A2 — Implementation and Producer Substrate
