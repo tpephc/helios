@@ -72,7 +72,7 @@ Conditional rider:
 **Status:** LOCKED
 **Date:** 2026-06-30
 **Signer:** Veronica
-**Commit:** <TBD>
+**Commit:** `93a8317`
 
 ---
 
