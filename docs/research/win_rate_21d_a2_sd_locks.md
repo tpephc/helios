@@ -76,6 +76,66 @@ Conditional rider:
 
 ---
 
+### SD-A2-2
+
+```
+Producer scope:
+    Date range:
+        R8/R1-relevant trading-date range, extended backward by
+        20 trading days (the pre-signal trailing-window buffer,
+        W - 1 where W = 21 per spec §3.6).
+
+        This trailing-window buffer is independent of the
+        calendar-day buffer K deferred to SD-A2-6.
+
+        Requested and actual materialized min/max trading dates
+        must be determined at build time from the requested scope
+        and available `listed_market_daily_price_adj` coverage
+        (the canonical producer source per spec §4.4), then
+        recorded in the producer build manifest.
+
+    Table name:
+        win_rate_21d_cross_section_median
+        (BASE TABLE per spec §5.1; no version suffix — version and
+        lineage are carried by snapshot_id / build manifest per
+        spec §4.7 / §5.5).
+
+    Storage location:
+        data/_storage/helios.duckdb
+        (Helios canonical research workspace; no feature-specific
+        DuckDB file introduced).
+
+Type:
+    Producer identity lock. Defines "what is built", not "how it
+    is built" (the latter deferred to SD-A2-3 build orchestration).
+
+Evidence:
+    No coverage inspection.
+    No empirical range tuning.
+    Naming and storage aligned with Helios workspace convention.
+
+Revision:
+    Before the first producer build, revision requires governance
+    review.
+    After the first producer build, revision requires spec amendment
+    and regeneration of all affected producer artifacts.
+
+Effect on SD-A2-1 conditional rider:
+    The conditional rider expires after build-time scope validation
+    confirms that the materialized producer scope does not materially
+    broaden the assumed R8/R1-relevant research scope. Any material
+    shrinkage or expansion observed during that validation must be
+    recorded in the build manifest and reviewed before the first
+    producer build.
+```
+
+**Status:** LOCKED
+**Date:** 2026-06-30
+**Signer:** Veronica
+**Commit:** <TBD>
+
+---
+
 ## Anchor References
 
 | Document                                              | Status         | Commit / Anchor |
@@ -103,7 +163,7 @@ Repository HEAD at this ledger's creation: `5913e06`.
 | Sub-decision | Status     |
 | ------------ | ---------- |
 | SD-A2-1      | LOCKED     |
-| SD-A2-2      | NOT_LOCKED |
+| SD-A2-2      | LOCKED     |
 | SD-A2-3      | NOT_LOCKED |
 | SD-A2-4      | NOT_LOCKED |
 | SD-A2-5      | NOT_LOCKED |
@@ -117,4 +177,4 @@ Repository HEAD at this ledger's creation: `5913e06`.
 Document `Status` field advances OPEN → COMPLETE when all
 eleven rows show LOCKED.
 
-*End of ledger at SD-A2-1 lock.*
+*End of ledger at SD-A2-2 lock.*
