@@ -510,7 +510,7 @@ Effect on SD-A2-1 conditional rider:
 **Status:** LOCKED
 **Date:** 2026-07-02
 **Signer:** Veronica
-**Commit:** <TBD>
+**Commit:** `036f0b4`
 
 ---
 
