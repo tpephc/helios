@@ -292,6 +292,228 @@ Effect on SD-A2-1 conditional rider:
 
 ---
 
+### SD-A2-4
+
+```
+Type:
+    Fixture strategy lock. Defines the two fixture classes used by
+    Gate A2 PIT tests, the test-to-class assignment, and the design
+    principles binding each class. Does not lock builder API,
+    directory layout, or per-test scenario construction (deferred;
+    see Exclusions).
+
+Scope:
+    Governance of fixture strategy for the 17 PIT tests enumerated
+    in spec §8.2. Covers:
+        - fixture taxonomy (two classes)
+        - test-to-class assignment
+        - common invariants binding both classes
+        - synthetic fixture design principles
+        - anchored-real fixture design principles
+        - reuse posture
+    Excludes (delegated to other SDs or implementation phase):
+        - builder API signature / entry-point identity
+          → implementation phase
+        - fixture directory layout and file organization
+          → implementation phase
+        - dtype widths for producer output columns
+          → SD-A2-8
+        - I4 floating-point tolerance EPS
+          → SD-A2-9
+        - source_snapshot_id format, manifest schema fields,
+          physical storage location for anchored-real fixtures
+          → SD-A2-5
+        - regeneration-trigger detection mechanism
+          → SD-A2-11
+
+Fixture taxonomy:
+    Two fixture classes are locked, matching spec §8.3 (high-level):
+        - Synthetic fixture (DataFrame-native, no DB dependency)
+        - Anchored-real fixture (real-data-anchored, used only for
+          structural / lineage coverage)
+
+Test assignment:
+    Synthetic fixture applies to 12 tests:
+        PIT-PROD-1, PIT-PROD-3, PIT-PROD-4,
+        PIT-CONS-1, PIT-CONS-2, PIT-CONS-3, PIT-CONS-4,
+        PIT-CONS-5, PIT-CONS-6, PIT-CONS-7, PIT-CONS-8,
+        PIT-INT-1
+
+    Anchored-real fixture applies to 5 tests:
+        PIT-PROD-2, PIT-PROD-5, PIT-PROD-6,
+        PIT-INT-2, PIT-INT-3
+
+    Total = 17 tests, matching the full PIT test enumeration in
+    spec §8.2.
+
+    Spec §8.3 explicitly categorizes 15 tests (PIT-PROD-3,
+    PIT-PROD-4, PIT-CONS-1..8, PIT-INT-1 as synthetic; PIT-PROD-2,
+    PIT-PROD-5, PIT-PROD-6, PIT-INT-2, PIT-INT-3 as anchored-real).
+    PIT-PROD-1 is not categorized by §8.3 and requires an A2
+    assignment decision, which this sub-decision makes.
+
+    PIT-PROD-1 assignment rationale:
+        PIT-PROD-1 (spec §8.2) verifies bit-exact reproducibility
+        over a fixed input snapshot per spec §5.4. The core
+        requirement is a fixed, deterministic input, not real-data
+        lineage.
+
+        Synthetic fixture provides a cleaner idempotency substrate:
+        no external snapshot coupling; no anchored-real lineage
+        dependency; failure attribution is unambiguous (a
+        non-deterministic outcome implicates the producer or write
+        path, not snapshot materialization); alignment with the
+        deterministic reproducibility contract restated at SD-A2-3
+        idempotency implication and spec §5.4.
+
+        PIT-PROD-1 is therefore assigned to the synthetic fixture
+        class.
+
+Common invariants:
+    Both fixture classes must satisfy:
+
+    Determinism:
+        Bit-exact reproducibility over identical input specifications.
+        Any generator randomness must be pure and seed-locked in
+        fixture code; runtime overrides of seeds or generator
+        parameters are FORBIDDEN.
+
+    PIT correctness:
+        No lookahead. No forward-fill, backfill, zero-fill, or
+        median-fill applied to fixture data. Null observations
+        remain null (per spec §6.2 I3 and PIT-CONS-8 semantics).
+
+    Anti-peek discipline:
+        No coverage inspection or density estimation on real R8/R1
+        data is used to select fixture parameters, thresholds, or
+        boundary values. This binds both classes; the concrete
+        selection mechanism per class is defined below.
+
+    Source independence:
+        Test semantics shall not depend on whether the assigned
+        fixture class is synthetic or anchored-real. A fixture
+        class exists solely to exercise the intended contract of
+        the assigned PIT tests.
+
+Synthetic fixture principles:
+    Source:
+        Fully synthetic price series. No real R8/R1 data used as
+        fixture content.
+
+    Calendar:
+        Synthetic ordered trading-date labels. Real TWSE calendar
+        is not used as fixture calendar substrate. Calendar-day
+        gaps between trading-date labels may be included as labels
+        to exercise gap-related semantics, but carry no
+        correspondence to real TWSE holidays.
+
+    Shape:
+        Fixture design must exercise the following boundary
+        conditions across the assigned tests:
+            - MIN_OBS = 15 boundary (14 vs 15 valid observations)
+              per spec §3.6 and §6.2 I3
+            - MIN_CROSS_SECTION_OBS_PER_DATE = 30 per SD-A2-1
+              (29 vs 30 vs > 30 cross-section observations)
+            - Strict-inequality tie handling per spec §3.4
+              (exact r == m_s → win = 0)
+            - Trailing-window inclusion of signal date t per §3.5
+            - No-lookahead poisoning (poisoned t+1 data must not
+              alter output at t) per PIT-CONS-6
+
+        Per-test shape parameters (number of stocks, number of
+        trading dates, scenario-to-test mapping) are
+        implementation-phase decisions and are not locked here.
+
+    Expected values:
+        Prefer explicit in-test literal assertions over on-disk
+        golden output files. Committed golden parquet/csv files
+        are deferred and permitted only if the implementation
+        phase determines explicit literals are unmanageable.
+
+Anchored-real fixture principles:
+    Source anchor:
+        Selection principle:
+            Anchored-real fixture selection is time-anchored rather
+            than coverage-driven.
+
+        Anchor point:
+            The governed anchor point for Gate A2 is established at
+            the SD-A2-4 lock stage, taken over the canonical producer
+            source per spec §4.4 (listed_market_daily_price_adj) and
+            its underlying dependencies (e.g., security_lifecycle per
+            the IF-1 PIT lifecycle filter).
+
+        Rationale:
+            Time-anchored selection is non-coverage-driven and
+            reproducible by commit / md5 / manifest. Spec-lock commit
+            (1cf8365) is not used as anchor because it would require
+            historical environment reconstruction of upstream state;
+            SD-A2-4 lock time is the natural anchor for A2
+            implementation-scope fixtures.
+
+    Selection discipline:
+        No stock/date subset may be chosen because it satisfies
+        coverage, density, pass/fail convenience, or numerical
+        desirability. Anchored-real fixtures are selected only by
+        governed snapshot identity and structural source-table
+        contract.
+
+    Scope:
+        Anchored-real fixtures are used exclusively for the 5
+        assigned structural / lineage tests (PIT-PROD-2, PIT-PROD-5,
+        PIT-PROD-6, PIT-INT-2, PIT-INT-3). Numerical semantic tests
+        do not use anchored-real fixtures.
+
+    Mechanism:
+        Concrete snapshot identity, source_snapshot_id
+        representation, manifest linkage, and physical storage for
+        anchored-real fixtures are deferred to SD-A2-5.
+
+Reuse posture:
+    Neutral test utilities may be reused. This includes generic
+    helpers such as trading calendar builders, DuckDB temp table
+    harnesses, and Polars schema helpers that are not tied to a
+    specific feature's semantics.
+
+    Feature-specific fixture logic from ud_ratio_21d must not be
+    reused as the win_rate_21d fixture backbone. This includes
+    ud_ratio_21d producer helpers and any fixture generator that
+    encodes ud_ratio_21d numerical semantics.
+
+    Feature-specific architectural patterns may be referenced, but
+    numerical behaviour, expected values, or feature semantics shall
+    not be inherited.
+
+    Concrete identification of which existing conftest.py fixtures
+    qualify as neutral utilities is an implementation-phase decision.
+
+Evidence:
+    No coverage inspection.
+    No empirical fixture-parameter tuning.
+    Fixture taxonomy aligned with spec §8.3 (high-level);
+    PIT-PROD-1 assignment resolves a §8.3 categorization gap under
+    A2 authority per governance-note §3.2.
+
+Revision:
+    Before the first producer build, revision requires governance
+    review.
+    After the first producer build, revision requires spec amendment
+    and regeneration of all affected producer artifacts.
+
+Effect on SD-A2-1 conditional rider:
+    SD-A2-4 is a fixture strategy lock and does not perform,
+    validate, or trigger a producer build. The SD-A2-1 conditional
+    rider therefore remains ACTIVE. No closure event occurs at
+    SD-A2-4 lock.
+```
+
+**Status:** LOCKED
+**Date:** 2026-07-02
+**Signer:** Veronica
+**Commit:** <TBD>
+
+---
+
 ## Anchor References
 
 | Document                                              | Status         | Commit / Anchor |
@@ -321,7 +543,7 @@ Repository HEAD at this ledger's creation: `5913e06`.
 | SD-A2-1      | LOCKED     |
 | SD-A2-2      | LOCKED     |
 | SD-A2-3      | LOCKED     |
-| SD-A2-4      | NOT_LOCKED |
+| SD-A2-4      | LOCKED     |
 | SD-A2-5      | NOT_LOCKED |
 | SD-A2-6      | NOT_LOCKED |
 | SD-A2-7      | NOT_LOCKED |
@@ -333,4 +555,4 @@ Repository HEAD at this ledger's creation: `5913e06`.
 Document `Status` field advances OPEN → COMPLETE when all
 eleven rows show LOCKED.
 
-*End of ledger at SD-A2-3 lock.*
+*End of ledger at SD-A2-4 lock.*
