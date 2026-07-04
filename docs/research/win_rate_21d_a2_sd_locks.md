@@ -556,3 +556,277 @@ Document `Status` field advances OPEN → COMPLETE when all
 eleven rows show LOCKED.
 
 *End of ledger at SD-A2-4 lock.*
+---
+
+## SD-A2-5 — Snapshot lineage and manifest mechanism
+
+**Status:** LOCKED
+**Commit:** `<TBD>` (backfill post-commit per SD-A2-1..4 pattern)
+**Prev SD lock:** SD-A2-4 (commit `036f0b4`)
+**Prev ledger tail md5:** `83c101a7c3373931bbd9fd47a5f922c0` (captured 2026-07-02 post-SD-A2-4 apply)
+**Ledger version at lock:** `v0.1.0` (append cycle continues)
+
+### Scope
+
+Establishes snapshot lineage, manifest schema, content-integrity mechanism, storage layout, determinism requirements, and pre-flight verifiable field set for anchored-real fixtures produced by the `win_rate_21d` feature pipeline. Defines the SD-A2-1 conditional rider closure path. Contains an interlock against SD-A2-8 to prevent premature fixture materialization.
+
+### N-A2-5-1: Identity layer
+
+Every anchored-real fixture snapshot is identified by an ordered pair:
+
+- `snapshot_id`: semantic build identifier, format `{feature}_{ISO8601_utc}_{content_hash_prefix12}`.
+- `content_hash`: SHA-256 hex digest of on-disk fixture data file bytes, 64 lowercase hex characters.
+
+Binding rules:
+
+- `(snapshot_id, content_hash)` is one-to-one and immutable. A given `snapshot_id` MUST NOT resolve to two distinct `content_hash` values. If a producer build attempts this, pre-flight validation MUST FAIL (non-deterministic build indicator).
+- Canonical governance references to a fixture MUST cite both `snapshot_id` and `content_hash[:12]`. Semantic ID alone is not a governance-defensible reference.
+- `snapshot_id` MAY embed build-time information (timestamp, counter). `content_hash` MUST be a pure function of `(input snapshots, producer code SHA, producer config)`; no clock or host state may influence it.
+
+### N-A2-5-2: Hash policy
+
+SHA-256 is the canonical identity hash algorithm. No alternatives are permitted for governance identity. Hash target: raw bytes of the on-disk `data.parquet` file. Performance-tier checksums (xxhash, BLAKE3) MAY be computed for non-governance purposes but MUST NOT enter the canonical chain.
+
+**Governance-fixed Parquet writer invariants.** Producer MUST satisfy every one:
+
+- `compression = 'zstd'` (deterministic codec; forbid snappy pre-1.1.9 and other non-deterministic codecs).
+- `coerce_timestamps = 'us'` with `allow_truncated_timestamps = False`.
+- `use_dictionary = True`.
+- No producer-side wall-clock or hostname keys in file-level metadata.
+- Canonical column sort: alphabetical by column name, applied before write.
+- Explicit dtype specification for every output column (SD-A2-8 fixes the values).
+
+**Recorded in manifest but NOT governance-fixed.** Producer records every parameter passed to the writer; specific values MAY vary across snapshots:
+
+- `compression_level`
+- `row_group_size`
+- `data_page_version`
+- Writer library name and version (e.g., `pyarrow==15.0.2`)
+- Any additional writer parameters
+
+**Interpretation of writer library version.** The canonical identity is defined by the serialized file bytes. Writer library version metadata is retained in file metadata and recorded in the manifest because it may influence serialization output and is therefore required for exact rebuild. Library version is NOT itself a normative identity component. Same-input rebuild with the RECORDED writer configuration and library version MUST reproduce the SAME `content_hash`; this is the actual invariant.
+
+### N-A2-5-3: Manifest topology
+
+Two-tier hybrid:
+
+- **Side-car manifest** (per snapshot): `manifest.json`, colocated with the data file. Format: JSON only. Top-level field `manifest_format: "json"` is required. Format transitions (e.g., CBOR, msgpack) require major schema version bump AND governance amendment.
+- **Master ledger** (append-only): `docs/research/fixtures/anchored_real_ledger.md`. Each entry chains to previous entry via `prev_entry_chain_hash` (md5), matching existing Helios SD-lock ledger discipline.
+
+**Chain hash algorithm split.** Content hashes are SHA-256 (identity). Ledger chain hashes are md5 (append-order verification). This is intentional: chain integrity is corruption detection, not adversarial resistance; md5 matches existing pattern.
+
+**Producer atomic write sequence.**
+
+1. Write `data.parquet.tmp` (temporary path).
+2. Compute `content_hash` from written bytes.
+3. Write `manifest.json.tmp` (temporary path) containing `content_hash`.
+4. Compute `manifest_hash = SHA-256(manifest.json bytes)`.
+5. Atomic rename `data.parquet.tmp` → `data.parquet`.
+6. Atomic rename `manifest.json.tmp` → `manifest.json`.
+7. Append master ledger entry: `(snapshot_id, content_hash, manifest_hash, prev_entry_chain_hash, commit_sha_at_build)`.
+
+**Rollback and canonical discoverability.** Canonical status is conferred by the master ledger, not by the filesystem.
+
+- Producer snapshot discovery / resolution logic MUST consult the master ledger as the authoritative registry. Filesystem walks over `data/fixtures/anchored_real/` MUST NOT be used for canonical resolution by any governed consumer.
+- Failure handling for the atomic write sequence:
+  - **Steps 1–4 failure** (temp files, hashes): remove temp files; no canonical state was created; no rollback obligation beyond cleanup.
+  - **Steps 5–6 failure** (atomic renames): remove any partially renamed files; no ledger append; nothing canonical was created.
+  - **Step 7 failure** (ledger append): `data.parquet` and `manifest.json` exist on disk but are NOT canonical. Producer MUST either (a) retry ledger append with bounded exponential backoff, or (b) rename the snapshot directory to `<snapshot_id>.orphaned/` and emit a P0 governance event.
+- Consumer read semantics: a snapshot directory whose `snapshot_id` is not resolvable through the master ledger is NOT readable by any governed consumer, regardless of filesystem presence.
+- Orphaned snapshot directories MAY be retained for post-hoc audit but MUST NOT be reachable through canonical producer resolution paths.
+
+**Invariant.** `filesystem existence ≠ canonical existence`. The master ledger is the source of truth.
+
+### N-A2-5-4: Storage layout
+
+Path convention:
+
+```
+data/fixtures/anchored_real/<feature>/<snapshot_id>/
+    data.parquet
+    manifest.json
+```
+
+Where `<feature>` matches the feature name (`win_rate_21d`) and `<snapshot_id>` follows N-A2-5-1 format.
+
+**Immutability enforcement: Detection + Policy (no filesystem-level prevention).**
+
+- **Detection (mandatory).** Pre-flight validation and every consumer of an anchored-real fixture MUST recompute `content_hash` from bytes and compare against the manifest. Any mismatch is a HARD FAIL; no partial acceptance.
+- **Policy (mandatory).** No automated process may overwrite, rename, or delete files under `data/fixtures/anchored_real/`. Any such action requires explicit governance amendment.
+- **Filesystem `chmod 444` (optional).** MAY be applied opportunistically but is NOT relied upon (cross-machine sync between nexus / local Downloads / backup targets is not permission-preserving in all cases).
+
+**Retention policy.** DEFERRED to operational governance. Constraint: snapshots MUST NOT be deleted by any automated process without explicit governance amendment. This deferral is non-blocking for SD-A2-5 LOCK.
+
+### N-A2-5-5: Determinism requirement
+
+Producer builds MUST be deterministic:
+
+> Same input snapshots + same producer code SHA + same producer config + same recorded writer configuration and library version ⇒ identical `content_hash`.
+
+**Required producer implementation guarantees.**
+
+- Canonical sort applied to output DataFrame before write. Sort keys: `(date, symbol_id)` ascending. Both keys MUST be present as columns.
+- No unordered iteration in output construction (no reliance on `set` iteration order, no `dict.keys()` in output-affecting paths).
+- Any random seed used MUST be recorded in `manifest.json` under `random_seed`. If randomness is not used, field value is `null`.
+- No `datetime.now()`, `time.time()`, or system-clock reads in producer logic that affect data content. `build_utc_timestamp` is recorded once at build start, stored in manifest for audit, and is NOT included in `content_hash` scope.
+- Explicit dtype specification for all output columns (SD-A2-8 fixes the dtype values; SD-A2-5 fixes that dtypes MUST be explicit).
+
+**Execution environment canonicalization.** Producer execution environment variables that MAY influence serialized output MUST be either canonicalized at process entry OR explicitly recorded in the manifest.
+
+Canonicalized at process entry (nexus / Linux target):
+
+- `LC_ALL = "C.UTF-8"` — string sort collation follows C locale; UTF-8 encoding enforced.
+- `TZ = "UTC"` — all timezone-naive datetime operations resolve to UTC; producer code MUST use timezone-aware UTC datetimes throughout.
+- `PYTHONHASHSEED = "0"` — Python dict/set hash randomization disabled. Producer MUST NOT rely on dict/set iteration order regardless; this is defense in depth.
+
+Recorded in manifest under `producer_environment`:
+
+- `python_version`
+- `os_platform`
+- `arrow_library_version`
+- `polars_version` (if used)
+- `canonicalized` block echoing the values set at process entry
+
+**Cross-platform note (non-normative).** Producer target is nexus (Linux). If producer execution ever migrates to macOS, `LC_ALL=C.UTF-8` availability MUST be verified; otherwise governance amendment required.
+
+**Failure semantics.** Non-deterministic rebuild (identical inputs → different `content_hash`) is a P0 governance failure. Pipeline execution MUST HALT pending investigation.
+
+### N-A2-5-6: Manifest schema
+
+Version: `manifest_schema_version: "1.0.0"` (semver).
+
+- Additive field additions in future SDs → minor version bump (v1.x.x).
+- Breaking changes (removal, rename, semantic redefinition) → major version bump + governance amendment.
+
+**Version bump semantics.** `manifest_schema_version` describes JSON schema shape. `producer_version` describes producer implementation semver. The two are independent: schema minor bump does NOT require producer version change; producer major change does NOT necessarily bump schema.
+
+**Required fields for v1.0.0.**
+
+```json
+{
+  "manifest_format": "json",
+  "manifest_schema_version": "1.0.0",
+  "producer_version": "0.1.0",
+  "snapshot_id": "win_rate_21d_20260702T134502Z_a3f92e18c04b",
+  "content_hash": "a3f92e18c04b7d...",
+  "content_hash_algorithm": "sha256",
+  "feature": "win_rate_21d",
+  "producer_identity": {
+    "producer_id": "<from SD-A2-2 locked identity>",
+    "producer_code_sha": "<git rev-parse HEAD at build; clean tree required>",
+    "producer_config_hash": "<SHA-256 of resolved config as canonical JSON>",
+    "repository_clean": true
+  },
+  "producer_environment": {
+    "python_version": "3.13.2",
+    "os_platform": "Linux-6.5.0-x86_64",
+    "arrow_library_version": "pyarrow==15.0.2",
+    "polars_version": "<version-or-null>",
+    "canonicalized": {
+      "LC_ALL": "C.UTF-8",
+      "TZ": "UTC",
+      "PYTHONHASHSEED": "0"
+    }
+  },
+  "build_utc_timestamp": "2026-07-02T13:45:02Z",
+  "build_host": "<hostname; audit only, not hashed>",
+  "input_snapshots": [
+    {
+      "role": "<e.g., listed_market_daily_price_adj>",
+      "snapshot_id": "<upstream snapshot_id>",
+      "content_hash": "<upstream content_hash>"
+    }
+  ],
+  "row_count": 0,
+  "column_names": ["date", "symbol_id", "win_rate_21d"],
+  "column_dtypes": {"date": "date32[day]", "symbol_id": "uint32"},
+  "min_cross_section_obs_per_date": 30,
+  "parquet_writer_config": {
+    "governance_fixed": {
+      "compression": "zstd",
+      "coerce_timestamps": "us",
+      "allow_truncated_timestamps": false,
+      "use_dictionary": true,
+      "column_sort": "alphabetical",
+      "wall_clock_metadata": false
+    },
+    "recorded": {
+      "compression_level": 3,
+      "row_group_size": 65536,
+      "data_page_version": "2.0"
+    }
+  },
+  "random_seed": null
+}
+```
+
+**Fields explicitly DEFERRED (not v1.0.0).**
+
+- Full snapshot lineage DAG (upstream chain beyond direct inputs) → SD-A2-11.
+- Regeneration-trigger conditions → SD-A2-11.
+
+### N-A2-5-7: Pre-flight verifiable fields
+
+Every normative field listed in this section MUST be verified by producer build pre-flight validation. The current version defines the following checks. Any FAIL closes the build with no artifact persistence and no ledger append.
+
+| # | Field | Source | Check |
+|---|---|---|---|
+| 1 | `manifest_format` | manifest | equals `"json"` |
+| 2 | `manifest_schema_version` | manifest | equals `"1.0.0"` |
+| 3 | `snapshot_id` | manifest | regex `^win_rate_21d_\d{8}T\d{6}Z_[0-9a-f]{12}$` |
+| 4 | `content_hash` | manifest | 64 lowercase hex characters |
+| 5 | `content_hash_recomputed` | `data.parquet` bytes | SHA-256 of file equals manifest `content_hash` |
+| 6 | `snapshot_id_prefix_binding` | derived | `content_hash[:12]` equals `snapshot_id` last 12 characters |
+| 7 | `producer_identity.producer_id` | manifest | matches SD-A2-2 locked identity |
+| 8 | `producer_identity.producer_code_sha` | manifest | equals `git rev-parse HEAD`; working tree clean |
+| 9 | `producer_identity.repository_clean` | manifest | equals `true` |
+| 10 | `producer_version` | manifest | valid semver string |
+| 11 | `producer_environment.canonicalized.LC_ALL` | manifest | equals `"C.UTF-8"` |
+| 12 | `producer_environment.canonicalized.TZ` | manifest | equals `"UTC"` |
+| 13 | `producer_environment.canonicalized.PYTHONHASHSEED` | manifest | equals `"0"` |
+| 14 | `min_cross_section_obs_per_date` | manifest | equals 30 (SD-A2-1) |
+| 15 | `parquet_writer_config.governance_fixed` | manifest | every field equals SD-A2-5 locked value |
+| 16 | `parquet_writer_config.recorded` | manifest | present; specific values not checked against fixed reference |
+| 17 | `column_dtypes` | manifest ∧ data | manifest values equal actual Parquet schema |
+| 18 | `input_snapshots[*].content_hash` | manifest ∧ upstream ledger | each upstream `content_hash` resolvable in a prior ledger entry |
+| 19 | `master_ledger_entry` | master ledger | new entry appended with correct `prev_entry_chain_hash` md5 |
+
+**SD-A2-1 rider closure.** The first successful producer build passing all normative pre-flight checks defined in this section closes the SD-A2-1 conditional rider (rider closure mechanism per SD-A2-3).
+
+### N-A2-5-8: SD-A2-8 interlock
+
+**Rationale.** `content_hash` is defined as SHA-256 of raw Parquet file bytes. Parquet file bytes depend on column dtypes. SD-A2-8 (dtype widths) is not yet LOCKED. Any anchored-real fixture built between SD-A2-5 LOCK and SD-A2-8 LOCK would carry a dtype-dependent `content_hash` that SD-A2-8 might invalidate, forcing rebuild or governance amendment.
+
+**Normative clause.**
+
+> No anchored-real fixture may be materialized via the governed producer path until BOTH SD-A2-5 and SD-A2-8 are LOCKED. Producer builds attempted before SD-A2-8 LOCK are OUT OF SCOPE for governance and their outputs are NON-CANONICAL. Master ledger entries MUST NOT be appended for such builds.
+
+**Non-canonical artifact reference prohibition.**
+
+> Non-canonical artifacts (produced before SD-A2-8 LOCK or through any non-governed path) MUST NOT be referenced by any governance document, audit memo, research note, or ledger entry. Referencing a non-canonical artifact within a governance context is itself a governance error and requires correction before further governance action can proceed.
+
+This entire clause is automatically retired at SD-A2-8 LOCK.
+
+### Deferrals recorded
+
+- Retention policy → operational governance (non-blocking).
+- Full snapshot lineage DAG → SD-A2-11.
+- Regeneration-trigger detection → SD-A2-11.
+- Column dtype widths → SD-A2-8 (with interlock per N-A2-5-8).
+
+### SD-A2-1 rider closure path
+
+Post-SD-A2-5 LOCK, the SD-A2-1 conditional rider remains ACTIVE until the first successful producer build passes all pre-flight checks defined in N-A2-5-7. This requires SD-A2-8 LOCK to precede any legitimate producer build (per N-A2-5-8 interlock). Rider closure is therefore gated on the sequence: SD-A2-8 LOCK → producer build → pre-flight pass.
+
+### Governance metadata
+
+- **SD ID:** SD-A2-5
+- **Status:** LOCKED
+- **Commit SHA:** `<TBD>` (backfill post-commit per SD-A2-1..4 pattern; see commits `9ca0aa8`, `d83b80e`, `76cd6bb`, `e330a39` for the backfill precedent)
+- **Prev SD lock:** SD-A2-4 (commit `036f0b4`)
+- **Ledger version at lock:** v0.1.0 (append cycle continues)
+- **Prev ledger tail md5:** `83c101a7c3373931bbd9fd47a5f922c0`
+- **New ledger tail md5 after append:** `<computed post-write>`
+- **SD lock progress after this entry:** 5/11
+
+---
