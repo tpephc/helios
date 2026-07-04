@@ -835,7 +835,7 @@ Post-SD-A2-5 LOCK, the SD-A2-1 conditional rider remains ACTIVE until the first 
 ## SD-A2-8 — Dtype finalization for producer table and consumer panel
 
 **Status:** LOCKED
-**Commit:** `<TBD>` (backfill post-commit per SD-A2-1..5 pattern)
+**Commit:** `9963d72` (backfill post-commit per SD-A2-1..5 pattern)
 **Prev SD lock:** SD-A2-5 (commit `23b249b`)
 **Prev ledger tail md5:** `9775b36b09ac3743e3cc5aaefd909b2a`
 **Ledger version at lock:** `v0.1.0` (append cycle continues)
@@ -1027,7 +1027,7 @@ No further governance lock is required for rider closure. The remaining locks (S
 
 - **SD ID:** SD-A2-8
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD>` (backfill post-commit per SD-A2-1..5 pattern; precedent commits `9ca0aa8`, `d83b80e`, `76cd6bb`, `e330a39`, `dae5557`)
+- **Commit SHA:** `9963d72` (backfill post-commit per SD-A2-1..5 pattern; precedent commits `9ca0aa8`, `d83b80e`, `76cd6bb`, `e330a39`, `dae5557`)
 - **Prev SD lock:** SD-A2-5 (commit `23b249b`)
 - **Ledger version at lock:** v0.1.0 (append cycle continues)
 - **Prev ledger tail md5:** `9775b36b09ac3743e3cc5aaefd909b2a`
