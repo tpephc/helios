@@ -830,3 +830,208 @@ Post-SD-A2-5 LOCK, the SD-A2-1 conditional rider remains ACTIVE until the first 
 - **SD lock progress after this entry:** 5/11
 
 ---
+---
+
+## SD-A2-8 — Dtype finalization for producer table and consumer panel
+
+**Status:** LOCKED
+**Commit:** `<TBD>` (backfill post-commit per SD-A2-1..5 pattern)
+**Prev SD lock:** SD-A2-5 (commit `23b249b`)
+**Prev ledger tail md5:** `9775b36b09ac3743e3cc5aaefd909b2a`
+**Ledger version at lock:** `v0.1.0` (append cycle continues)
+
+### Scope
+
+Finalizes column dtypes for both tables in the `win_rate_21d` feature lineage: the producer table (spec §5.3) and the consumer panel appended columns (spec §6.1). Closes the dtype-related deferrals in spec §5.3 ("Final dtype list deferred to A2") and §6.1 ("Dtype finalization ... is deferred to Gate A2"). Establishes canonical column ordering and row sort order, null representation policy, and zero-row canonical semantics. Contains clerical and structural reconciliations with SD-A2-5 (`symbol_id` → `stock_id`; column-order and row-sort refinements) and a downstream interlock with SD-A2-9 for I4 numeric tolerance.
+
+### N-A2-8-1: Producer table dtypes (spec §5.3)
+
+The producer table columns are locked at the following dtypes (Polars type names; Parquet physical/logical annotations shown for V1 verification):
+
+| Column | Polars dtype | Parquet physical | Parquet logical | Nullable |
+|---|---|---|---|---|
+| `date` | `Date` | `INT32` | `DATE` | No |
+| `median_daily_return` | `Float64` | `DOUBLE` | (none) | Yes |
+| `n_obs_cross_section` | `UInt16` | `INT32` | `INT(16, false)` | No |
+| `source_snapshot_id` | `Utf8` | `BYTE_ARRAY` | `STRING` | No |
+
+**Rationale summary.**
+
+- `date` as `Date` (= Arrow `date32[day]`, 4 bytes/row): TW trading calendar is calendar-day granularity; `timestamp[us]` would double storage and imply sub-day precision that does not exist in this feature's semantic.
+- `median_daily_return` as `Float64`: median of `Float64` daily returns preserves precision; `Float32` would introduce precision loss on cross-sectional aggregation and complicate I4 tolerance verification. Nullable per §3.3 (null iff `|U_s| < MIN_CROSS_SECTION_OBS_PER_DATE`).
+- `n_obs_cross_section` as `UInt16`: `U_s` is TWSE + TPEx per spec §3.2 line 177 (`security_lifecycle.market IN ('TWSE', 'TPEx')`). Historical + current union is well within 65,535. `UInt8` (max 255) is insufficient; `UInt32` requires L2 universe expansion which per §9.3 requires spec amendment.
+- `source_snapshot_id` as `Utf8`: SHALL conform to the canonical snapshot identifier contract of the referenced upstream producer, and MUST resolve to exactly one entry in the SD-A2-5 master ledger. SD-A2-8 does NOT fix the format string; the format is governed by the upstream producer's own snapshot identity contract. This decoupling allows future upstream producers with governed-but-different snapshot formats to be referenced without amending SD-A2-8.
+
+**Empirical observability item (non-normative).** Post-first-build data audit SHOULD record the observed maximum `n_obs_cross_section` for operational observability. Any future dtype adequacy re-evaluation SHOULD be driven by empirical evidence, not by a preset numerical threshold.
+
+### N-A2-8-2: Consumer panel appended column dtypes (spec §6.1)
+
+The consumer panel appends the following columns to the inherited `(stock_id, date)` panel, at the following dtypes:
+
+| Column | Polars dtype | Parquet physical | Parquet logical | Nullable |
+|---|---|---|---|---|
+| `win_rate_21d` | `Float64` | `DOUBLE` | (none) | Yes |
+| `n_obs_21d` | `UInt8` | `INT32` | `INT(8, false)` | No |
+| `n_wins_21d` | `UInt8` | `INT32` | `INT(8, false)` | No |
+
+**Rationale summary.**
+
+- `win_rate_21d` as `Float64` nullable: spec §6.1 preliminary confirmed final. Nullable per spec I3 (`win_rate_21d is null iff n_obs_21d < MIN_OBS`).
+- `n_obs_21d`, `n_wins_21d` as `UInt8`: range `[0, WINDOW=21]` (spec I1) fits with 234 headroom. Chosen for semantic honesty (bounded counts), not primarily for storage.
+
+### N-A2-8-3: Inherited key column handling
+
+**`stock_id` dtype is INHERITED from the upstream canonical panel schema.** SD-A2-8 does NOT lock `stock_id` dtype.
+
+Resolution mechanism:
+
+1. If an upstream governance artifact locks `stock_id` dtype at the time of first governed consumer build, that lock is inherited by reference (producer/consumer implementations MUST cite the artifact and version).
+2. If no upstream lock exists at the time of first governed consumer build, the producer-consumer interface SD (SD-A2-10) MUST resolve `stock_id` dtype before consumer build proceeds.
+
+**Cross-table `date` dtype constraint.** Producer table `date` and consumer panel `date` SHALL share the same canonical logical type (`Date` / Arrow `date32[day]`) per N-A2-8-1. Any serialization differences that preserve the canonical logical type are implementation concerns, not governance concerns. This constraint ensures join operations between producer table and consumer panel require no logical-type cast.
+
+If upstream panel `date` uses a different canonical logical type, cast semantics MUST be resolved by SD-A2-10 before consumer build proceeds.
+
+### N-A2-8-4: Canonical column ordering (refinement of SD-A2-5 N-A2-5-2)
+
+SD-A2-5 N-A2-5-2 locked "canonical column sort: alphabetical by column name, applied before write". SD-A2-8 refines this rule for two distinct table classes:
+
+**Producer-materialized tables (all columns produced by the feature).**
+
+- Rule: alphabetical over all columns.
+- Applied to producer table (§5.3): `date, median_daily_return, n_obs_cross_section, source_snapshot_id`. Already alphabetical; no re-ordering required.
+
+**Consumer panels (identity keys inherited + feature columns appended).**
+
+- Rule: identity keys preserve upstream panel order; appended feature columns sorted alphabetically among themselves, following the identity keys.
+- Applied to `win_rate_21d` consumer panel: `stock_id, date, n_obs_21d, n_wins_21d, win_rate_21d`.
+
+**Rationale.** SD-A2-5 N-A2-5-2's alphabetical rule was written in the producer-table context, where alphabetical and identity-preserving orderings coincide. Applied naively to a consumer panel with inherited identity keys, alphabetical-over-union would reorder identity columns depending on which feature columns are being appended, defeating cross-feature panel stability. The refinement preserves SD-A2-5's determinism guarantee (all columns of every writable region are canonically ordered) while respecting the spec §6.1 semantic of "appends columns" (identity is prior; features are annotations).
+
+**This refinement does NOT constitute an amendment to SD-A2-5.** SD-A2-5's rule is preserved for producer-materialized tables. The consumer-panel case was not in SD-A2-5's scope; SD-A2-8 fills the gap.
+
+### N-A2-8-5: Canonical row sort order (refinement of SD-A2-5 N-A2-5-5)
+
+SD-A2-5 N-A2-5-5 locked "canonical sort applied to output DataFrame before write. Sort keys: `(date, symbol_id)` ascending. Both keys must be present as columns." That rule was written assuming both keys are present in a single panel; it does not cleanly apply to the producer table (single-column PK) and the panel identity tuple order is corrected below.
+
+**Producer-materialized tables (single-column PK).**
+
+- Producer table row sort key: `date` ascending.
+- The "both keys must be present" clause of SD-A2-5 N-A2-5-5 is interpreted as trivially satisfied when only one PK column exists.
+
+**Consumer panels (composite identity).**
+
+- Consumer panel row sort key: `(stock_id, date)` ascending.
+- Order matches spec §6.1 panel identity tuple `(stock_id, date)`.
+
+**Rationale.** Row sort order must be deterministic for `content_hash` reproducibility. SD-A2-5 N-A2-5-5's specific order `(date, symbol_id)` and the required-both-keys clause were written before the two-table scope of `win_rate_21d` was fully worked through in governance discussion. SD-A2-8 aligns row sort order with the spec-defined panel identity tuple ordering, giving a single symmetric rule: sort by the panel identity tuple in the order the spec presents it.
+
+**This refinement clarifies how SD-A2-5 applies to the two-table schema defined by the specification.** SD-A2-5 N-A2-5-5 was written in a single-panel scope; the producer table (§5.3) and consumer panel (§6.1) two-table structure was not addressed at SD-A2-5 lock time. SD-A2-5's intent (deterministic canonical row sort) is preserved; SD-A2-8 defines how that intent applies to each of the two table classes and aligns the consumer-panel tuple ordering with spec convention. Any producer or consumer build attempted prior to SD-A2-8 LOCK is out-of-scope under the SD-A2-5 N-A2-5-8 interlock, so no artifact exists that would be affected by this clarification.
+
+### N-A2-8-6: Null representation policy
+
+**For every nullable `Float64` column in either table (`median_daily_return`, `win_rate_21d`):**
+
+Null representation MUST be Arrow validity bitmap. NaN-as-null is FORBIDDEN.
+
+Producers MUST NOT emit NaN as a null sentinel. Any NaN in a nullable `Float64` column constitutes a producer invariant violation and MUST fail V1 pre-flight; the build is closed with no artifact persistence.
+
+**V1 pre-flight check:** for every `Float64` nullable column, `data.parquet` MUST NOT contain any NaN values.
+
+**Rationale.** NaN propagates silently through downstream arithmetic (`NaN + 0.5 = NaN`, `NaN < 1.0 = False`, `NaN != NaN`), whereas Arrow validity-bitmap nulls trigger explicit null-handling in Polars and DuckDB operations. Conflation of "no observation" (semantically null) and "computation produced NaN" (numeric misbehavior) would defeat I3 invariant verification for the consumer panel and would silently poison downstream regime binning and cross-sectional aggregation for the producer table.
+
+**Cost note (non-normative).** V1 NaN scan is full-scan per Float64 nullable column per build. At anchored-real fixture scale this cost is small. Full-scan is adopted here because the cost of full-scan is affordable and the cost of a missed NaN (silent downstream corruption) is high.
+
+### N-A2-8-7: Zero-row canonical semantics
+
+A producer table or consumer panel with `row_count = 0` IS a canonical artifact provided all schema, manifest, and dtype invariants defined in SD-A2-5 and SD-A2-8 hold.
+
+Specifically:
+
+- Parquet file MUST be present with the correct schema (columns, dtypes, nullability, ordering per N-A2-8-4).
+- Manifest MUST be present with all v1.0.0 required fields per SD-A2-5 N-A2-5-6, with `row_count: 0`.
+- Master ledger entry MUST be appended per SD-A2-5 N-A2-5-3.
+- All SD-A2-5 N-A2-5-7 pre-flight checks MUST pass.
+- `row_count = 0` MUST still satisfy all schema, manifest, and dtype invariants.
+
+Zero-row tables are NOT treated as build failure. They represent the truthful case "no eligible dates (or rows) in the covered range", which is a valid semantic outcome for early-history covered ranges or narrow date-window builds.
+
+**V1 pre-flight impact:** the pre-flight NaN scan (N-A2-8-6) trivially passes on zero-row tables. The dtype and schema checks (N-A2-8-1, N-A2-8-2) still MUST pass — an empty Parquet file with a wrong schema is NOT canonical.
+
+### N-A2-8-8: Reconciliation with SD-A2-5 (name and ordering corrections)
+
+This clause consolidates the corrections to SD-A2-5 that arise from spec re-reading and structural review during SD-A2-8 triage. SD-A2-5 lock text is NOT reopened; this is the authoritative reconciliation for future audit reference.
+
+**Name correction (clerical).** SD-A2-5 N-A2-5-5 used `symbol_id` as the panel identity key name. The `win_rate_21d_spec.md` v0.1.0 authoritative panel key name is `stock_id` (per spec §6.1 line 587). For all Gate A2 producer, consumer, fixture, and manifest purposes, `stock_id` supersedes `symbol_id`. This is a clerical name correction, not a semantic amendment.
+
+**Column ordering refinement (structural, per N-A2-8-4).** SD-A2-5 N-A2-5-2's alphabetical rule was written in the producer-table context. For consumer panels, identity keys preserve upstream panel order and appended feature columns sort alphabetically among themselves. See N-A2-8-4.
+
+**Row sort refinement (structural, per N-A2-8-5).** SD-A2-5 N-A2-5-5's `(date, symbol_id)` sort key and "both keys must be present" clause were written before the two-table scope was fully addressed. Producer tables sort by their single PK; consumer panels sort by `(stock_id, date)` matching spec §6.1 panel identity tuple. See N-A2-8-5.
+
+**Applied downstream:**
+
+- Manifest `column_names` field values MUST use spec-authoritative names throughout (`stock_id`, not `symbol_id`).
+- Manifest `column_dtypes` field entries MUST match N-A2-8-1 and N-A2-8-2 dtypes.
+- No `symbol_id` references SHOULD appear in producer or consumer implementation code, manifest fields, or subsequent SD lock entries.
+
+### N-A2-8-9: SD-A2-9 downstream interlock (I4 tolerance)
+
+SD-A2-8 locks the dtypes required for spec §6.2 invariant I4 (`win_rate_21d Float64`, `n_obs_21d UInt8`, `n_wins_21d UInt8`). SD-A2-8 does NOT lock the floating-point tolerance for I4 equality; that is SD-A2-9 scope.
+
+**Consumer pre-flight validation of I4 numeric equality is DEFERRED until SD-A2-9 LOCK.** Prior to SD-A2-9 LOCK, consumer builds pass pre-flight WITHOUT the I4 numeric equality check. All other I-invariants (I1, I2, I3) remain enforceable at SD-A2-8 LOCK because they do not require a tolerance value.
+
+**I4 does NOT gate SD-A2-1 rider closure.** Rider closure is producer-side; I4 is consumer-side. See N-A2-8-10.
+
+### N-A2-8-10: SD-A2-1 rider closure sequence (clarification)
+
+SD-A2-1 rider closes on the first successful producer build passing the pre-flight checks defined in SD-A2-5 N-A2-5-7. The producer-side path to rider closure is:
+
+```
+SD-A2-1 LOCKED
+SD-A2-2 LOCKED
+SD-A2-3 LOCKED
+SD-A2-4 LOCKED
+SD-A2-5 LOCKED
+SD-A2-8 LOCKED  <-- this lock
+    then
+producer build passes SD-A2-5 N-A2-5-7 pre-flight
+    then
+SD-A2-1 rider CLOSED
+```
+
+Consumer-side gates (SD-A2-9 for I4 tolerance, SD-A2-10 for `stock_id` resolution) do NOT block SD-A2-1 rider closure. They gate consumer build acceptance separately.
+
+Post-SD-A2-8 LOCK, the producer-side critical path is fully unblocked. Rider closure is now gated only on producer build execution and pre-flight success.
+
+### Deferrals recorded
+
+- I4 numeric tolerance value → SD-A2-9 (consumer-side, does NOT block rider closure).
+- `stock_id` dtype (upstream inheritance mechanism) → SD-A2-10 (consumer-side, does NOT block rider closure).
+- `date` dtype cast semantics if upstream panel `date` dtype differs from `date32[day]` → SD-A2-10.
+
+### Documentation notes (non-normative)
+
+- Spec §3.3 lines 191-192 reference `MIN_CROSS_SECTION_OBS_PER_DATE (§5.3; value deferred to A2)`. This deferral was resolved by SD-A2-1 LOCK at value 30. Spec text at v0.1.0 remains as originally locked; this note records the resolution for future readers.
+
+### SD-A2-1 rider closure path (post-SD-A2-8 LOCK)
+
+Rider remains ACTIVE. Closure requires:
+
+1. First governed producer build executes (SD-A2-3 build orchestration).
+2. Producer build passes all SD-A2-5 N-A2-5-7 pre-flight checks (SHA-256 content hash verification, manifest schema, producer identity, environment canonicalization, dtype conformance per SD-A2-8, master ledger append).
+3. On pass, SD-A2-1 conditional rider CLOSES automatically.
+
+No further governance lock is required for rider closure. The remaining locks (SD-A2-6, SD-A2-7, SD-A2-9, SD-A2-10, SD-A2-11) are downstream of the rider closure event and do not block it.
+
+### Governance metadata
+
+- **SD ID:** SD-A2-8
+- **Status:** LOCKED
+- **Commit SHA:** `<TBD>` (backfill post-commit per SD-A2-1..5 pattern; precedent commits `9ca0aa8`, `d83b80e`, `76cd6bb`, `e330a39`, `dae5557`)
+- **Prev SD lock:** SD-A2-5 (commit `23b249b`)
+- **Ledger version at lock:** v0.1.0 (append cycle continues)
+- **Prev ledger tail md5:** `9775b36b09ac3743e3cc5aaefd909b2a`
+- **New ledger tail md5 after append:** `<computed post-write>`
+- **SD lock progress after this entry:** 6/11
+
+---
