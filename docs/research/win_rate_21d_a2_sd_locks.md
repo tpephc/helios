@@ -561,7 +561,7 @@ eleven rows show LOCKED.
 ## SD-A2-5 — Snapshot lineage and manifest mechanism
 
 **Status:** LOCKED
-**Commit:** `<TBD>` (backfill post-commit per SD-A2-1..4 pattern)
+**Commit:** `23b249b` (backfill post-commit per SD-A2-1..4 pattern)
 **Prev SD lock:** SD-A2-4 (commit `036f0b4`)
 **Prev ledger tail md5:** `83c101a7c3373931bbd9fd47a5f922c0` (captured 2026-07-02 post-SD-A2-4 apply)
 **Ledger version at lock:** `v0.1.0` (append cycle continues)
@@ -822,7 +822,7 @@ Post-SD-A2-5 LOCK, the SD-A2-1 conditional rider remains ACTIVE until the first 
 
 - **SD ID:** SD-A2-5
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD>` (backfill post-commit per SD-A2-1..4 pattern; see commits `9ca0aa8`, `d83b80e`, `76cd6bb`, `e330a39` for the backfill precedent)
+- **Commit SHA:** `23b249b` (backfill post-commit per SD-A2-1..4 pattern; see commits `9ca0aa8`, `d83b80e`, `76cd6bb`, `e330a39` for the backfill precedent)
 - **Prev SD lock:** SD-A2-4 (commit `036f0b4`)
 - **Ledger version at lock:** v0.1.0 (append cycle continues)
 - **Prev ledger tail md5:** `83c101a7c3373931bbd9fd47a5f922c0`
