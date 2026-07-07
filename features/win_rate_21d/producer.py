@@ -27,6 +27,22 @@ Context / Request separation (Issue D):
     builds MUST pass PF-B and manifest identity checks before their
     outputs can become canonical.  See ``ProducerContext`` docstring for
     the override contract.
+
+PR-2A addition (Q-PR2A-alpha', additive-only per Q-PR2A-R1):
+    ``build_full`` now invokes ``verify_rider_closing_checks_are_real``
+    from ``pre_flight``, positioned AFTER the pre-existing
+    ``BUILD_STRATEGY`` defensive guard and BEFORE the pre-existing
+    ``NotImplementedError`` raise.  This ordering is deliberate:
+        1. The ``BUILD_STRATEGY`` guard remains PR-1's first executable
+           statement, preserving its locked role as the outermost
+           runtime backstop.
+        2. The safety gate is the first rider/build-readiness gate that
+           runs once strategy is confirmed canonical.
+        3. The ``NotImplementedError`` for the deferred producer body
+           follows the gate, so PR-1's ``test_build_full_is_shell``
+           still observes ``NotImplementedError`` (the gate raises
+           ``PreFlightShellError``, which subclasses
+           ``NotImplementedError`` per Q-PR2A-R5).
 """
 
 from __future__ import annotations
@@ -38,6 +54,9 @@ from features.win_rate_21d.constants import (
     BUILD_STRATEGY,
     DUCKDB_PATH,
     PRODUCER_TABLE_NAME,
+)
+from features.win_rate_21d.pre_flight import (
+    verify_rider_closing_checks_are_real,
 )
 
 
@@ -140,6 +159,16 @@ def build_full(request: ProducerBuildRequest) -> None:
             f"Unsupported build strategy: {BUILD_STRATEGY!r}. "
             "Only 'one_shot_full_rebuild' is permitted at Gate A2."
         )
+    # PR-2A safety gate (Q-PR2A-alpha', additive-only):
+    # Refuse to enter the producer body while any rider-closing PF-B
+    # check is still shell.  ``PreFlightShellError`` subclasses
+    # ``NotImplementedError`` (Q-PR2A-R5), so PR-1's contract that
+    # ``build_full`` raises ``NotImplementedError`` in shell state is
+    # preserved: PR-1 callers that catch ``NotImplementedError`` still
+    # observe the shell failure; PR-2A callers may catch the narrower
+    # ``PreFlightShellError`` type to distinguish "rider not closed"
+    # from "producer body not yet implemented".
+    verify_rider_closing_checks_are_real()
     raise NotImplementedError(
         "Producer full rebuild pending implementation "
         "(median computation + DuckDB write + manifest emission)"

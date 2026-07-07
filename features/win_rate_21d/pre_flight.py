@@ -7,7 +7,7 @@ PR-1 implements only checks that are fully evaluable from locked constants:
     PF-B4: WINDOW / MIN_OBS consistency
 
 Other PF-B checks are explicit shells that raise ``NotImplementedError``.
-They MUST NOT return pass vacuously — enforced by
+They MUST NOT return pass vacuously -- enforced by
 tests/features/win_rate_21d/test_pre_flight_shell.py.
 
 Governance source: SD-A2-3 LOCKED at 40c0cd1.
@@ -18,12 +18,40 @@ Severity model (Issue F):
     particular PF-L checks with non-fatal drift indicators such as
     Parquet ``recorded`` config differences) can emit ``WARNING`` without
     changing the dataclass shape.
+
+PR-2A additions (additive-only, Q-PR2A-R1):
+    - ``PreFlightShellError`` (subclass of ``NotImplementedError``,
+      Q-PR2A-R5 refined): dedicated exception type raised by PR-1's
+      shell PF-B functions AND by the rider-closing safety gate.  It
+      is a subclass so PR-1's existing
+      ``pytest.raises(NotImplementedError)`` contracts continue to
+      hold unchanged.  It is a distinct type so the safety gate
+      identifies shells precisely rather than mis-catching a bare
+      ``NotImplementedError`` that a real implementation's internal
+      helper might raise.  The PR-1 shell functions
+      ``pf_b1_scope_check``, ``pf_b2_canonical_source_check``, and
+      ``pf_b6_duckdb_writeability_check`` have their raise type
+      narrowed to this subclass.  This is an additive-safe change
+      (subtype narrowing preserves all existing catch clauses).
+    - ``PreFlightCallable`` type alias for callables returning a
+      ``PreFlightResult``.
+    - ``ALL_PRE_FLIGHT_CHECKS`` (Q-PR2A-R6): tuple of every SD-A2-3
+      PF-B check in canonical order.
+    - ``RIDER_CLOSING_CHECKS`` (Q-PR2A-R6): tuple of the PF-B checks
+      that are currently shell and gate SD-A2-1 rider closure
+      (PF-B1, PF-B2, PF-B6).  PF-B3 and PF-B4 are excluded because they
+      are already real in PR-1.
+    - ``verify_rider_closing_checks_are_real`` (Q-PR2A-alpha'):
+      probe each rider-closing check by invocation; aggregate any that
+      raise ``PreFlightShellError`` and raise ``PreFlightShellError``
+      naming all shells for progress observability.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Callable, Final
 
 from features.win_rate_21d.constants import (
     MIN_CROSS_SECTION_OBS_PER_DATE,
@@ -73,6 +101,38 @@ class PreFlightResult:
     message: str
 
 
+# ---------------------------------------------------------------------------
+# PR-2A shell marker (Q-PR2A-R5, refined per PR-2A review Blocking Issue 1).
+#
+# Defined here (immediately after PreFlightResult) rather than at the
+# bottom of the module so that PR-1 shell functions below can raise it
+# directly.  This is additive: no PR-1 symbol is removed or modified in
+# meaning; the shell functions have their raise type narrowed to this
+# subclass so that the safety gate identifies "is shell" precisely,
+# not "raises NotImplementedError".
+# ---------------------------------------------------------------------------
+
+
+class PreFlightShellError(NotImplementedError):
+    """Raised by a pre-flight shell to signal "not yet implemented".
+
+    Governance semantics (Q-PR2A-R5, refined):
+        Subclasses ``NotImplementedError`` deliberately so PR-1's
+        contract that shell PF-B checks raise ``NotImplementedError``
+        (locked by
+        ``test_pf_b_shells_do_not_pass_vacuously`` and
+        ``test_build_full_is_shell``) continues to hold: any caller
+        writing ``except NotImplementedError`` still catches this.
+
+        Distinct from bare ``NotImplementedError`` so the rider-closing
+        safety gate can identify shells precisely.  A real
+        implementation whose internal helper happens to raise
+        ``NotImplementedError`` would be misclassified as a shell by
+        a bare ``except NotImplementedError`` gate; the narrower
+        exception type prevents that misclassification.
+    """
+
+
 def pf_b1_scope_check() -> PreFlightResult:
     """PF-B1 requested-vs-materialized scope validation.
 
@@ -84,7 +144,7 @@ def pf_b1_scope_check() -> PreFlightResult:
     PR-1 status: shell.  Real implementation requires the scope resolver
     and the DuckDB read path, both landing in a later PR.
     """
-    raise NotImplementedError(
+    raise PreFlightShellError(
         "PF-B1 pending scope resolver + DuckDB read path"
     )
 
@@ -103,7 +163,7 @@ def pf_b2_canonical_source_check() -> PreFlightResult:
     PR-1 status: shell.  Real implementation requires the producer body
     to inspect.
     """
-    raise NotImplementedError(
+    raise PreFlightShellError(
         "PF-B2 pending producer body implementation"
     )
 
@@ -190,6 +250,107 @@ def pf_b6_duckdb_writeability_check() -> PreFlightResult:
     PR-1 status: shell.  Real implementation requires the DuckDB
     integration path in a later PR.
     """
-    raise NotImplementedError(
+    raise PreFlightShellError(
         "PF-B6 pending DuckDB integration path"
     )
+
+# ---------------------------------------------------------------------------
+# PR-2A additions (additive-only per Q-PR2A-R1).
+#
+# The definitions below extend PR-1's PF-B framework with a
+# rider-closing safety gate primitive.  They do not modify any PR-1
+# symbol or behavior; they only add new module-level names and narrow
+# PR-1 shell raise types to a subclass of NotImplementedError (see
+# PreFlightShellError near the top of this module).
+# ---------------------------------------------------------------------------
+
+
+# Type alias for any callable that returns a PreFlightResult.  Applies
+# to both parameterless shells (PF-B1, PF-B2, PF-B6) and the
+# parameterised real checks (PF-B3, PF-B4).
+PreFlightCallable = Callable[..., PreFlightResult]
+
+
+# Complete tuple of every SD-A2-3 PF-B check defined in PR-1, in
+# canonical order.  This is the general registry; the rider-closing
+# subset is defined below as ``RIDER_CLOSING_CHECKS``.
+ALL_PRE_FLIGHT_CHECKS: Final[tuple[PreFlightCallable, ...]] = (
+    pf_b1_scope_check,
+    pf_b2_canonical_source_check,
+    pf_b3_min_cross_section_check,
+    pf_b4_window_constants_check,
+    pf_b6_duckdb_writeability_check,
+)
+
+
+# Subset of ``ALL_PRE_FLIGHT_CHECKS`` that must transition from shell to
+# real before SD-A2-1 rider closure.  As of PR-2A, this is exactly the
+# three PR-1 shells (PF-B1, PF-B2, PF-B6).  PF-B3 and PF-B4 are excluded
+# because they are already real implementations in PR-1.
+#
+# Signature note (Q-PR2A-D2):
+#     Each callable is currently invokable with no arguments (all three
+#     shells take no parameters).  When a rider-closing check is
+#     replaced by a real implementation that requires arguments (for
+#     example, ``pf_b1_scope_check(scope: BuildScope)``), this tuple's
+#     shape must evolve --- likely to ``(callable, args_provider)``
+#     pairs or ``functools.partial`` bindings.  That is a governance
+#     sub-decision for the PR that introduces the first parameterised
+#     rider-closing check (expected PR-2C); it is intentionally out of
+#     scope for PR-2A.
+RIDER_CLOSING_CHECKS: Final[tuple[Callable[[], PreFlightResult], ...]] = (
+    pf_b1_scope_check,
+    pf_b2_canonical_source_check,
+    pf_b6_duckdb_writeability_check,
+)
+
+
+def verify_rider_closing_checks_are_real() -> None:
+    """Raise ``PreFlightShellError`` if any rider-closing check is shell.
+
+    The gate probes each rider-closing check by invocation and catches
+    ``PreFlightShellError`` (not the broader ``NotImplementedError``).
+    This narrowness is deliberate (Q-PR2A-R5, refined): shells signal
+    "not implemented" via the dedicated ``PreFlightShellError``
+    subclass, so a real implementation whose internal helper happens to
+    raise a bare ``NotImplementedError`` will propagate that exception
+    upward as an unexpected error rather than being misclassified as a
+    shell.
+
+    Diagnostic semantics (Q-PR2A-D1, aggregate):
+        All rider-closing checks are probed.  The raised
+        ``PreFlightShellError`` names every shell found, so rider
+        progress can be observed at a glance rather than one shell at
+        a time.  This departs from ``manifest.py::validate`` (which is
+        fail-fast) because the governance question here is
+        "how far is the rider from closing?", not "is there any
+        violation?".
+
+        Aggregation applies only to shell-state diagnostics.  Any
+        exception other than ``PreFlightShellError`` (for example, a
+        ``RuntimeError`` from a real check that encountered a data
+        problem) propagates immediately and halts the probe --- it is
+        neither aggregated nor suppressed.  This preserves the
+        distinction between "check not yet implemented" (a governance
+        state we report on) and "check ran and something went wrong"
+        (an operational error the caller must see promptly).
+
+    Side effects: none other than the potential raise.
+
+    Raises:
+        PreFlightShellError: if one or more checks in
+            ``RIDER_CLOSING_CHECKS`` raise ``PreFlightShellError`` when
+            invoked with no arguments.  The message names every shell
+            check found, comma-separated, in canonical order.
+    """
+    shell_names: list[str] = []
+    for check in RIDER_CLOSING_CHECKS:
+        try:
+            check()
+        except PreFlightShellError:
+            shell_names.append(check.__name__)
+    if shell_names:
+        raise PreFlightShellError(
+            "rider-closing pre-flight checks are still shell: "
+            + ", ".join(shell_names)
+        )
