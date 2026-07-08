@@ -305,19 +305,33 @@ def test_build_full_gate_error_is_still_notimplementederror() -> None:
 def test_build_full_enters_body_after_gate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Q-PR2A-alpha' ordering: when the gate passes, execution reaches the body.
+    """PR-2B D-PR2B-5 restructure: gate -> body -> compute -> write.
 
-    The body itself is deferred to PR-2B and raises bare
-    ``NotImplementedError`` (not ``PreFlightShellError``).  This
-    confirms the gate is the ONLY thing between the ``BUILD_STRATEGY``
-    guard and the deferred body raise: any accidental side effect above
-    the body raise would surface here.
+    Post-restructure invariants (all three MUST hold):
+        1. Body entered exactly once (via injected body_enter_hook
+           counter -- independent of writer invocation per
+           D-PR2B-5 body-enter observable ruling).
+        2. Compute called exactly once with (request.scope,
+           request.context) and returns the stub artifact.
+        3. Writer.write_full called exactly once with the stub artifact
+           produced by compute.
 
-    PR-2B acceptance criterion: when the producer body is implemented,
-    this test needs to be restructured to inject a controlled body
-    behavior (e.g., mock the DuckDB writer) rather than expecting
-    ``NotImplementedError``.
+    Ordering assertion:
+        body_enter -> compute -> write.  Recorded via a shared call
+        log; ordering is verified against the log rather than by
+        exception plumbing (which was the PR-2A pre-body proxy).
+
+    D-PR2B-4 sibling ("no observable side effect before gate passes")
+    is tested separately in ``test_producer_body`` -- keeping the
+    two invariants in distinct tests prevents an accidental pass-by-
+    coincidence when one gate is weakened.
     """
+    from features.win_rate_21d.producer import (
+        ProducerContext,
+        _BuildDependencies,
+    )
+    from features.win_rate_21d.writer import BuildArtifact
+
     def _real() -> PreFlightResult:
         return PreFlightResult(
             check_id="dummy",
@@ -328,11 +342,62 @@ def test_build_full_enters_body_after_gate(
 
     monkeypatch.setattr(pf, "RIDER_CLOSING_CHECKS", (_real, _real, _real))
 
-    with pytest.raises(NotImplementedError) as excinfo:
-        build_full(_canonical_request())
-    # It must be the body raise, not the gate.
-    assert not isinstance(excinfo.value, PreFlightShellError)
-    assert "Producer full rebuild pending" in str(excinfo.value)
+    call_log: list[str] = []
+    stub_artifact = BuildArtifact(
+        table_name="test_target_table",
+        frame=object(),
+        row_count=0,
+        column_names=(),
+    )
+    compute_calls: list[tuple[BuildScope, ProducerContext]] = []
+    writer_calls: list[BuildArtifact] = []
+
+    def _hook() -> None:
+        call_log.append("body_enter")
+
+    def _stub_compute(
+        scope: BuildScope, context: ProducerContext
+    ) -> BuildArtifact:
+        call_log.append("compute")
+        compute_calls.append((scope, context))
+        return stub_artifact
+
+    class _StubWriter:
+        def write_full(self, artifact: BuildArtifact) -> None:
+            call_log.append("write")
+            writer_calls.append(artifact)
+
+    scope = BuildScope(
+        requested_start=date(2020, 1, 2),
+        requested_end=date(2020, 1, 10),
+    )
+    context = ProducerContext()
+    deps = _BuildDependencies(
+        writer=_StubWriter(),
+        compute=_stub_compute,
+        body_enter_hook=_hook,
+    )
+    request = ProducerBuildRequest(
+        scope=scope, context=context, dependencies=deps
+    )
+
+    # No exception expected: gate passes (patched), body runs to
+    # completion via stubs, writer accepts the stub artifact.
+    build_full(request)
+
+    # (1) Body entered exactly once.
+    assert call_log.count("body_enter") == 1
+
+    # (2) Compute called exactly once with (scope, context).
+    assert len(compute_calls) == 1
+    assert compute_calls[0] == (scope, context)
+
+    # (3) Writer called exactly once with the artifact from compute.
+    assert len(writer_calls) == 1
+    assert writer_calls[0] is stub_artifact
+
+    # Ordering: body_enter -> compute -> write.
+    assert call_log == ["body_enter", "compute", "write"]
 
 
 def test_build_full_gate_runs_after_build_strategy_guard(

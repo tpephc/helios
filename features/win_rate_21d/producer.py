@@ -9,118 +9,198 @@ Build strategy: one-shot full rebuild per invocation.
     ``append_new_dates``) is FORBIDDEN and enforced by
     tests/features/win_rate_21d/test_no_forbidden_names.py.
 
-PR-1 intentionally does not implement:
-    - median computation
-    - DuckDB writes
-    - fixture writer / ledger writer
-    - manifest emission with real build-time values
-    - environment canonicalization
+PR-1 intentionally did not implement median, DuckDB writes, or manifest
+emission.  PR-2A added the rider-closing safety gate.  PR-2B (this
+revision) adds the producer body orchestration and the dependency
+injection seam:
 
-Those land in later PRs per the Executable Governance Navigation Document
-(docs/research/win_rate_21d_producer_build_readiness.md, commit a110500).
+    gate  ->  body_enter_hook  ->  compute  ->  writer.write_full
 
-Context / Request separation (Issue D):
-    ``ProducerContext`` holds environment-varying configuration (paths,
-    target table names).  ``ProducerBuildRequest`` holds per-invocation
-    build parameters (scope, embedded context).  Overrides on
-    ``ProducerContext`` are permitted for testability only; governed
-    builds MUST pass PF-B and manifest identity checks before their
-    outputs can become canonical.  See ``ProducerContext`` docstring for
-    the override contract.
+Every arrow crosses a locked boundary that supports independent
+observation (D-PR2B-5).  Compute produces an immutable ``BuildArtifact``
+(D-PR2B-3); the writer consumes it.  No compute -> writer coupling.
 
-PR-2A addition (Q-PR2A-alpha', additive-only per Q-PR2A-R1):
-    ``build_full`` now invokes ``verify_rider_closing_checks_are_real``
-    from ``pre_flight``, positioned AFTER the pre-existing
-    ``BUILD_STRATEGY`` defensive guard and BEFORE the pre-existing
-    ``NotImplementedError`` raise.  This ordering is deliberate:
-        1. The ``BUILD_STRATEGY`` guard remains PR-1's first executable
-           statement, preserving its locked role as the outermost
-           runtime backstop.
-        2. The safety gate is the first rider/build-readiness gate that
-           runs once strategy is confirmed canonical.
-        3. The ``NotImplementedError`` for the deferred producer body
-           follows the gate, so PR-1's ``test_build_full_is_shell``
-           still observes ``NotImplementedError`` (the gate raises
-           ``PreFlightShellError``, which subclasses
-           ``NotImplementedError`` per Q-PR2A-R5).
+Module dependency (PR-2B blocking-issue remediation):
+    ``BuildScope`` and ``ProducerContext`` now live in
+    ``features/win_rate_21d/build_types.py``.  They are re-exported
+    here so every existing import path
+    (``from features.win_rate_21d.producer import BuildScope``) stays
+    valid.  The re-export is deliberate API-stability infrastructure,
+    not accidental laziness.  Dependency direction is now:
+
+        build_types.py
+        /            \\
+        producer.py    compute.py
+        \\            /
+         writer.py
+
+    with no circular edge between producer and compute.  ``compute``
+    imports its inputs from ``build_types`` rather than from
+    ``producer``, so ``compute`` is unaware of orchestration.
+
+Later PRs still owe:
+    - Real PF-B1 / PF-B2 / PF-B6 (PR-2C rider closure).
+    - Concrete DuckDB writer (PR-2B.1 or PR-2C).
+    - Real compute (PR-2B.1 or PR-2C).
+    - PF-L family, __main__ + wrapper, manifest emission, ledger
+      append (PR-3).
+
+PR-2A gate ordering (Q-PR2A-alpha', preserved):
+    1. ``BUILD_STRATEGY`` defensive guard is the first executable
+       statement.  It survives ``python -O`` (does not use ``assert``).
+    2. ``verify_rider_closing_checks_are_real()`` is the second gate.
+    3. Body entry follows the gate.
+
+D-PR2B-4 invariant:
+    No observable side effect before the gate passes.  Body entry, the
+    body_enter_hook call, the compute call, and the writer call all
+    happen strictly after ``verify_rider_closing_checks_are_real()``
+    returns without raising.  Tested by
+    ``test_producer_body.test_gate_failure_produces_no_side_effect``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
 
-from features.win_rate_21d.constants import (
-    BUILD_STRATEGY,
-    DUCKDB_PATH,
-    PRODUCER_TABLE_NAME,
-)
+from features.win_rate_21d.build_types import BuildScope, ProducerContext
+from features.win_rate_21d.compute import compute as _default_compute
+from features.win_rate_21d.constants import BUILD_STRATEGY
 from features.win_rate_21d.pre_flight import (
     verify_rider_closing_checks_are_real,
 )
+from features.win_rate_21d.writer import BuildArtifact, Writer
+
+# Re-export the moved types so existing import paths remain valid.
+# See module docstring for the rationale.
+__all__ = [
+    "BuildScope",
+    "ProducerContext",
+    "ProducerBuildRequest",
+    "resolve_scope",
+    "build_full",
+]
 
 
-@dataclass(frozen=True, slots=True)
-class BuildScope:
-    """Requested producer build date scope.
+# ---------------------------------------------------------------------------
+# PR-2B DI seam (D-PR2B-1)
+# ---------------------------------------------------------------------------
 
-    Attributes:
-        requested_start: Inclusive earliest trading date requested.
-        requested_end: Inclusive latest trading date requested.
 
-    Materialized scope may differ from requested (subject to PF-B1
-    validation), but the requested scope is what the caller intended and
-    what appears in the manifest ``build_scope`` block once implemented.
+# Type alias for the compute callable.  Uses the (scope, context) pair
+# rather than the full ProducerBuildRequest to keep compute unaware of
+# orchestration (D-PR2B-3): compute must not have a handle to the
+# writer that its output will be passed to.
+ComputeCallable = Callable[[BuildScope, ProducerContext], BuildArtifact]
+
+# Type alias for the body-enter hook.  Parameterless by design
+# (D-PR2B-5 body-enter observable): the hook exists solely to be
+# observed; it takes no context because it makes no decisions.
+BodyEnterHook = Callable[[], None]
+
+
+def _noop_body_enter_hook() -> None:
+    """Canonical default body-enter hook: pure no-op.
+
+    Kept as a named function (rather than a lambda) so:
+        1. Test assertions that compare against the default can use
+           identity (``deps.body_enter_hook is _noop_body_enter_hook``)
+           rather than fragile lambda equality.
+        2. Stack traces name it usefully if it ever raises (it should
+           not, but defensive naming costs nothing).
+    """
+    return None
+
+
+class _ShellWriter:
+    """Default writer used when no override is injected.
+
+    PR-2B does not land a concrete DuckDB writer (scope constraint).
+    The default writer raises ``NotImplementedError`` on invocation so
+    that a caller who somehow reaches the write step without injecting
+    a real writer sees a loud, immediate failure rather than a silent
+    no-op.
+
+    This writer is intentionally a class rather than a plain function
+    because ``Writer`` is a Protocol with a ``write_full`` method; the
+    class satisfies the Protocol structurally without contortion.
     """
 
-    requested_start: date
-    requested_end: date
+    def write_full(self, artifact: BuildArtifact) -> None:
+        raise NotImplementedError(
+            "concrete writer pending (deferred to PR-2B.1 or PR-2C); "
+            "inject a real Writer via ProducerBuildRequest.dependencies"
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ProducerContext:
-    """Immutable runtime context for a producer invocation.
+class _BuildDependencies:
+    """Injectable dependencies for a producer build invocation.
 
-    Holds configuration that is stable across a build invocation but
-    varies across environments (dev / CI / production nexus).
+    Location rationale (D-PR2B-1.a Option B, LOCKED):
+        This dataclass lives as a field on ``ProducerBuildRequest``
+        rather than as a separate parameter of ``build_full``.  A
+        second parameter on ``build_full`` would create two calling
+        conventions (``build_full(request)`` and
+        ``build_full(request, deps=...)``); the single-field-on-request
+        design preserves exactly one canonical API.
 
-    Keyword-only construction:
-        Fields are keyword-only.  Positional construction is forbidden
-        to prevent silent bugs when future fields are added to this
-        dataclass (positional callers would silently rebind values to
-        the wrong fields).  All callers MUST use keyword arguments.
+    Underscore prefix:
+        The name is private (``_BuildDependencies``) to signal that
+        this is a governance-controlled injection seam, not a general
+        public API.  Callers construct via
+        ``ProducerBuildRequest.dependencies`` field override; direct
+        construction of ``_BuildDependencies`` is permitted for tests
+        but not encouraged for production code.
 
-    Override contract:
-        Overrides on ``duckdb_path`` and ``target_table`` are permitted
-        for testability only (unit tests, dry-run harnesses, CI sandboxes).
-        Governed builds MUST pass PF-B / manifest identity checks that
-        assert the canonical SD-A2-2 values before any output can become
-        canonical.  A non-canonical context that reaches build execution
-        without such a check is a governance error.
+    Fields:
+        writer: Storage-layer writer.  Default is ``_ShellWriter``
+            (raises ``NotImplementedError`` on invocation).
+        compute: Artifact-producing compute callable.  Default is the
+            ``compute.compute`` shell (raises ``NotImplementedError``
+            on invocation).
+        body_enter_hook: Observable hook fired immediately after the
+            rider-closing safety gate returns and before compute is
+            invoked.  Default is ``_noop_body_enter_hook``.
 
-        PR-1 does NOT enforce this contract at the type level; the
-        producer body (later PR) is responsible for the check.  This
-        docstring is the interim documentation of the invariant.
+    Immutability:
+        ``frozen=True`` prevents field reassignment; ``kw_only=True``
+        prevents positional-construction accidents when fields are
+        added.  Neither guarantees the referenced callables are
+        themselves pure; that is a compositional contract, tested by
+        spy in ``test_producer_body``.
     """
 
-    duckdb_path: str = DUCKDB_PATH
-    target_table: str = PRODUCER_TABLE_NAME
+    writer: Writer = field(default_factory=_ShellWriter)
+    compute: ComputeCallable = field(default=_default_compute)
+    body_enter_hook: BodyEnterHook = field(default=_noop_body_enter_hook)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ProducerBuildRequest:
     """Per-invocation build request.
 
-    Contains parameters that vary per build within the same context.
+    Contains parameters that vary per build within the same context,
+    plus the DI seam added in PR-2B.
 
     Keyword-only construction (consistent with ``ProducerContext``):
-        Fields are keyword-only.  Positional construction is forbidden
-        to prevent silent bugs when future fields are added (e.g.,
-        ``build_id``, ``snapshot_id``, ``dry_run``, ``requested_by``).
+        Fields are keyword-only.  Positional construction is forbidden.
+
+    Fields:
+        scope: Requested build scope.
+        context: Environment-varying configuration.  Defaults to
+            canonical SD-A2-2 values.
+        dependencies: Injectable seam (writer, compute, body-enter
+            hook).  Defaults to canonical shells + no-op hook.
+            Added in PR-2B per D-PR2B-1.a Option B.
     """
 
     scope: BuildScope
     context: ProducerContext = field(default_factory=ProducerContext)
+    dependencies: _BuildDependencies = field(
+        default_factory=_BuildDependencies
+    )
 
 
 def resolve_scope() -> BuildScope:
@@ -129,7 +209,7 @@ def resolve_scope() -> BuildScope:
     TM-041 shell only.  Real implementation requires:
         - Access to the R8/R1 date range (upstream artifact),
         - Trading-calendar API access (deferred to SD-A2-6),
-        - A defined buffer contract in code (spec §5.2, SD-A2-2).
+        - A defined buffer contract in code (spec section 5.2, SD-A2-2).
     """
     raise NotImplementedError(
         "Scope resolver pending R8/R1 date-range access + trading calendar"
@@ -145,31 +225,44 @@ def build_full(request: ProducerBuildRequest) -> None:
         There is intentionally NO resume-from-partial variant.
 
     Recovery from any partial state discards partial artifacts and
-    re-runs the full pipeline (readiness document Section 4.4).
+    re-runs the full pipeline.
+
+    Ordering (Q-PR2A-alpha' preserved, extended in PR-2B):
+        1. ``BUILD_STRATEGY`` defensive guard (PR-1, runtime backstop).
+        2. ``verify_rider_closing_checks_are_real()`` (PR-2A gate).
+        3. ``body_enter_hook()`` (PR-2B body-entry observable).
+        4. ``compute(scope, context)`` -> ``BuildArtifact``.
+        5. ``writer.write_full(artifact)``.
+
+    D-PR2B-4 invariant:
+        Steps 3-5 execute only if step 2 returns without raising.  A
+        gate failure (``PreFlightShellError`` or any other exception
+        propagated by the gate) short-circuits before any observable
+        side effect.  Enforced by test spy in
+        ``test_producer_body.test_gate_failure_produces_no_side_effect``.
     """
-    # Defensive governance guard.  Do NOT replace with assert:
+    # Step 1: defensive governance guard.  Do NOT replace with assert:
     # assertions are removed under python -O and this is a
     # governance-critical check that must survive optimized execution.
-    # The branch is a runtime backstop against constant modification
-    # that bypasses the Literal type check (e.g., monkeypatching in
-    # tests, typing.cast misuse, or a well-intentioned refactor that
-    # widens the Literal annotation without updating this guard).
     if BUILD_STRATEGY != "one_shot_full_rebuild":
         raise RuntimeError(
             f"Unsupported build strategy: {BUILD_STRATEGY!r}. "
             "Only 'one_shot_full_rebuild' is permitted at Gate A2."
         )
-    # PR-2A safety gate (Q-PR2A-alpha', additive-only):
-    # Refuse to enter the producer body while any rider-closing PF-B
-    # check is still shell.  ``PreFlightShellError`` subclasses
-    # ``NotImplementedError`` (Q-PR2A-R5), so PR-1's contract that
-    # ``build_full`` raises ``NotImplementedError`` in shell state is
-    # preserved: PR-1 callers that catch ``NotImplementedError`` still
-    # observe the shell failure; PR-2A callers may catch the narrower
-    # ``PreFlightShellError`` type to distinguish "rider not closed"
-    # from "producer body not yet implemented".
+
+    # Step 2: PR-2A safety gate (Q-PR2A-alpha', preserved).
+    # PreFlightShellError subclasses NotImplementedError (Q-PR2A-R5),
+    # so PR-1's contract that build_full raises NotImplementedError in
+    # shell state is preserved.
     verify_rider_closing_checks_are_real()
-    raise NotImplementedError(
-        "Producer full rebuild pending implementation "
-        "(median computation + DuckDB write + manifest emission)"
-    )
+
+    # Steps 3-5: PR-2B body orchestration.  All three steps are
+    # observable through the injected dependencies:
+    #     - body_enter_hook: independent body-entry signal
+    #       (D-PR2B-5, does NOT rely on writer invocation as proxy).
+    #     - compute: pure artifact producer (D-PR2B-3, D-PR2B-4).
+    #     - writer.write_full: storage-layer consumer.
+    deps = request.dependencies
+    deps.body_enter_hook()
+    artifact = deps.compute(request.scope, request.context)
+    deps.writer.write_full(artifact)
