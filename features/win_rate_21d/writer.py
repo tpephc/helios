@@ -17,11 +17,12 @@ Governance dispositions (locked in PR-2B disposition ledger):
         typing).  No ``abc.ABC`` layer.
     D-PR2B-3: writer accepts a ``BuildArtifact``; compute produces one.
         There is no direct compute -> writer call path.
-    Q-PR2B-epsilon: payload frame type is intentionally NOT locked.
-        ``BuildArtifact.frame`` is typed ``object`` so PR-2B does not
-        prejudge polars vs pyarrow vs duckdb-native.  The concrete
-        writer landing PR (PR-2B.1 or PR-2C) will narrow this when
-        empirical evidence demands.
+    Q-PR2B-epsilon: LOCKED at PR-2B.1 [2/4] (D-PR2B.1-2).
+        ``BuildArtifact.frame`` is typed ``pyarrow.Table`` following
+        sandbox verification of DuckDB MEDIAN exactness
+        (MEDIAN == QUANTILE_CONT(x, 0.5), bit-equal) and the
+        DuckDB -> Arrow write path.  ``__post_init__`` enforces
+        frame type and shape consistency at construction time.
 
 Scope note (Q-PR2B-gamma deferred):
     The concrete DuckDB writer is intentionally NOT provided here.
@@ -35,6 +36,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+
+import pyarrow as pa
 
 __all__ = [
     "BuildArtifact",
@@ -51,12 +54,13 @@ class BuildArtifact:
             ``constants.PRODUCER_TABLE_NAME`` for a governed build;
             the writer does NOT re-verify this (the check belongs at
             the manifest identity layer, PR-3).
-        frame: Opaque payload.  Type intentionally ``object`` per
-            Q-PR2B-epsilon.  The concrete writer PR will introduce a
-            narrower type (``pyarrow.Table``, ``polars.DataFrame``, or
-            a Protocol) once the compute pipeline is real and the
-            transport-type choice can be made empirically rather than
-            speculatively.
+        frame: ``pyarrow.Table`` payload.  Type LOCKED per
+            Q-PR2B-epsilon at PR-2B.1 [2/4] (D-PR2B.1-2) based on
+            sandbox verification of DuckDB MEDIAN semantic exactness
+            and DuckDB -> Arrow interop.  ``__post_init__`` enforces
+            frame is a ``pa.Table`` instance and its shape
+            (num_rows, column_names) matches ``row_count`` and
+            ``column_names`` respectively.
         row_count: Number of rows in ``frame``.  Redundant with the
             frame itself but carried explicitly on the artifact so
             manifest emission (PR-3) does not need to introspect an
@@ -75,9 +79,35 @@ class BuildArtifact:
     """
 
     table_name: str
-    frame: object
+    frame: pa.Table
     row_count: int
     column_names: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Fail-fast invariants at compute -> writer boundary.
+
+        D-PR2B.1-2 (frame type LOCKED to pyarrow.Table) and its
+        corollary invariants: row_count and column_names MUST match
+        the frame's reported shape.  Violations would produce silent
+        metadata drift into the manifest layer (PR-3).
+        """
+        if not isinstance(self.frame, pa.Table):
+            raise TypeError(
+                "BuildArtifact.frame must be pyarrow.Table; "
+                f"got {type(self.frame).__name__}"
+            )
+        if self.frame.num_rows != self.row_count:
+            raise ValueError(
+                "BuildArtifact.row_count "
+                f"({self.row_count}) does not match "
+                f"frame.num_rows ({self.frame.num_rows})"
+            )
+        if tuple(self.frame.column_names) != self.column_names:
+            raise ValueError(
+                "BuildArtifact.column_names "
+                f"{self.column_names} does not match "
+                f"frame.column_names {tuple(self.frame.column_names)}"
+            )
 
 
 @runtime_checkable

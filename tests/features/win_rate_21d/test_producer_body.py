@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import pyarrow as pa
 import pytest
 
 from features.win_rate_21d import pre_flight as pf
@@ -82,6 +83,26 @@ def _patch_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pf, "RIDER_CLOSING_CHECKS", (_real, _real, _real))
 
 
+def _stub_artifact() -> BuildArtifact:
+    """Minimum-viable ``BuildArtifact`` for orchestration tests.
+
+    Uses an empty (0x0) ``pyarrow.Table`` because orchestration tests
+    do not inspect frame contents; they only need a value that passes
+    ``BuildArtifact.__post_init__`` invariants (D-PR2B.1-2).
+
+    ``row_count`` and ``column_names`` are derived from the frame so
+    this helper stays trivially consistent with the cross-validation
+    invariants regardless of pyarrow's internal empty-table shape.
+    """
+    empty = pa.table({})
+    return BuildArtifact(
+        table_name="x",
+        frame=empty,
+        row_count=empty.num_rows,
+        column_names=tuple(empty.column_names),
+    )
+
+
 # ---------------------------------------------------------------------------
 # D-PR2B-1.a: dependencies field on ProducerBuildRequest
 # ---------------------------------------------------------------------------
@@ -109,9 +130,7 @@ def test_request_accepts_explicit_dependencies() -> None:
     def _my_compute(
         scope: BuildScope, context: ProducerContext
     ) -> BuildArtifact:
-        return BuildArtifact(
-            table_name="x", frame=object(), row_count=0, column_names=()
-        )
+        return _stub_artifact()
 
     def _my_hook() -> None:
         return None
@@ -180,9 +199,7 @@ def test_gate_failure_produces_no_side_effect() -> None:
     ) -> BuildArtifact:
         nonlocal compute_count
         compute_count += 1
-        return BuildArtifact(
-            table_name="x", frame=object(), row_count=0, column_names=()
-        )
+        return _stub_artifact()
 
     class _CountingWriter:
         def write_full(self, artifact: BuildArtifact) -> None:
@@ -233,9 +250,7 @@ def test_build_strategy_guard_failure_produces_no_side_effect(
     ) -> BuildArtifact:
         nonlocal compute_count
         compute_count += 1
-        return BuildArtifact(
-            table_name="x", frame=object(), row_count=0, column_names=()
-        )
+        return _stub_artifact()
 
     class _CountingWriter:
         def write_full(self, artifact: BuildArtifact) -> None:
@@ -342,9 +357,7 @@ def test_compute_receives_scope_and_context_only(
         scope: BuildScope, context: ProducerContext
     ) -> BuildArtifact:
         received.append((scope, context))
-        return BuildArtifact(
-            table_name="x", frame=object(), row_count=0, column_names=()
-        )
+        return _stub_artifact()
 
     class _NullWriter:
         def write_full(self, artifact: BuildArtifact) -> None:
@@ -355,7 +368,7 @@ def test_compute_receives_scope_and_context_only(
     deps = _BuildDependencies(
         writer=_NullWriter(),
         compute=_spy_compute,
-        body_enter_hook=lambda: None,
+        body_enter_hook=_noop_body_enter_hook,
     )
     request = ProducerBuildRequest(
         scope=scope, context=context, dependencies=deps
@@ -385,9 +398,7 @@ def test_shell_writer_write_full_raises_not_implemented() -> None:
     Concrete DuckDB writer is deferred out of PR-2B scope.
     """
     writer = _ShellWriter()
-    artifact = BuildArtifact(
-        table_name="x", frame=object(), row_count=0, column_names=()
-    )
+    artifact = _stub_artifact()
     with pytest.raises(NotImplementedError):
         writer.write_full(artifact)
 

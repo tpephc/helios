@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import pyarrow as pa
 import pytest
 
 from features.win_rate_21d import pre_flight as pf
@@ -52,6 +53,7 @@ from features.win_rate_21d.producer import (
     ProducerBuildRequest,
     build_full,
 )
+from features.win_rate_21d.writer import BuildArtifact
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +286,26 @@ def _canonical_request() -> ProducerBuildRequest:
     return ProducerBuildRequest(scope=scope)
 
 
+def _stub_artifact() -> BuildArtifact:
+    """Minimum-viable ``BuildArtifact`` for orchestration tests.
+
+    Uses an empty (0x0) ``pyarrow.Table`` because orchestration tests
+    do not inspect frame contents; they only need a value that passes
+    ``BuildArtifact.__post_init__`` invariants (D-PR2B.1-2).
+
+    ``row_count`` and ``column_names`` are derived from the frame so
+    this helper stays trivially consistent with the cross-validation
+    invariants regardless of pyarrow's internal empty-table shape.
+    """
+    empty = pa.table({})
+    return BuildArtifact(
+        table_name="x",
+        frame=empty,
+        row_count=empty.num_rows,
+        column_names=tuple(empty.column_names),
+    )
+
+
 def test_build_full_raises_preflight_shell_error_by_default() -> None:
     """The gate fires when ``build_full`` is called in the PR-2A shell state.
 
@@ -330,7 +352,6 @@ def test_build_full_enters_body_after_gate(
         ProducerContext,
         _BuildDependencies,
     )
-    from features.win_rate_21d.writer import BuildArtifact
 
     def _real() -> PreFlightResult:
         return PreFlightResult(
@@ -343,12 +364,7 @@ def test_build_full_enters_body_after_gate(
     monkeypatch.setattr(pf, "RIDER_CLOSING_CHECKS", (_real, _real, _real))
 
     call_log: list[str] = []
-    stub_artifact = BuildArtifact(
-        table_name="test_target_table",
-        frame=object(),
-        row_count=0,
-        column_names=(),
-    )
+    stub_artifact = _stub_artifact()
     compute_calls: list[tuple[BuildScope, ProducerContext]] = []
     writer_calls: list[BuildArtifact] = []
 

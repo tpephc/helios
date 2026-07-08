@@ -9,6 +9,10 @@ Verifies:
     - Writer Protocol structural conformance:
       a class exposing ``write_full(artifact)`` satisfies ``Writer``
       without inheritance.
+    - PR-2B.1 [2/4] invariants (D-PR2B.1-2):
+      ``frame`` must be ``pyarrow.Table``; ``row_count`` must match
+      ``frame.num_rows``; ``column_names`` must match
+      ``frame.column_names``.
 
 Deferred fields (NOT tested here because they do not exist in PR-2B):
     ``content_hash``, ``snapshot_id``, ``build_utc_timestamp``,
@@ -20,9 +24,32 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError, fields
 from typing import Any
 
+import pyarrow as pa
 import pytest
 
 from features.win_rate_21d.writer import BuildArtifact, Writer
+
+
+def _arrow_of(row_count: int, column_names: tuple[str, ...]) -> pa.Table:
+    """Build a pyarrow.Table with the requested (rows, cols) shape.
+
+    Uses explicit ``schema=`` so the fixture's shape intent is
+    self-documenting and robust across pyarrow versions; the helper
+    is not a test of pyarrow inference.  Column dtype (float64) is
+    incidental; only shape matters for BuildArtifact invariants.
+    """
+    if not column_names:
+        return pa.table({})
+
+    return pa.table(
+        {
+            name: pa.array([None] * row_count, type=pa.float64())
+            for name in column_names
+        },
+        schema=pa.schema(
+            [(name, pa.float64()) for name in column_names]
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +71,7 @@ def test_build_artifact_has_locked_field_set() -> None:
 def test_build_artifact_construction_accepts_locked_fields() -> None:
     artifact = BuildArtifact(
         table_name="test_target",
-        frame=object(),
+        frame=_arrow_of(42, ("date", "stock_id", "win_rate_21d")),
         row_count=42,
         column_names=("date", "stock_id", "win_rate_21d"),
     )
@@ -62,7 +89,7 @@ def test_build_artifact_is_frozen() -> None:
     """frozen=True locked by ledger: no field reassignment."""
     artifact = BuildArtifact(
         table_name="t",
-        frame=object(),
+        frame=_arrow_of(0, ()),
         row_count=0,
         column_names=(),
     )
@@ -79,7 +106,7 @@ def test_build_artifact_column_names_is_tuple() -> None:
     """
     artifact = BuildArtifact(
         table_name="t",
-        frame=object(),
+        frame=_arrow_of(0, ("a", "b")),
         row_count=0,
         column_names=("a", "b"),
     )
@@ -156,3 +183,43 @@ def _get_annotations(func: Any) -> dict[str, Any]:
         return inspect.get_annotations(func)
     except AttributeError:  # pragma: no cover
         return getattr(func, "__annotations__", {})
+
+
+# ---------------------------------------------------------------------------
+# PR-2B.1 [2/4] cross-validation invariants (D-PR2B.1-2)
+# ---------------------------------------------------------------------------
+
+
+def test_build_artifact_rejects_non_arrow_frame() -> None:
+    """__post_init__ rejects a frame that is not a pyarrow.Table."""
+    with pytest.raises(TypeError, match="pyarrow.Table"):
+        BuildArtifact(
+            table_name="t",
+            frame=object(),  # deliberate wrong type
+            row_count=0,
+            column_names=(),
+        )
+
+
+def test_build_artifact_rejects_row_count_mismatch() -> None:
+    """__post_init__ rejects row_count that disagrees with frame.num_rows."""
+    frame = _arrow_of(3, ("x",))  # frame has 3 rows
+    with pytest.raises(ValueError, match="row_count"):
+        BuildArtifact(
+            table_name="t",
+            frame=frame,
+            row_count=99,  # disagrees
+            column_names=("x",),
+        )
+
+
+def test_build_artifact_rejects_column_names_mismatch() -> None:
+    """__post_init__ rejects column_names that disagree with frame.column_names."""
+    frame = _arrow_of(0, ("a", "b"))
+    with pytest.raises(ValueError, match="column_names"):
+        BuildArtifact(
+            table_name="t",
+            frame=frame,
+            row_count=0,
+            column_names=("a", "c"),  # disagrees on second column
+        )
