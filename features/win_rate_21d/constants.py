@@ -55,6 +55,14 @@ DUCKDB_PATH: Final[str] = "data/_storage/helios.duckdb"
 # SPEC_LOCKED v0.1.0 (spec commit 1cf8365)
 FEATURE_ID: Final[str] = "win_rate_21d"
 
+# SPEC_LOCKED v0.1.0 §3.2, §4.2, §4.4, §5.2 (spec commit 1cf8365)
+# Canonical PIT source view for cross-sectional median compute.
+# Helios-wide invariant per SPEC-P1-DATA-REMEDIATION-v1: producer code
+# reads only from this view; direct reads of raw price tables are a
+# P0 lineage violation (spec §4.4). PF-B2 (deferred to PR-2C) enforces
+# structurally at build time.
+CANONICAL_PIT_VIEW_NAME: Final[str] = "listed_market_daily_price_adj"
+
 # ─────────────────────────────────────────────────────────────
 # Build strategy (SD-A2-3)
 # ─────────────────────────────────────────────────────────────

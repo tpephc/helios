@@ -1,7 +1,7 @@
 # tests/features/win_rate_21d/test_constants.py
 """Tests for governance-locked win_rate_21d constants."""
 
-from typing import get_args
+from typing import Final, get_args, get_origin
 
 from features.win_rate_21d import constants
 
@@ -53,3 +53,15 @@ def test_hash_hex_length_constants_match_algorithm_output_sizes() -> None:
     """SHA-1 and SHA-256 hex-length constants must match algorithm outputs."""
     assert constants.SHA1_HEX_LEN == 40
     assert constants.SHA256_HEX_LEN == 64
+
+
+def test_canonical_pit_view_name_matches_spec() -> None:
+    """CANONICAL_PIT_VIEW_NAME equals the spec-locked PIT view name."""
+    assert (
+        constants.CANONICAL_PIT_VIEW_NAME
+        == "listed_market_daily_price_adj"
+    )
+    assert type(constants.CANONICAL_PIT_VIEW_NAME) is str
+
+    raw_annotation = constants.__annotations__["CANONICAL_PIT_VIEW_NAME"]
+    assert get_origin(raw_annotation) is Final
