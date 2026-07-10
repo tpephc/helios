@@ -382,14 +382,14 @@ def test_compute_receives_scope_and_context_only(
     assert seen_context is context
 
 
-def test_canonical_compute_raises_not_implemented() -> None:
-    """The canonical default compute is a shell.
+def test_canonical_compute_raises_file_not_found_when_db_absent() -> None:
+    """Canonical default compute is real and fails clearly without a DB."""
+    context = ProducerContext(
+        duckdb_path="/nonexistent/win_rate_21d_test.duckdb",
+    )
 
-    Real compute is deferred to PR-2B.1 / PR-2C together with the
-    canonical PIT view constant (Q-PR2B-gamma deferred).
-    """
-    with pytest.raises(NotImplementedError):
-        canonical_compute(_canonical_scope(), ProducerContext())
+    with pytest.raises(FileNotFoundError, match="DuckDB database not found"):
+        canonical_compute(_canonical_scope(), context)
 
 
 def test_shell_writer_write_full_raises_not_implemented() -> None:

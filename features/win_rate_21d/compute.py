@@ -1,74 +1,100 @@
 # features/win_rate_21d/compute.py
-"""Compute stage for win_rate_21d producer.
-
-Purpose (PR-2B, D-PR2B-3 compute/write separation):
-    This module owns artifact production.  It takes a build scope and
-    context, reads canonical inputs, computes the cross-sectional
-    median frame, and returns an immutable ``BuildArtifact``.  It does
-    NOT touch storage.  It does NOT know about the writer.  It does
-    NOT know about producer orchestration.
-
-Module dependency (PR-2B blocking-issue remediation):
-    Inputs (``BuildScope``, ``ProducerContext``) are imported from
-    ``build_types`` rather than from ``producer``.  This module is
-    strictly downstream of ``build_types`` and ``writer``, and has no
-    reverse edge to ``producer``.  A compute layer aware of the
-    orchestration it participates in would be an architectural
-    inversion: the producer composes compute, not the other way round.
-
-Governance dispositions (locked in PR-2B disposition ledger):
-    D-PR2B-3: compute produces ``BuildArtifact``; downstream writer
-        consumes.  No direct compute -> writer coupling.
-    Q-PR2B-gamma (deferred): the PIT view name is intentionally NOT
-        introduced as a governance constant in PR-2B.  When the real
-        compute lands (PR-2B.1 or PR-2C), the canonical source view
-        constant is introduced together with the PF-B2 real
-        implementation that verifies its use.  Doing it here now would
-        add governance surface with no verifier.
-    D-PR2B-4: compute MUST be a pure function over its arguments.
-        No writes, no environment mutation, no logging that would
-        create observable side effects.  This is enforced by
-        convention (docstring) in PR-2B and by test spy in
-        ``tests/features/win_rate_21d/test_producer_body.py``.
-
-PR-2B status: shell.
-    Real compute requires:
-        - Access to the canonical PIT view (Q-PR2B-gamma deferred).
-        - A locked in-memory representation choice (Q-PR2B-epsilon
-          deliberately unlocked at PR-2B).
-        - Median-per-date and window aggregation logic
-          (SPEC_LOCKED v0.1.0 sections 3.6, 3.7).
-    None of those preconditions is met at PR-2B; the callable
-    signature is real, the body raises ``NotImplementedError``.
-    Tests inject a stub via the ``ProducerBuildRequest.dependencies``
-    seam.
-"""
+"""Compute stage for win_rate_21d producer."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import duckdb
+
 from features.win_rate_21d.build_types import BuildScope, ProducerContext
+from features.win_rate_21d.constants import (
+    CANONICAL_PIT_VIEW_NAME,
+    MIN_CROSS_SECTION_OBS_PER_DATE,
+)
 from features.win_rate_21d.writer import BuildArtifact
 
 __all__ = ["compute"]
 
 
+_SQL_MEDIAN_QUERY_TEMPLATE = """
+    WITH dates AS (
+        SELECT DISTINCT date FROM src.{view_name}
+    ),
+    returns AS (
+        SELECT
+            stock_id,
+            date,
+            adj_close,
+            adj_close
+                / LAG(adj_close)
+                    OVER (PARTITION BY stock_id ORDER BY date)
+                - 1.0 AS r,
+            LAG(adj_close)
+                OVER (PARTITION BY stock_id ORDER BY date)
+                AS prev_adj_close
+        FROM src.{view_name}
+    ),
+    valid_returns AS (
+        SELECT date, r
+        FROM returns
+        WHERE r IS NOT NULL
+          AND prev_adj_close > 0
+          AND adj_close > 0
+    ),
+    per_date AS (
+        SELECT
+            date,
+            MEDIAN(r) AS median_val,
+            COUNT(*) AS n_obs
+        FROM valid_returns
+        GROUP BY date
+    )
+    SELECT
+        dates.date AS date,
+        CASE
+            WHEN COALESCE(per_date.n_obs, 0) >= {min_obs}
+                THEN per_date.median_val
+            ELSE NULL
+        END AS median_daily_return,
+        COALESCE(per_date.n_obs, 0) AS n_obs_cross_section
+    FROM dates
+    LEFT JOIN per_date USING (date)
+    ORDER BY dates.date
+"""
+
+_ATTACH_STATEMENT_TEMPLATE = "ATTACH {path_literal} AS src (READ_ONLY);"
+
+
 def compute(scope: BuildScope, context: ProducerContext) -> BuildArtifact:
-    """Produce the ``BuildArtifact`` for the requested scope.
+    """Produce the cross-sectional median return artifact."""
+    _ = scope
 
-    PR-2B shell.  Real implementation deferred; see module docstring.
+    db_path = Path(context.duckdb_path)
+    if not db_path.exists():
+        raise FileNotFoundError(
+            "DuckDB database not found.\n"
+            f"Path: {context.duckdb_path!r}\n"
+            "Override ProducerContext.duckdb_path to use a different database."
+        )
 
-    Args:
-        scope: Requested trading-date scope.
-        context: Environment-varying configuration (paths, target table).
+    escaped_path = str(db_path).replace("'", "''")
+    attach_statement = _ATTACH_STATEMENT_TEMPLATE.format(
+        path_literal=f"'{escaped_path}'",
+    )
+    sql = _SQL_MEDIAN_QUERY_TEMPLATE.format(
+        view_name=CANONICAL_PIT_VIEW_NAME,
+        min_obs=MIN_CROSS_SECTION_OBS_PER_DATE,
+    )
 
-    Returns:
-        BuildArtifact: immutable artifact containing target table name,
-            payload frame, row count, and canonical column order.
+    with duckdb.connect(":memory:") as conn:
+        conn.execute(attach_statement)
+        reader = conn.execute(sql).arrow()
+        frame = reader.read_all()
 
-    Raises:
-        NotImplementedError: PR-2B shell; real compute pending
-            PIT view access and transport-type lock.
-    """
-    raise NotImplementedError(
-        "real compute pending PIT view access and transport-type lock"
+    return BuildArtifact(
+        table_name=context.target_table,
+        frame=frame,
+        row_count=frame.num_rows,
+        column_names=tuple(frame.column_names),
     )
