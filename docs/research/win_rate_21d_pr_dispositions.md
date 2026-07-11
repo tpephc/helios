@@ -278,12 +278,12 @@ one existed.
 ### Governance metadata
 
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD>`
+- **Commit SHA:** `caf4dca2644f2b424651869d820883cd47b129cb`
 - **Entry repository anchor:** `624afef`
 - **Previous D-PR entry:** (none — first entry in this ledger)
 - **Ledger version at lock:** v0.1.0
 - **Previous ledger tail md5:** (none — ledger creation)
-- **New ledger tail md5 after append:** `<TBD — computed after lock commit>`
+- **New ledger tail md5 after append:** `34ab8810b032a6577b22caa7934fec7e`
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; no reconstruction basis applicable.
 
@@ -446,12 +446,12 @@ disposition.
 ### Governance metadata
 
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD>`
+- **Commit SHA:** `caf4dca2644f2b424651869d820883cd47b129cb`
 - **Entry repository anchor:** `624afef`
 - **Previous D-PR entry:** D-PR2C-0
 - **Ledger version at lock:** v0.1.0
-- **Previous ledger tail md5:** `<TBD — computed after lock commit>`
-- **New ledger tail md5 after append:** `<TBD — computed after lock commit>`
+- **Previous ledger tail md5:** `34ab8810b032a6577b22caa7934fec7e`
+- **New ledger tail md5 after append:** `34ab8810b032a6577b22caa7934fec7e`
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; no reconstruction basis applicable.
 
@@ -639,12 +639,12 @@ preserves them intact.
 ### Governance metadata
 
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD>`
+- **Commit SHA:** `caf4dca2644f2b424651869d820883cd47b129cb`
 - **Entry repository anchor:** `624afef`
 - **Previous D-PR entry:** D-PR2C-1
 - **Ledger version at lock:** v0.1.0
-- **Previous ledger tail md5:** `<TBD — computed after lock commit>`
-- **New ledger tail md5 after append:** `<TBD — computed after lock commit>`
+- **Previous ledger tail md5:** `34ab8810b032a6577b22caa7934fec7e`
+- **New ledger tail md5 after append:** `34ab8810b032a6577b22caa7934fec7e`
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; no reconstruction basis applicable.
 
@@ -816,12 +816,12 @@ raise <non-PreFlightShellError exception, e.g. RuntimeError>
 ### Governance metadata
 
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD>`
+- **Commit SHA:** `caf4dca2644f2b424651869d820883cd47b129cb`
 - **Entry repository anchor:** `624afef`
 - **Previous D-PR entry:** D-PR2C-2
 - **Ledger version at lock:** v0.1.0
-- **Previous ledger tail md5:** `<TBD — computed after lock commit>`
-- **New ledger tail md5 after append:** `<TBD — computed after lock commit>`
+- **Previous ledger tail md5:** `34ab8810b032a6577b22caa7934fec7e`
+- **New ledger tail md5 after append:** `34ab8810b032a6577b22caa7934fec7e`
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; no reconstruction basis applicable.
 
