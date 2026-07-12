@@ -1,7 +1,7 @@
 # PR-Level Disposition Ledger — `win_rate_21d`
 
 **Document ID:** `win_rate_21d_pr_dispositions`
-**Version:** v0.1.0
+**Version:** v0.1.1
 **Status:** ACTIVE
 **Owner:** Veronica
 **Repository:** Helios (`~/projects/helios`)
@@ -940,6 +940,7 @@ subject to IN-3.
 | Version | Date       | Change |
 | ------- | ---------- | ------ |
 | v0.1.0  | 2026-07-11 | Initial ledger creation. Locks D-PR2C-0, D-PR2C-1, D-PR2C-2, D-PR2C-3 as ORIGINAL LOCKED DISPOSITION entries at repository anchor `624afef`. |
+| v0.1.1  | 2026-07-12 | Appends D-PR2C-4 (PR-2C.0 Ruff baseline treatment) as an ORIGINAL LOCKED DISPOSITION at repository anchor `41e8e1e`. Governs PR-2C.0 static-analysis acceptance criteria and the deferred runtime-failure exception name; amends no implementation disposition and is not a Gate A1 lock condition. |
 
 *End of ledger initial content. Future entries append below.*
 
@@ -1040,12 +1041,12 @@ It amends neither D-PR2C-1 nor D-PR2C-2.
 ### Governance metadata
 
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD — backfill after lock commit>`
+- **Commit SHA:** `21ef72924f965e61f76ece5310d648cff7e7205a`
 - **Entry repository anchor:** `41e8e1e`
 - **Previous D-PR entry:** D-PR2C-3
 - **Ledger version at lock:** v0.1.1
 - **Previous ledger tail md5:** `c1f6086fc7b479bc89ba24192c98eefc`
-- **New ledger tail md5 after append:** `<TBD>`
+- **New ledger tail md5 after append:** `0e4f28872d3920b8601e10c3f9faeea5`
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; grounded in observed HEAD
   Ruff output and `pyproject.toml:67-82`.
