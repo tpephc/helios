@@ -1148,12 +1148,12 @@ restructure prohibition.
 ### Governance metadata
 
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD — backfill after lock commit>`
+- **Commit SHA:** `32a0ab8b89800054753264c7dc661156a4fb63db`
 - **Entry repository anchor:** `182d26f`
 - **Previous D-PR entry:** D-PR2C-4
 - **Ledger version at lock:** v0.1.2
 - **Previous ledger tail md5:** `dff03e59bcc87d162cb0755a76aa72e8`
-- **New ledger tail md5 after append:** `<TBD>`
+- **New ledger tail md5 after append:** `0f4e89b8f9517003a8b6d9c7ea75ef65`
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; grounded in observed pytest
   failures and a repository-wide reference scan.
