@@ -942,3 +942,110 @@ subject to IN-3.
 | v0.1.0  | 2026-07-11 | Initial ledger creation. Locks D-PR2C-0, D-PR2C-1, D-PR2C-2, D-PR2C-3 as ORIGINAL LOCKED DISPOSITION entries at repository anchor `624afef`. |
 
 *End of ledger initial content. Future entries append below.*
+
+---
+
+## D-PR2C-4 — PR-2C.0 Ruff Baseline Treatment
+
+### Question
+
+The PR-2C.0 kickoff §Validation requires `ruff check` to pass on the four
+files touched by PR-2C.0. Repository HEAD `41e8e1e` does not satisfy this
+condition prior to any PR-2C.0 change.
+
+### Evidence (observed at HEAD 41e8e1e)
+
+`uv run ruff check` on the four touched files, under the project
+configuration at `pyproject.toml:67-82`
+(`select = ["E","F","I","N","UP","B","SIM","RUF"]`), reports six
+violations:
+
+| Rule | Location |
+| ---- | -------- |
+| `UP035` | `features/win_rate_21d/pre_flight.py:54` |
+| `UP042` | `features/win_rate_21d/pre_flight.py:63` |
+| `RUF022` | `features/win_rate_21d/producer.py:77` |
+| `I001` | `tests/features/win_rate_21d/test_safety_gate.py:30` |
+| `SIM300` | `tests/features/win_rate_21d/test_safety_gate.py:88` |
+| `SIM300` | `tests/features/win_rate_21d/test_safety_gate.py:105` |
+
+All six predate PR-2C.0.
+
+`ruff format --check` on the same files reports three requiring
+reformatting (`pre_flight.py`, `producer.py`, `test_safety_gate.py`);
+`build_types.py` is already formatted.
+
+### Conflict
+
+`SIM300` fires precisely on the exact ordered registry membership
+assertions that D-PR2C-2 requires be preserved verbatim, and that
+D-PR2C-1 cites as structural evidence for rejecting `functools.partial`.
+`UP042` cannot be resolved without altering `PreFlightSeverity`'s
+serialization behaviour. Absolute Ruff cleanliness and the kickoff's
+own scope restrictions are therefore not jointly satisfiable at HEAD.
+
+### Decision
+
+**D4-1 — No new violations.** PR-2C.0 SHALL introduce no `ruff check`
+violation absent from the recorded HEAD baseline above. Verified by
+line-normalised diff of concise Ruff output before and after.
+
+**D4-2 — Touched-block compliance.** PR-2C.0 SHALL fix exactly the two
+violations located in import blocks that PR-2C.0 necessarily rewrites:
+
+- `UP035` at `pre_flight.py:54` — `typing.Callable` is a deprecated
+  alias of `collections.abc.Callable`; substitution is semantically
+  equivalent under `target-version = "py312"`.
+- `I001` at `test_safety_gate.py:30` — the import block is modified by
+  PR-2C.0 regardless.
+
+Leaving these would make PR-2C.0 appear to be their origin.
+
+**D4-3 — Preserved baseline debt.** PR-2C.0 SHALL NOT modify `UP042`,
+`RUF022`, or `SIM300`. `UP042` would alter enum serialization behaviour;
+`RUF022` would alter declared public-surface ordering; `SIM300` fires on
+assertions D-PR2C-2 requires preserved verbatim. These SHALL NOT be
+silenced with `# noqa`: suppression comments are an ungoverned surface
+and would render the debt invisible in future lint output. They remain
+visibly red.
+
+**D4-4 — Exception naming.** D-PR2C-2 deferred the runtime-failure
+exception name to PR-2C.0 implementation review, with
+`PreFlightExecutionFailed` as candidate. That name triggers `N818`
+(`select` includes `N`), which would violate D4-1. The name is therefore
+LOCKED as `PreFlightExecutionError`, consistent with `PreFlightShellError`
+and `EnvironmentVerificationError`. No semantic change.
+
+### Not governed by D-PR2C-4
+
+`ruff format --check` remains in the PR-2C.0 validation set unmodified;
+this disposition does not remove it. Its baseline is recorded as evidence
+and the acceptance condition is that the set of files requiring
+reformatting does not expand. mypy is not governed by this disposition;
+HEAD's mypy status is UNOBSERVED and no claim is made about it.
+
+### Rejected alternative
+
+**Silence `UP042`, `RUF022`, and `SIM300` with `# noqa` so the four files
+report clean.** Rejected: disguises knowingly-retained contract decisions
+as resolved findings, degrades future lint signal, and adds three
+ungoverned suppression sites. Visible red plus an explicit disposition is
+the honest record.
+
+### Scope restriction
+
+D-PR2C-4 governs validation criteria and one deferred naming decision.
+It amends neither D-PR2C-1 nor D-PR2C-2.
+
+### Governance metadata
+
+- **Status:** LOCKED
+- **Commit SHA:** `<TBD — backfill after lock commit>`
+- **Entry repository anchor:** `41e8e1e`
+- **Previous D-PR entry:** D-PR2C-3
+- **Ledger version at lock:** v0.1.1
+- **Previous ledger tail md5:** `c1f6086fc7b479bc89ba24192c98eefc`
+- **New ledger tail md5 after append:** `<TBD>`
+- **Record class:** ORIGINAL LOCKED DISPOSITION
+- **Evidence basis:** Original disposition; grounded in observed HEAD
+  Ruff output and `pyproject.toml:67-82`.
