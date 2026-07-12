@@ -64,10 +64,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from features.win_rate_21d.build_types import BuildScope, ProducerContext
+from features.win_rate_21d.build_types import (
+    BuildScope,
+    PreFlightContext,
+    ProducerContext,
+)
 from features.win_rate_21d.compute import compute as _default_compute
 from features.win_rate_21d.constants import BUILD_STRATEGY
 from features.win_rate_21d.pre_flight import (
+    run_rider_closing_checks,
     verify_rider_closing_checks_are_real,
 )
 from features.win_rate_21d.writer import BuildArtifact, Writer
@@ -227,19 +232,26 @@ def build_full(request: ProducerBuildRequest) -> None:
     Recovery from any partial state discards partial artifacts and
     re-runs the full pipeline.
 
-    Ordering (Q-PR2A-alpha' preserved, extended in PR-2B):
+    Ordering (Q-PR2A-alpha' preserved; extended in PR-2B and PR-2C.0):
         1. ``BUILD_STRATEGY`` defensive guard (PR-1, runtime backstop).
-        2. ``verify_rider_closing_checks_are_real()`` (PR-2A gate).
-        3. ``body_enter_hook()`` (PR-2B body-entry observable).
-        4. ``compute(scope, context)`` -> ``BuildArtifact``.
-        5. ``writer.write_full(artifact)``.
+        2. ``PreFlightContext`` construction (D-PR2C-1).
+        3a. ``verify_rider_closing_checks_are_real(ctx)`` (PR-2A gate,
+            signature migrated in PR-2C.0).
+        3b. ``run_rider_closing_checks(ctx)`` (D-PR2C-2 runtime gate).
+        4. ``body_enter_hook()`` (PR-2B body-entry observable).
+        5. ``compute(scope, context)`` -> ``BuildArtifact``.
+        6. ``writer.write_full(artifact)``.
 
-    D-PR2B-4 invariant:
-        Steps 3-5 execute only if step 2 returns without raising.  A
-        gate failure (``PreFlightShellError`` or any other exception
-        propagated by the gate) short-circuits before any observable
-        side effect.  Enforced by test spy in
-        ``test_producer_body.test_gate_failure_produces_no_side_effect``.
+    D-PR2B-4 invariant (strengthened by D-PR2C-2):
+        Steps 4-6 execute only if BOTH step 3a and step 3b return
+        without raising.  A shell state (``PreFlightShellError``), a
+        failed pre-flight result (``PreFlightExecutionError``), or any
+        operational exception propagated by either gate short-circuits
+        before any observable side effect.  Enforced by
+        ``test_producer_body.test_gate_failure_produces_no_side_effect``
+        and by
+        ``test_safety_gate``
+        ``.test_build_full_runtime_gate_blocks_body_on_failed_result``.
     """
     # Step 1: defensive governance guard.  Do NOT replace with assert:
     # assertions are removed under python -O and this is a
@@ -250,18 +262,37 @@ def build_full(request: ProducerBuildRequest) -> None:
             "Only 'one_shot_full_rebuild' is permitted at Gate A2."
         )
 
-    # Step 2: PR-2A safety gate (Q-PR2A-alpha', preserved).
+    # Step 2: construct the immutable pre-flight context (D-PR2C-1).
+    # Constructed here, not by the caller: both fields are derivable from
+    # the request, so ProducerBuildRequest's public shape is unchanged.
+    # Construction is pure -- no observable side effect.
+    preflight_context = PreFlightContext(
+        scope=request.scope,
+        producer_context=request.context,
+    )
+
+    # Step 3a: shell-state gate (PR-2A, signature migrated in PR-2C.0).
     # PreFlightShellError subclasses NotImplementedError (Q-PR2A-R5),
     # so PR-1's contract that build_full raises NotImplementedError in
     # shell state is preserved.
-    verify_rider_closing_checks_are_real()
+    verify_rider_closing_checks_are_real(preflight_context)
 
-    # Steps 3-5: PR-2B body orchestration.  All three steps are
+    # Step 3b: runtime pre-flight enforcement (D-PR2C-2, new in PR-2C.0).
+    # Distinct from 3a: 3a asks "is every check implemented?", 3b asks
+    # "did every check pass?".  A check returning passed=False is
+    # invisible to 3a by design and is caught here.  Results are
+    # discarded in PR-2C.0; PR-3 will thread them into the manifest.
+    run_rider_closing_checks(preflight_context)
+
+    # Steps 4-6: PR-2B body orchestration.  All three steps are
     # observable through the injected dependencies:
     #     - body_enter_hook: independent body-entry signal
     #       (D-PR2B-5, does NOT rely on writer invocation as proxy).
     #     - compute: pure artifact producer (D-PR2B-3, D-PR2B-4).
     #     - writer.write_full: storage-layer consumer.
+    #
+    # D-PR2B-4 invariant, strengthened by D-PR2C-2: none of these may run
+    # until BOTH pre-flight stages return without raising.
     deps = request.dependencies
     deps.body_enter_hook()
     artifact = deps.compute(request.scope, request.context)

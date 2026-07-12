@@ -35,17 +35,21 @@ import pyarrow as pa
 import pytest
 
 from features.win_rate_21d import pre_flight as pf
+from features.win_rate_21d.build_types import PreFlightContext, ProducerContext
 from features.win_rate_21d.pre_flight import (
     ALL_PRE_FLIGHT_CHECKS,
-    PreFlightShellError,
     RIDER_CLOSING_CHECKS,
+    PreFlightCallable,
+    PreFlightExecutionError,
     PreFlightResult,
     PreFlightSeverity,
+    PreFlightShellError,
     pf_b1_scope_check,
     pf_b2_canonical_source_check,
     pf_b3_min_cross_section_check,
     pf_b4_window_constants_check,
     pf_b6_duckdb_writeability_check,
+    run_rider_closing_checks,
     verify_rider_closing_checks_are_real,
 )
 from features.win_rate_21d.producer import (
@@ -54,6 +58,55 @@ from features.win_rate_21d.producer import (
     build_full,
 )
 from features.win_rate_21d.writer import BuildArtifact
+
+# ---------------------------------------------------------------------------
+# Shared PR-2C.0 helpers (D-PR2C-1 invocation model)
+# ---------------------------------------------------------------------------
+
+
+def _preflight_context() -> PreFlightContext:
+    """Canonical PreFlightContext for gate tests.
+
+    Contents are irrelevant in PR-2C.0: no rider-closing check inspects
+    the context yet.  It exists solely to satisfy the D-PR2C-1 invocation
+    model.  Values mirror ``_canonical_request()`` so that unit-level and
+    ``build_full``-level tests exercise the same scope.
+    """
+    return PreFlightContext(
+        scope=BuildScope(
+            requested_start=date(2020, 1, 2),
+            requested_end=date(2020, 1, 10),
+        ),
+        producer_context=ProducerContext(),
+    )
+
+
+def _passing(check_id: str) -> PreFlightCallable:
+    """Build a rider-closing stub returning a passing result."""
+
+    def _check(ctx: PreFlightContext) -> PreFlightResult:
+        return PreFlightResult(
+            check_id=check_id,
+            passed=True,
+            severity=PreFlightSeverity.INFO,
+            message=f"{check_id} ok",
+        )
+
+    return _check
+
+
+def _failing(check_id: str) -> PreFlightCallable:
+    """Build a rider-closing stub returning a failing result."""
+
+    def _check(ctx: PreFlightContext) -> PreFlightResult:
+        return PreFlightResult(
+            check_id=check_id,
+            passed=False,
+            severity=PreFlightSeverity.ERROR,
+            message=f"{check_id} failed",
+        )
+
+    return _check
 
 
 # ---------------------------------------------------------------------------
@@ -127,13 +180,13 @@ def test_gate_raises_by_default() -> None:
     and verify the gate still detects it.
     """
     with pytest.raises(PreFlightShellError):
-        verify_rider_closing_checks_are_real()
+        verify_rider_closing_checks_are_real(_preflight_context())
 
 
 def test_gate_error_names_all_shells() -> None:
     """Q-PR2A-D1 aggregate diagnostic: message names every shell found."""
     with pytest.raises(PreFlightShellError) as excinfo:
-        verify_rider_closing_checks_are_real()
+        verify_rider_closing_checks_are_real(_preflight_context())
     msg = str(excinfo.value)
     for check in RIDER_CLOSING_CHECKS:
         assert check.__name__ in msg, (
@@ -146,7 +199,7 @@ def test_gate_passes_when_all_rider_closing_are_real(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Substitute rider-closing tuple with real callables; gate MUST pass."""
-    def _real() -> PreFlightResult:
+    def _real(ctx: PreFlightContext) -> PreFlightResult:
         return PreFlightResult(
             check_id="dummy",
             passed=True,
@@ -156,7 +209,7 @@ def test_gate_passes_when_all_rider_closing_are_real(
 
     monkeypatch.setattr(pf, "RIDER_CLOSING_CHECKS", (_real, _real, _real))
     # Should not raise.
-    verify_rider_closing_checks_are_real()
+    verify_rider_closing_checks_are_real(_preflight_context())
 
 
 def test_gate_partial_real_still_raises(
@@ -167,7 +220,7 @@ def test_gate_partial_real_still_raises(
     Two-thirds substitute to real, one remains shell (pf_b6).  Verifies
     the aggregate diagnostic mentions only the remaining shell.
     """
-    def _real() -> PreFlightResult:
+    def _real(ctx: PreFlightContext) -> PreFlightResult:
         return PreFlightResult(
             check_id="dummy",
             passed=True,
@@ -182,7 +235,7 @@ def test_gate_partial_real_still_raises(
     )
 
     with pytest.raises(PreFlightShellError) as excinfo:
-        verify_rider_closing_checks_are_real()
+        verify_rider_closing_checks_are_real(_preflight_context())
     msg = str(excinfo.value)
     assert "pf_b6" in msg
     # The two substitutes have __name__ == "_real"; verify only one shell
@@ -205,11 +258,11 @@ def test_gate_does_not_swallow_bare_not_implemented_from_real_check(
     behavior: it signals a governance-level implementation bug rather
     than being reported as "shell progress".
     """
-    def _partial_real_that_leaks() -> PreFlightResult:
+    def _partial_real_that_leaks(ctx: PreFlightContext) -> PreFlightResult:
         # Simulates a real impl calling into an unfinished helper.
         raise NotImplementedError("some deferred helper")
 
-    def _real() -> PreFlightResult:
+    def _real(ctx: PreFlightContext) -> PreFlightResult:
         return PreFlightResult(
             check_id="dummy",
             passed=True,
@@ -227,7 +280,7 @@ def test_gate_does_not_swallow_bare_not_implemented_from_real_check(
     # a PreFlightShellError, so a PR-2A caller catching the narrower
     # type will correctly miss it and let it surface as a bug.
     with pytest.raises(NotImplementedError) as excinfo:
-        verify_rider_closing_checks_are_real()
+        verify_rider_closing_checks_are_real(_preflight_context())
     assert not isinstance(excinfo.value, PreFlightShellError)
     assert "some deferred helper" in str(excinfo.value)
 
@@ -252,10 +305,10 @@ def test_gate_propagates_non_shell_exceptions_immediately(
     class _DataError(RuntimeError):
         pass
 
-    def _real_that_fails() -> PreFlightResult:
+    def _real_that_fails(ctx: PreFlightContext) -> PreFlightResult:
         raise _DataError("upstream table missing")
 
-    def _shell_after() -> PreFlightResult:
+    def _shell_after(ctx: PreFlightContext) -> PreFlightResult:
         # This check should never be reached because the RuntimeError
         # above halts the probe.
         raise PreFlightShellError("should not be reached")
@@ -269,7 +322,7 @@ def test_gate_propagates_non_shell_exceptions_immediately(
     # RuntimeError propagates directly; it is NOT wrapped in
     # PreFlightShellError, NOT aggregated with pf_b1's shell status.
     with pytest.raises(_DataError) as excinfo:
-        verify_rider_closing_checks_are_real()
+        verify_rider_closing_checks_are_real(_preflight_context())
     assert "upstream table missing" in str(excinfo.value)
 
 
@@ -353,7 +406,7 @@ def test_build_full_enters_body_after_gate(
         _BuildDependencies,
     )
 
-    def _real() -> PreFlightResult:
+    def _real(ctx: PreFlightContext) -> PreFlightResult:
         return PreFlightResult(
             check_id="dummy",
             passed=True,
@@ -437,3 +490,269 @@ def test_build_full_gate_runs_after_build_strategy_guard(
     # asserts the order rather than just the outermost type.
     assert not isinstance(excinfo.value, PreFlightShellError)
     assert "Unsupported build strategy" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# run_rider_closing_checks + PreFlightExecutionError (D-PR2C-2, PR-2C.0)
+#
+# Every test below asserts EXACT exception types.  PreFlightExecutionError
+# (RuntimeError) and PreFlightShellError (NotImplementedError) are disjoint,
+# so no test here can pass merely because both functions raise a shared broad
+# base class.
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_execution_failed_is_not_a_shell_error() -> None:
+    """Gate-hole regression lock (D-PR2C-2).
+
+    If PreFlightExecutionError were a NotImplementedError subclass, any
+    PR-1 caller writing ``except NotImplementedError`` to tolerate shell
+    state would silently swallow a genuine pre-flight failure.
+    """
+    assert issubclass(PreFlightExecutionError, RuntimeError)
+    assert not issubclass(PreFlightExecutionError, NotImplementedError)
+    assert not issubclass(PreFlightExecutionError, PreFlightShellError)
+    assert not issubclass(PreFlightShellError, PreFlightExecutionError)
+
+
+def test_run_rider_closing_checks_returns_all_results_on_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All-pass: the full result tuple is returned in canonical order."""
+    monkeypatch.setattr(
+        pf,
+        "RIDER_CLOSING_CHECKS",
+        (_passing("PF-B1"), _passing("PF-B2"), _passing("PF-B6")),
+    )
+    results = run_rider_closing_checks(_preflight_context())
+    assert isinstance(results, tuple)
+    assert [r.check_id for r in results] == ["PF-B1", "PF-B2", "PF-B6"]
+    assert all(r.passed for r in results)
+
+
+def test_run_rider_closing_checks_aborts_on_failed_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail-fast: a failed result aborts before the next check runs.
+
+    This is the enforcement the shell detector deliberately does NOT
+    provide.  The third check must never be invoked.
+    """
+    executed: list[str] = []
+
+    def _spy(ctx: PreFlightContext) -> PreFlightResult:
+        executed.append("PF-B6")
+        return PreFlightResult(
+            check_id="PF-B6",
+            passed=True,
+            severity=PreFlightSeverity.INFO,
+            message="should not be reached",
+        )
+
+    monkeypatch.setattr(
+        pf,
+        "RIDER_CLOSING_CHECKS",
+        (_passing("PF-B1"), _failing("PF-B2"), _spy),
+    )
+
+    with pytest.raises(PreFlightExecutionError) as excinfo:
+        run_rider_closing_checks(_preflight_context())
+
+    exc = excinfo.value
+    assert not isinstance(exc, PreFlightShellError)
+    assert executed == [], "PF-B6 ran after PF-B2 failed; fail-fast is broken"
+    assert [r.check_id for r in exc.results] == ["PF-B1", "PF-B2"]
+    assert exc.results[-1].passed is False
+
+
+def test_preflight_execution_failed_stores_immutable_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Results are an immutable tuple, not the executor's working list."""
+    monkeypatch.setattr(
+        pf,
+        "RIDER_CLOSING_CHECKS",
+        (_failing("PF-B1"), _passing("PF-B2"), _passing("PF-B6")),
+    )
+    with pytest.raises(PreFlightExecutionError) as excinfo:
+        run_rider_closing_checks(_preflight_context())
+    assert isinstance(excinfo.value.results, tuple)
+    assert len(excinfo.value.results) == 1
+
+
+def test_preflight_execution_failed_message_is_deterministic() -> None:
+    """Same inputs -> identical message; the failing check is named.
+
+    The tuple shape mirrors what fail-fast produces: the last element is
+    the failure by construction.
+    """
+    passed = PreFlightResult(
+        check_id="PF-B1",
+        passed=True,
+        severity=PreFlightSeverity.INFO,
+        message="ok",
+    )
+    failed = PreFlightResult(
+        check_id="PF-B2",
+        passed=False,
+        severity=PreFlightSeverity.ERROR,
+        message="canonical source violation",
+    )
+    first = PreFlightExecutionError((passed, failed))
+    second = PreFlightExecutionError((passed, failed))
+    assert str(first) == str(second)
+    assert "PF-B2" in str(first)
+    assert "canonical source violation" in str(first)
+
+
+def test_run_rider_closing_checks_propagates_operational_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Operational errors are never reclassified as governance failures."""
+
+    class _DataError(RuntimeError):
+        pass
+
+    def _boom(ctx: PreFlightContext) -> PreFlightResult:
+        raise _DataError("upstream table missing")
+
+    monkeypatch.setattr(
+        pf,
+        "RIDER_CLOSING_CHECKS",
+        (_passing("PF-B1"), _boom, _passing("PF-B6")),
+    )
+
+    with pytest.raises(_DataError) as excinfo:
+        run_rider_closing_checks(_preflight_context())
+    assert not isinstance(excinfo.value, PreFlightExecutionError)
+    assert "upstream table missing" in str(excinfo.value)
+
+
+def test_run_rider_closing_checks_propagates_shell_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shell reaching the executor is a bypassed-registry bug.
+
+    It must surface as PreFlightShellError, not be absorbed into
+    PreFlightExecutionError.
+    """
+    monkeypatch.setattr(
+        pf,
+        "RIDER_CLOSING_CHECKS",
+        (
+            _passing("PF-B1"),
+            pf_b2_canonical_source_check,
+            _passing("PF-B6"),
+        ),
+    )
+    with pytest.raises(PreFlightShellError) as excinfo:
+        run_rider_closing_checks(_preflight_context())
+    assert not isinstance(excinfo.value, PreFlightExecutionError)
+
+
+def test_run_rider_closing_checks_does_not_swallow_bare_not_implemented(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real check leaking bare NotImplementedError is a bug, not a shell."""
+
+    def _leaks(ctx: PreFlightContext) -> PreFlightResult:
+        raise NotImplementedError("some deferred helper")
+
+    monkeypatch.setattr(
+        pf,
+        "RIDER_CLOSING_CHECKS",
+        (_passing("PF-B1"), _leaks, _passing("PF-B6")),
+    )
+    with pytest.raises(NotImplementedError) as excinfo:
+        run_rider_closing_checks(_preflight_context())
+    assert not isinstance(excinfo.value, PreFlightShellError)
+    assert not isinstance(excinfo.value, PreFlightExecutionError)
+
+
+def test_verify_ignores_failed_result_but_run_enforces_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Separation-of-duties lock (D-PR2C-2).
+
+    Same registry, same context.  The shell detector sees three
+    implemented checks and passes silently.  The runtime executor sees a
+    failed result and aborts.  If either function absorbed the other's
+    responsibility this test fails, and no shared base class can make it
+    pass by coincidence: the two expected outcomes are "returns None" and
+    "raises a RuntimeError subclass".
+    """
+    monkeypatch.setattr(
+        pf,
+        "RIDER_CLOSING_CHECKS",
+        (_passing("PF-B1"), _failing("PF-B2"), _passing("PF-B6")),
+    )
+    context = _preflight_context()
+
+    # Shell detector: no shells present -> silent pass.  passed=False is
+    # deliberately invisible to it.
+    verify_rider_closing_checks_are_real(context)
+
+    # Runtime executor: same registry -> enforcement.
+    with pytest.raises(PreFlightExecutionError):
+        run_rider_closing_checks(context)
+
+
+def test_build_full_runtime_gate_blocks_body_on_failed_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D-PR2C-2: a passed=False result cannot reach the producer body.
+
+    All three rider-closing checks are implemented (so the shell detector
+    passes silently), but one returns passed=False.  ``build_full`` MUST
+    abort with PreFlightExecutionError and MUST NOT fire the body-enter
+    hook, compute, or the writer.
+
+    This asserts the presence and position of the runtime gate without
+    locking invocation counts: it does not care how many times each check
+    is called, only that a failed result terminates the build before any
+    observable side effect.  An implementation that cached verify()'s
+    results and reused them in run() would still pass.  Deleting the
+    ``run_rider_closing_checks()`` call from ``build_full`` would not.
+    """
+    from features.win_rate_21d.producer import _BuildDependencies
+
+    monkeypatch.setattr(
+        pf,
+        "RIDER_CLOSING_CHECKS",
+        (_passing("PF-B1"), _failing("PF-B2"), _passing("PF-B6")),
+    )
+
+    call_log: list[str] = []
+
+    def _hook() -> None:
+        call_log.append("body_enter")
+
+    def _spy_compute(
+        scope: BuildScope, context: ProducerContext
+    ) -> BuildArtifact:
+        call_log.append("compute")
+        return _stub_artifact()
+
+    class _SpyWriter:
+        def write_full(self, artifact: BuildArtifact) -> None:
+            call_log.append("write")
+
+    request = ProducerBuildRequest(
+        scope=BuildScope(
+            requested_start=date(2020, 1, 2),
+            requested_end=date(2020, 1, 10),
+        ),
+        dependencies=_BuildDependencies(
+            writer=_SpyWriter(),
+            compute=_spy_compute,
+            body_enter_hook=_hook,
+        ),
+    )
+
+    with pytest.raises(PreFlightExecutionError):
+        build_full(request)
+
+    assert call_log == [], (
+        "producer body executed despite a failed pre-flight result; "
+        f"observed side effects: {call_log}"
+    )

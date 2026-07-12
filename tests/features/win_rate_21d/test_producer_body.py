@@ -35,6 +35,7 @@ import pyarrow as pa
 import pytest
 
 from features.win_rate_21d import pre_flight as pf
+from features.win_rate_21d.build_types import PreFlightContext
 from features.win_rate_21d.compute import compute as canonical_compute
 from features.win_rate_21d.constants import (
     DUCKDB_PATH,
@@ -72,7 +73,7 @@ def _canonical_scope() -> BuildScope:
 def _patch_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace all rider-closing checks with real stubs."""
 
-    def _real() -> PreFlightResult:
+    def _real(context: PreFlightContext) -> PreFlightResult:
         return PreFlightResult(
             check_id="dummy",
             passed=True,

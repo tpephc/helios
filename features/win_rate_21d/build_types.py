@@ -41,7 +41,7 @@ from datetime import date
 
 from features.win_rate_21d.constants import DUCKDB_PATH, PRODUCER_TABLE_NAME
 
-__all__ = ["BuildScope", "ProducerContext"]
+__all__ = ["BuildScope", "PreFlightContext", "ProducerContext"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,3 +84,48 @@ class ProducerContext:
 
     duckdb_path: str = DUCKDB_PATH
     target_table: str = PRODUCER_TABLE_NAME
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PreFlightContext:
+    """Immutable runtime carrier for rider-closing pre-flight checks.
+
+    Governance: D-PR2C-1 (LOCKED).
+
+    Invocation model:
+        Q-PR2A-D2 deferred the registry-shape question to the PR
+        introducing the first parameterised rider-closing check.
+        D-PR2C-1 resolves it with a single homogeneous callable
+        contract, ``Callable[[PreFlightContext], PreFlightResult]``,
+        rather than ``functools.partial`` bindings or
+        ``(callable, args_provider)`` pairs.  Both alternatives were
+        rejected on structural evidence: the registry membership
+        contract asserts exact tuple equality, and the aggregate shell
+        diagnostic reads ``check.__name__`` -- neither survives partial
+        object substitution.
+
+    Field naming:
+        ``producer_context`` rather than ``context`` so call sites read
+        ``ctx.producer_context.duckdb_path`` instead of the ambiguous
+        ``ctx.context.duckdb_path``.
+
+    Construction point:
+        Constructed inside ``producer.build_full()``, never by callers.
+        Both fields are derivable from ``ProducerBuildRequest``, so the
+        public build API is unchanged.
+
+    Content restriction (D-PR2C-1 forward-compatibility clause):
+        This context carries governance-stable immutable metadata only.
+        Mutable resources, open DuckDB connections, writers, hooks,
+        service objects, and compute callables are FORBIDDEN fields.
+        Later PRs may append keyword-only fields with defaults without
+        reopening D-PR2C-1 provided that restriction holds.
+
+    Attributes:
+        scope: Requested build date scope (PF-B1 input).
+        producer_context: Environment-varying configuration; supplies
+            ``duckdb_path`` and ``target_table`` (PF-B2 / PF-B6 inputs).
+    """
+
+    scope: BuildScope
+    producer_context: ProducerContext

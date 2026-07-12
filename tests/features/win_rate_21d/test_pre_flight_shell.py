@@ -10,9 +10,15 @@ Verifies:
 """
 
 from collections.abc import Callable
+from datetime import date
 
 import pytest
 
+from features.win_rate_21d.build_types import (
+    BuildScope,
+    PreFlightContext,
+    ProducerContext,
+)
 from features.win_rate_21d.pre_flight import (
     PreFlightResult,
     PreFlightSeverity,
@@ -78,7 +84,7 @@ def test_pre_flight_severity_enum_values() -> None:
     ],
 )
 def test_pf_b_shells_do_not_pass_vacuously(
-    check: Callable[[], PreFlightResult],
+    check: Callable[[PreFlightContext], PreFlightResult],
 ) -> None:
     """A shell MUST raise NotImplementedError rather than return PASS.
 
@@ -86,5 +92,13 @@ def test_pf_b_shells_do_not_pass_vacuously(
     ``return PreFlightResult(check_id=..., passed=True, ...)``
     that would misrepresent implementation status as PASS.
     """
+    context = PreFlightContext(
+        scope=BuildScope(
+            requested_start=date(2020, 1, 2),
+            requested_end=date(2020, 1, 10),
+        ),
+        producer_context=ProducerContext(),
+    )
+
     with pytest.raises(NotImplementedError):
-        check()
+        check(context)

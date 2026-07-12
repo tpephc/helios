@@ -49,10 +49,12 @@ PR-2A additions (additive-only, Q-PR2A-R1):
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Final
+from typing import Final
 
+from features.win_rate_21d.build_types import PreFlightContext
 from features.win_rate_21d.constants import (
     MIN_CROSS_SECTION_OBS_PER_DATE,
     MIN_OBS,
@@ -133,7 +135,7 @@ class PreFlightShellError(NotImplementedError):
     """
 
 
-def pf_b1_scope_check() -> PreFlightResult:
+def pf_b1_scope_check(context: PreFlightContext) -> PreFlightResult:
     """PF-B1 requested-vs-materialized scope validation.
 
     Governance: SD-A2-3 defines this check as the SD-A2-1 rider closure
@@ -143,13 +145,20 @@ def pf_b1_scope_check() -> PreFlightResult:
 
     PR-1 status: shell.  Real implementation requires the scope resolver
     and the DuckDB read path, both landing in a later PR.
+
+    PR-2C.0 status: still shell.  The ``context`` parameter is accepted
+    per the D-PR2C-1 invocation model but is deliberately NOT inspected
+    yet.  Inspecting it without implementing the check would risk a
+    vacuous pass, which ``test_pre_flight_shell.py`` forbids.
     """
     raise PreFlightShellError(
         "PF-B1 pending scope resolver + DuckDB read path"
     )
 
 
-def pf_b2_canonical_source_check() -> PreFlightResult:
+def pf_b2_canonical_source_check(
+    context: PreFlightContext,
+) -> PreFlightResult:
     """PF-B2 canonical source validation.
 
     Governance: SD-A2-3 requires producer code reads only from the
@@ -162,6 +171,11 @@ def pf_b2_canonical_source_check() -> PreFlightResult:
 
     PR-1 status: shell.  Real implementation requires the producer body
     to inspect.
+
+    PR-2C.0 status: still shell.  The ``context`` parameter is accepted
+    per the D-PR2C-1 invocation model but is deliberately NOT inspected
+    yet.  Inspecting it without implementing the check would risk a
+    vacuous pass, which ``test_pre_flight_shell.py`` forbids.
     """
     raise PreFlightShellError(
         "PF-B2 pending producer body implementation"
@@ -239,7 +253,9 @@ def pf_b4_window_constants_check(
     )
 
 
-def pf_b6_duckdb_writeability_check() -> PreFlightResult:
+def pf_b6_duckdb_writeability_check(
+    context: PreFlightContext,
+) -> PreFlightResult:
     """PF-B6 DuckDB target writeability check.
 
     Governance: SD-A2-3 requires the DuckDB file to be writable and the
@@ -249,6 +265,11 @@ def pf_b6_duckdb_writeability_check() -> PreFlightResult:
 
     PR-1 status: shell.  Real implementation requires the DuckDB
     integration path in a later PR.
+
+    PR-2C.0 status: still shell.  The ``context`` parameter is accepted
+    per the D-PR2C-1 invocation model but is deliberately NOT inspected
+    yet.  Inspecting it without implementing the check would risk a
+    vacuous pass, which ``test_pre_flight_shell.py`` forbids.
     """
     raise PreFlightShellError(
         "PF-B6 pending DuckDB integration path"
@@ -265,16 +286,25 @@ def pf_b6_duckdb_writeability_check() -> PreFlightResult:
 # ---------------------------------------------------------------------------
 
 
-# Type alias for any callable that returns a PreFlightResult.  Applies
-# to both parameterless shells (PF-B1, PF-B2, PF-B6) and the
-# parameterised real checks (PF-B3, PF-B4).
-PreFlightCallable = Callable[..., PreFlightResult]
+# Heterogeneous alias.  ALL_PRE_FLIGHT_CHECKS is NOT signature-uniform:
+# PF-B3 and PF-B4 are parameterised by their observed constants (int
+# arguments with defaults), while the rider-closing checks take a
+# PreFlightContext (D-PR2C-1).  Annotating the general registry with the
+# narrow PreFlightCallable would be a type-contract falsehood.  Migrating
+# PF-B3 / PF-B4 to the context model is out of scope for PR-2C.0: they
+# are already real and do not gate the SD-A2-1 rider.
+AnyPreFlightCallable = Callable[..., PreFlightResult]
+
+
+# Homogeneous alias: the canonical rider-closing invocation model.
+# Governance: D-PR2C-1 (LOCKED).
+PreFlightCallable = Callable[[PreFlightContext], PreFlightResult]
 
 
 # Complete tuple of every SD-A2-3 PF-B check defined in PR-1, in
 # canonical order.  This is the general registry; the rider-closing
 # subset is defined below as ``RIDER_CLOSING_CHECKS``.
-ALL_PRE_FLIGHT_CHECKS: Final[tuple[PreFlightCallable, ...]] = (
+ALL_PRE_FLIGHT_CHECKS: Final[tuple[AnyPreFlightCallable, ...]] = (
     pf_b1_scope_check,
     pf_b2_canonical_source_check,
     pf_b3_min_cross_section_check,
@@ -288,24 +318,21 @@ ALL_PRE_FLIGHT_CHECKS: Final[tuple[PreFlightCallable, ...]] = (
 # three PR-1 shells (PF-B1, PF-B2, PF-B6).  PF-B3 and PF-B4 are excluded
 # because they are already real implementations in PR-1.
 #
-# Signature note (Q-PR2A-D2):
-#     Each callable is currently invokable with no arguments (all three
-#     shells take no parameters).  When a rider-closing check is
-#     replaced by a real implementation that requires arguments (for
-#     example, ``pf_b1_scope_check(scope: BuildScope)``), this tuple's
-#     shape must evolve --- likely to ``(callable, args_provider)``
-#     pairs or ``functools.partial`` bindings.  That is a governance
-#     sub-decision for the PR that introduces the first parameterised
-#     rider-closing check (expected PR-2C); it is intentionally out of
-#     scope for PR-2A.
-RIDER_CLOSING_CHECKS: Final[tuple[Callable[[], PreFlightResult], ...]] = (
+# Signature note (Q-PR2A-D2): RESOLVED by D-PR2C-1 (LOCKED).
+#     Each callable now takes exactly one PreFlightContext.  The
+#     functools.partial and (callable, args_provider) alternatives were
+#     rejected on structural evidence -- see D-PR2C-1.  Tuple membership
+#     and ordering are unchanged from PR-2A.
+RIDER_CLOSING_CHECKS: Final[tuple[PreFlightCallable, ...]] = (
     pf_b1_scope_check,
     pf_b2_canonical_source_check,
     pf_b6_duckdb_writeability_check,
 )
 
 
-def verify_rider_closing_checks_are_real() -> None:
+def verify_rider_closing_checks_are_real(
+    context: PreFlightContext,
+) -> None:
     """Raise ``PreFlightShellError`` if any rider-closing check is shell.
 
     The gate probes each rider-closing check by invocation and catches
@@ -335,18 +362,32 @@ def verify_rider_closing_checks_are_real() -> None:
         state we report on) and "check ran and something went wrong"
         (an operational error the caller must see promptly).
 
+    Scope boundary (D-PR2C-2):
+        This function performs shell CLASSIFICATION only.  It invokes
+        each check and DISCARDS the returned ``PreFlightResult``.  It
+        does NOT inspect ``PreFlightResult.passed``: runtime pass/fail
+        enforcement belongs exclusively to ``run_rider_closing_checks``.
+        A check returning ``passed=False`` passes this gate silently and
+        is caught by the executor.  That division is intentional and is
+        locked by
+        ``test_verify_ignores_failed_result_but_run_enforces_it``.
+
     Side effects: none other than the potential raise.
+
+    Args:
+        context: Immutable runtime carrier (D-PR2C-1) passed to every
+            check.  Not inspected by this function.
 
     Raises:
         PreFlightShellError: if one or more checks in
             ``RIDER_CLOSING_CHECKS`` raise ``PreFlightShellError`` when
-            invoked with no arguments.  The message names every shell
+            invoked with ``context``.  The message names every shell
             check found, comma-separated, in canonical order.
     """
     shell_names: list[str] = []
     for check in RIDER_CLOSING_CHECKS:
         try:
-            check()
+            check(context)
         except PreFlightShellError:
             shell_names.append(check.__name__)
     if shell_names:
@@ -354,3 +395,114 @@ def verify_rider_closing_checks_are_real() -> None:
             "rider-closing pre-flight checks are still shell: "
             + ", ".join(shell_names)
         )
+
+
+class PreFlightExecutionError(RuntimeError):
+    """Raised when a rider-closing pre-flight check returns passed=False.
+
+    Governance: D-PR2C-2 (LOCKED); concrete contract settled at PR-2C.0
+    implementation review.
+
+    Inheritance (deliberate, safety-critical):
+        Inherits ``RuntimeError``, matching the
+        ``EnvironmentVerificationError`` precedent in
+        ``features/win_rate_21d/environment.py``.
+
+        It MUST NOT inherit ``NotImplementedError``.  Many PR-1 call
+        sites catch ``NotImplementedError`` to tolerate shell state.  If
+        a genuine pre-flight FAILURE were catchable by those clauses, a
+        failed governance check could be silently swallowed by code that
+        merely intended to tolerate an unimplemented one -- exactly the
+        gate hole D-PR2C-2 exists to close.  ``PreFlightExecutionError``
+        and ``PreFlightShellError`` are disjoint types; no ``except``
+        clause catches both without naming both.
+
+    Storage:
+        ``results`` carries every ``PreFlightResult`` collected up to and
+        including the first failure.  Under the fail-fast contract it is
+        strictly shorter than the registry whenever a check other than
+        the last one fails.  Results that were never computed MUST NOT be
+        fabricated.
+
+    Message derivation:
+        Fail-fast guarantees the last collected result is the failing
+        one, so the message is derived from ``results[-1]`` with no
+        branching.  This class deliberately does NOT validate its input:
+        D-PR2C-2 specifies only that the exception carries the collected
+        results.  Constructor rejection semantics would create a public
+        contract with no governance basis and would protect nothing --
+        ``run_rider_closing_checks`` is the sole construction site and
+        constructs only on failure.
+
+    Not a dataclass:
+        No exception in this repository is a dataclass; ``@dataclass``
+        complicates ``BaseException.args`` and pickling for no benefit.
+    """
+
+    def __init__(self, results: tuple[PreFlightResult, ...]) -> None:
+        stored = tuple(results)
+        failure = stored[-1]
+        super().__init__(
+            "pre-flight execution failed at check "
+            f"{len(stored)}: {failure.check_id}: {failure.message}"
+        )
+        self.results: tuple[PreFlightResult, ...] = stored
+
+
+def run_rider_closing_checks(
+    context: PreFlightContext,
+) -> tuple[PreFlightResult, ...]:
+    """Execute rider-closing pre-flight checks and enforce their results.
+
+    Governance: D-PR2C-2 (LOCKED).
+
+    Semantics:
+        - Checks run sequentially in canonical ``RIDER_CLOSING_CHECKS``
+          order.  Never concurrently: ordering is part of the contract
+          and PF-B6 will touch DuckDB once implemented.
+        - The same ``context`` instance is passed to every check.
+        - Execution is FAIL-FAST.  The first result with
+          ``passed is False`` aborts the run; subsequent checks are not
+          invoked.  This is a build gate, not a governance survey: the
+          aggregate-diagnostic rationale that justifies aggregation in
+          ``verify_rider_closing_checks_are_real`` does not apply.
+          Concretely, probing PF-B6 (DuckDB writeability) after PF-B1
+          (scope) has already failed carries no diagnostic value and
+          touches an external resource under a broken precondition.
+        - Operational exceptions propagate unchanged and are NEVER
+          reclassified as shell state nor wrapped in
+          ``PreFlightExecutionError``.
+        - ``PreFlightShellError`` also propagates unchanged.  In the
+          canonical ``build_full`` ordering this executor runs only after
+          the shell detector has passed, so a shell reaching here means
+          the registry was bypassed -- a governance bug that must surface
+          with its original type rather than be absorbed.
+
+    Idempotence requirement (consequence of the two-gate ordering):
+        In the canonical ``build_full`` ordering every rider-closing
+        check is invoked twice per build: once by
+        ``verify_rider_closing_checks_are_real`` (result discarded) and
+        once here (result enforced).  Real PF-B implementations MUST
+        therefore be side-effect-free and idempotent.  This elevates
+        PF-B6's existing "does NOT perform trial writes" constraint from
+        a stylistic note to a correctness precondition.
+
+    Args:
+        context: Immutable runtime carrier (D-PR2C-1).
+
+    Returns:
+        Every ``PreFlightResult`` in canonical order, when all pass.
+        Retained for the PR-3 manifest audit trail.
+
+    Raises:
+        PreFlightExecutionError: if any check returns
+            ``passed is False``.  Carries the results collected up to and
+            including that failure.
+    """
+    collected: list[PreFlightResult] = []
+    for check in RIDER_CLOSING_CHECKS:
+        result = check(context)
+        collected.append(result)
+        if not result.passed:
+            raise PreFlightExecutionError(tuple(collected))
+    return tuple(collected)
