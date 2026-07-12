@@ -1,7 +1,7 @@
 # PR-Level Disposition Ledger — `win_rate_21d`
 
 **Document ID:** `win_rate_21d_pr_dispositions`
-**Version:** v0.1.1
+**Version:** v0.1.2
 **Status:** ACTIVE
 **Owner:** Veronica
 **Repository:** Helios (`~/projects/helios`)
@@ -941,6 +941,7 @@ subject to IN-3.
 | ------- | ---------- | ------ |
 | v0.1.0  | 2026-07-11 | Initial ledger creation. Locks D-PR2C-0, D-PR2C-1, D-PR2C-2, D-PR2C-3 as ORIGINAL LOCKED DISPOSITION entries at repository anchor `624afef`. |
 | v0.1.1  | 2026-07-12 | Appends D-PR2C-4 (PR-2C.0 Ruff baseline treatment) as an ORIGINAL LOCKED DISPOSITION at repository anchor `41e8e1e`. Governs PR-2C.0 static-analysis acceptance criteria and the deferred runtime-failure exception name; amends no implementation disposition and is not a Gate A1 lock condition. |
+| v0.1.2  | 2026-07-12 | Appends D-PR2C-5 (completion of the PR-2C.0 signature-migration blast radius) as an ORIGINAL LOCKED DISPOSITION at repository anchor `182d26f`. Corrects a factual omission in D-PR2C-2's test-migration enumeration, observed during implementation validation; amends no design disposition. |
 
 *End of ledger initial content. Future entries append below.*
 
@@ -1050,3 +1051,109 @@ It amends neither D-PR2C-1 nor D-PR2C-2.
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; grounded in observed HEAD
   Ruff output and `pyproject.toml:67-82`.
+
+---
+
+## D-PR2C-5 — Completion of the PR-2C.0 Signature-Migration Blast Radius
+
+### Timing (honest record)
+
+This disposition was NOT locked before code. The PR-2C.0 implementation
+was already in the working tree when the omission surfaced during
+validation. D-PR2C-5 is locked before the two affected test files are
+remediated, not before PR-2C.0 began.
+
+DGP-01's "no code before disposition lock" discipline was satisfied for
+D-PR2C-1, D-PR2C-2, and D-PR2C-4, all of which preceded implementation.
+D-PR2C-5 corrects a factual omission in D-PR2C-2's enumeration that could
+only be observed by executing the migration. Recording it as an ex-ante
+decision would be false.
+
+### Question
+
+D-PR2C-2 §Test migration enumerated the signature-migration surface as
+`tests/features/win_rate_21d/test_safety_gate.py` only. Is that
+enumeration complete?
+
+### Evidence (observed at PR-2C.0 implementation, repository anchor 182d26f)
+
+It is not. After the D-PR2C-1 signature migration,
+`uv run pytest tests/features/win_rate_21d` reports 5 failed, 142 passed.
+All five failures are arity `TypeError`s in two additional files:
+
+| File | Site | Failure |
+| ---- | ---- | ------- |
+| `test_pre_flight_shell.py:90` | `check()` in `test_pf_b_shells_do_not_pass_vacuously` (3 parametrisations) | `missing 1 required positional argument: 'context'` |
+| `test_producer_body.py:75` | `_real()` in `_patch_gate_open` (2 dependent tests) | `takes 0 positional arguments but 1 was given` |
+
+A repository-wide reference scan confirms the surface is now closed. The
+only other matches (`tests/features/win_rate_21d/test_environment.py:124`,
+`features/win_rate_21d/environment.py:128`) are docstring references
+requiring no change.
+
+`test_safety_gate.py` passes in full (27 tests) after migration. The
+D-PR2C-1 / D-PR2C-2 design is not implicated. D-PR2C-2's blast-radius
+figure ("three files, at least nine call sites") was computed for a
+*rename* and was never re-derived for the *signature migration*.
+
+### Decision
+
+PR-2C.0 SHALL migrate the rider-closing call-site signatures in
+`test_pre_flight_shell.py` and `test_producer_body.py`.
+
+Strictly limited to:
+
+1. adding the `PreFlightContext` parameter to affected callables and
+   call sites;
+2. adding the imports those signatures require.
+
+The following SHALL NOT change: any assertion, any parametrisation, any
+test name, any docstring semantics, any fixture behaviour, any PF-B3 /
+PF-B4 test, any production code.
+
+### Static analysis
+
+The two files remediated under D-PR2C-5 are added to the D-PR2C-4 D4-1
+delta rule. Their HEAD Ruff baseline, captured before remediation, is:
+
+| Rule | Location |
+| ---- | -------- |
+| `I001` | `test_producer_body.py` |
+| `N813` | `test_producer_body.py` (`BuildScope` as `_canonical_build_scope`) |
+| `N813` | `test_producer_body.py` (`ProducerContext` as `_canonical_producer_context`) |
+
+`test_pre_flight_shell.py` reports no `ruff check` violation at HEAD and
+SHALL remain so.
+
+`ruff format --check` reports BOTH files as requiring reformatting before
+remediation. That set SHALL NOT expand.
+
+Remediation SHALL introduce no violation absent from this baseline, and
+SHALL NOT fix the baseline findings: they are pre-existing debt outside
+the import blocks this patch necessarily rewrites, and fall under
+D-PR2C-4 D4-3's preserved-debt principle.
+
+### Relation to the kickoff's out-of-scope clause
+
+The kickoff forbids *restructuring* the default-shell anchor tests — that
+is, rewriting `test_pf_b_shells_do_not_pass_vacuously` to monkeypatch a
+now-real check back into shell state. That restructure remains deferred to
+the first PR that makes a PF-B shell real.
+
+Signature migration is a distinct operation. It preserves the anchor's
+assertion (`pytest.raises(NotImplementedError)`) verbatim. Without it,
+PR-2C.0 cannot land at all. This disposition does not relax the
+restructure prohibition.
+
+### Governance metadata
+
+- **Status:** LOCKED
+- **Commit SHA:** `<TBD — backfill after lock commit>`
+- **Entry repository anchor:** `182d26f`
+- **Previous D-PR entry:** D-PR2C-4
+- **Ledger version at lock:** v0.1.2
+- **Previous ledger tail md5:** `dff03e59bcc87d162cb0755a76aa72e8`
+- **New ledger tail md5 after append:** `<TBD>`
+- **Record class:** ORIGINAL LOCKED DISPOSITION
+- **Evidence basis:** Original disposition; grounded in observed pytest
+  failures and a repository-wide reference scan.
