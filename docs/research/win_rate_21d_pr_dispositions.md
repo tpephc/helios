@@ -1,7 +1,7 @@
 # PR-Level Disposition Ledger — `win_rate_21d`
 
 **Document ID:** `win_rate_21d_pr_dispositions`
-**Version:** v0.1.2
+**Version:** v0.1.3
 **Status:** ACTIVE
 **Owner:** Veronica
 **Repository:** Helios (`~/projects/helios`)
@@ -942,6 +942,7 @@ subject to IN-3.
 | v0.1.0  | 2026-07-11 | Initial ledger creation. Locks D-PR2C-0, D-PR2C-1, D-PR2C-2, D-PR2C-3 as ORIGINAL LOCKED DISPOSITION entries at repository anchor `624afef`. |
 | v0.1.1  | 2026-07-12 | Appends D-PR2C-4 (PR-2C.0 Ruff baseline treatment) as an ORIGINAL LOCKED DISPOSITION at repository anchor `41e8e1e`. Governs PR-2C.0 static-analysis acceptance criteria and the deferred runtime-failure exception name; amends no implementation disposition and is not a Gate A1 lock condition. |
 | v0.1.2  | 2026-07-12 | Appends D-PR2C-5 (completion of the PR-2C.0 signature-migration blast radius) as an ORIGINAL LOCKED DISPOSITION at repository anchor `182d26f`. Corrects a factual omission in D-PR2C-2's test-migration enumeration, observed during implementation validation; amends no design disposition. |
+| v0.1.3  | 2026-07-13 | Appends D-PR2C-6, D-PR2C-7, D-PR2C-8 as ORIGINAL LOCKED DISPOSITION entries at repository anchor `6989d17`. Commit-anchor fields for all three entries backfilled in the same governance session. |
 
 *End of ledger initial content. Future entries append below.*
 
@@ -1288,6 +1289,8 @@ prohibits comparison between a domain value and a backend artifact.
 - **Previous D-PR entry:** D-PR2C-5
 - **Entry repository anchor:** dc6c32b873b4797fa311d50d3c27afd20a10e208
 - **Ledger MD5 at session entry:** 8e2dd4db68581953854986b727aa661d
+- **Commit SHA:** `6989d170ca34fe534211174ee2bfc51005691fc3`
+- **Ledger version at lock:** v0.1.3
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 
 ---
@@ -1471,6 +1474,8 @@ for ordering after this disposition locks.
 - **Order implication:** PR-2C.1 = PF-B2, PR-2C.2 = PF-B1
 - **Entry repository anchor:** dc6c32b873b4797fa311d50d3c27afd20a10e208
 - **Ledger MD5 at session entry:** 8e2dd4db68581953854986b727aa661d
+- **Commit SHA:** `6989d170ca34fe534211174ee2bfc51005691fc3`
+- **Ledger version at lock:** v0.1.3
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 
 ---
@@ -1595,4 +1600,6 @@ under this one by extension.
   rationale, TOCTOU analysis
 - **Entry repository anchor:** dc6c32b873b4797fa311d50d3c27afd20a10e208
 - **Ledger MD5 at session entry:** 8e2dd4db68581953854986b727aa661d
+- **Commit SHA:** `6989d170ca34fe534211174ee2bfc51005691fc3`
+- **Ledger version at lock:** v0.1.3
 - **Record class:** ORIGINAL LOCKED DISPOSITION
