@@ -1157,3 +1157,442 @@ restructure prohibition.
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; grounded in observed pytest
   failures and a repository-wide reference scan.
+
+---
+
+## D-PR2C-6 — PF-B1 Materialized-Scope Mechanism and Operational Boundary
+
+### Status
+LOCKED
+
+### Scope
+PF-B1 mechanism and operational/correctness boundary. Order implication: none.
+PR-2C.1 target: selected separately in D-PR2C-7.
+
+### Terminology note
+The term "materialized scope" in this disposition means the date-availability
+domain observed from the canonical PIT source for one-shot full rebuild. It
+does NOT reuse spec §9.1 SD-2's storage-persistence meaning ("materialized
+BASE TABLE" as a persisted table vs. a view). These are unrelated concepts
+that happen to share a word; conflating them was flagged during entry
+evidence review as a false-positive search hit and must not recur.
+
+This disposition does not authorize implementation and does not select the
+PR-2C.1 target.
+
+### Verified findings that motivate this mechanism
+
+- `features/win_rate_21d/compute.py`'s query performs no date-range
+  filtering. The `scope` parameter is explicitly discarded
+  (`compute.py`, `_ = scope`), and `_SQL_MEDIAN_QUERY_TEMPLATE`'s `dates`
+  CTE selects the full unbounded date range from the canonical PIT view
+  (`CANONICAL_PIT_VIEW_NAME`). This is architecturally consistent with
+  `BUILD_STRATEGY == "one_shot_full_rebuild"` (incremental/partial build is
+  forbidden; see `test_no_forbidden_names.py`).
+- `resolve_scope()` remains an unimplemented shell
+  (`test_producer_surface.py::test_resolve_scope_is_shell`); requested scope
+  is currently supplied only via direct `BuildScope(...)` construction by
+  callers/tests.
+- No existing materialized-scope query pattern exists anywhere in the
+  repository for PF-B1 to build on. No analogous requested/materialized
+  date-boundary policy exists in `ud_ratio.py` or its tests. This is a
+  confirmed absence (repository-wide search performed), not an inferred one.
+
+### Locked mechanism contract
+
+1. PF-B1 observes the unbounded date-availability domain of the canonical
+   PIT view. It does not apply the requested `BuildScope` as a SQL filter.
+
+2. The unbounded observation is intentional and aligned with
+   `one_shot_full_rebuild`: `compute()` consumes the full canonical source,
+   while `BuildScope` expresses the requested intent whose support must be
+   validated before producer entry.
+
+3. PF-B1 passes only when:
+   ```
+   view_min <= requested_start
+   AND
+   view_max >= requested_end
+   ```
+
+4. PF-B1 validates outer-bound coverage only. It does not validate interior
+   trading-date completeness, per-symbol completeness, or cross-sectional
+   observation sufficiency. Full trading-calendar completeness, if required,
+   belongs to a separate PF or disposition.
+
+5. A successfully queried canonical scope whose two observed boundaries are
+   both NULL is an empty-source validation failure. The returned
+   `PreFlightResult` MUST have `passed=False` and carry a deterministic
+   diagnostic identifiable as `PF_B1_EMPTY_CANONICAL_SCOPE`.
+
+   Insufficient non-empty coverage (`view_min > requested_start` OR
+   `view_max < requested_end`, with both boundaries non-NULL) is a distinct
+   validation failure. The returned `PreFlightResult` MUST have
+   `passed=False` and carry a deterministic diagnostic identifiable as
+   `PF_B1_REQUESTED_SCOPE_NOT_COVERED`.
+
+   An asymmetric NULL result (exactly one boundary is NULL) is NOT a valid
+   empty-scope observation. It is a semantically uninterpretable result and
+   MUST propagate through the non-shell operational-error channel.
+
+6. DuckDB connection, source resolution, query execution, result-shape, or
+   type-conversion failures are operational failures and MUST propagate as
+   non-`PreFlightShellError` exceptions.
+
+7. Requested and observed boundaries MUST be converted to domain-level
+   `date` values before comparison. Raw DuckDB or Arrow result objects MUST
+   NOT participate directly in scope comparison.
+
+8. `requested_start > requested_end` MUST NOT be allowed to reach the
+   coverage predicate unchecked.
+
+   Classification note: reversed requested bounds are a domain-precondition
+   failure, not a source-validation result and not a DuckDB/environment
+   failure. Under the current three-channel GC-7 taxonomy, the failure MUST
+   propagate through the non-shell exception channel and MUST NOT be
+   converted into `PreFlightResult(passed=False)`. It is non-retryable;
+   retry handling applicable to transient DuckDB failures MUST NOT be
+   applied to this condition.
+
+   Canonical invariant ownership belongs to `BuildScope`. Once `BuildScope`
+   enforces the invariant at construction time (e.g. via `__post_init__`),
+   this defensive PF-B1 guard is removed rather than translated into
+   another PF-B1 branch. [BACKLOG note: `BuildScope` currently has no
+   `__post_init__`; verified against `build_types.py`.]
+
+### Representation boundary
+
+Requested scope and materialized scope MUST be reduced to domain-level
+date-boundary values before comparison. PF-B1 MUST NOT compare `BuildScope`
+directly against a raw DuckDB cursor, Arrow reader, relation, or other
+backend-specific result object.
+
+`BuildScope` remains the canonical requested-scope representation. Its
+fields are semantically named `requested_start` and `requested_end`;
+therefore it MUST NOT be repurposed as the materialized-scope carrier
+merely because its structural shape is compatible (primitive/structural
+compatibility must not be treated as semantic compatibility).
+
+The implementation MAY use:
+- two explicitly named local `date` values such as `materialized_start`
+  and `materialized_end`; or
+- a private immutable value object with explicit materialized-scope
+  semantics.
+
+This disposition does not authorize a new public API or require a new
+exported type. It requires semantic alignment before comparison and
+prohibits comparison between a domain value and a backend artifact.
+
+### Governance metadata
+- **Status:** LOCKED
+- **Previous D-PR entry:** D-PR2C-5
+- **Entry repository anchor:** dc6c32b873b4797fa311d50d3c27afd20a10e208
+- **Ledger MD5 at session entry:** 8e2dd4db68581953854986b727aa661d
+- **Record class:** ORIGINAL LOCKED DISPOSITION
+
+---
+
+## D-PR2C-7 — PR-2C.1 Implementation Order Selection
+
+### Status
+LOCKED
+
+### Decision question
+Given locked PF-B1 (D-PR2C-6) and PF-B2 (D-PR2C-3) mechanisms, which check
+should become the first real rider-closing check in PR-2C.1?
+
+### Finding F-7 — mechanism maturity asymmetry
+
+Previous implementation-order discussions (including this ledger's own
+IN-3) treated PF-B1 as the "smaller" implementation, on the assumption that
+PF-B1 required only reading existing data while PF-B2 required building an
+AST analyzer.
+
+Repository inspection performed during D-PR2C-6 invalidated that
+assumption. PF-B1 required an entirely new mechanism contract (unbounded
+observation, coverage semantics, a six-branch validation/operational
+taxonomy, representation-boundary rules, and a defensive precondition
+guard), authored de novo in this governance session with no corresponding
+production implementation or repository-backed execution evidence.
+
+PF-B2's mechanism, by contrast, was locked in D-PR2C-3 and its Layer
+1/Layer 2 data-flow chain was verified against HEAD `compute.py:85-88,92`
+at lock time — before this session began.
+
+Implementation complexity therefore cannot be inferred from apparent
+algorithmic simplicity alone. IN-3 is SUPERSEDED as an ordering basis by
+this Finding.
+
+### Finding F-8 — risk-source isolation (orthogonal to F-7)
+
+PR-2C.1 is unavoidably the first rider-closing lifecycle transition
+(Form 1/Form 2, see D-PR2C-8). This is a novel event regardless of which
+check is selected.
+
+Selecting a mechanism whose correctness has not yet been repository-
+validated would stack two independent novel risk sources into the same
+change: transition-mechanics correctness and mechanism correctness. Any
+regression in such a PR could not be cleanly attributed to either source.
+
+Mechanism maturity (F-7) and transition novelty are orthogonal dimensions.
+This Finding holds independently of which check is currently more mature —
+if mechanism maturity were to reverse in the future, F-8 would still
+counsel introducing at most one previously unvalidated engineering
+dimension per rider transition.
+
+### Primary comparison table (neutral mechanics)
+
+| Dimension | PF-B1 | PF-B2 |
+|---|---|---|
+| External dependency | Read-only DuckDB | Production source file (`compute.py`) |
+| Mutable-state exposure | Yes | Negligible |
+| Double invocation | Two DB observations | Duplicate static analysis |
+| Core algorithm | Aggregate query + domain normalization + containment predicate | AST parse + two-layer data-flow binding |
+| Failure branches | 6 (empty/symmetric-NULL, insufficient-coverage, asymmetric-NULL, DB/connection, reversed-bounds, generic operational) | 3 (Layer-1 literal violation, Layer-2 unresolved binding, infrastructure/parse failure) |
+| Verified against current HEAD | No — mechanism authored de novo this session | Yes — verified against HEAD `compute.py` at D-PR2C-3 lock time |
+| Determinism | Depends on live DB state at test time | Deterministic for fixed source bytes |
+| Test fixture burden | Requires synthetic DB states for 6 branches, including a pathological asymmetric-NULL state that may require mocking a connection/cursor | Requires synthetic/static source files per branch, all reachable via ordinary Python source text |
+| Flakiness surface | DB lock/catalog/connection state | Source resolution, analyzer completeness |
+| First-transition value | Exercises the two-gate authority rule (D-PR2C-2) against real mutable external state for the first time | Exercises a complex fail-closed static analyzer with no TOCTOU exposure |
+
+Deliberately excluded from this table: P0/severity classification, blast
+radius of a wrong result. See "Consequence severity" below.
+
+### Ordering criteria (defined, not pre-weighted)
+
+- **Engineering landing risk** (formerly "Criterion A") — lower
+  implementation and landing risk.
+- **Governance validation value** (formerly "Criterion B") — higher
+  governance value as the first real lifecycle
+  transition (e.g. earliest validation of the D-PR2C-2 authority-rule
+  hypothesis against real mutable state).
+
+Engineering landing risk favors PF-B2 (Findings F-7, F-8). Governance
+validation value favors PF-B1
+(earliest exercise of mutable external state). These criteria point to
+different answers; this is a real tension, not an artifact of insufficient
+analysis.
+
+### Consequence severity — independent analysis
+
+PF-B2 protects an explicitly P0 lineage rule under spec §4.4.
+
+PF-B1 protects source-coverage sufficiency for the declared build intent.
+The current governance record does not assign this failure a formal
+severity tier.
+
+Therefore PF-B2 has a formally classified consequence, while PF-B1's
+consequence is materially important but not formally tiered. This
+difference is relevant to governance-value analysis, but it is NOT by
+itself dispositive of implementation order, and is NOT invoked as the
+deciding factor below.
+
+Regardless of ordering choice, PF-B2's P0 lineage protection does not
+become active until PF-B2 itself lands as a real check — this exposure is
+a pre-existing condition of HEAD, not created by this disposition.
+Selecting PF-B1 first would extend this pre-existing exposure window by
+one additional PR cycle; selecting PF-B2 first does not extend it. This
+delta is disclosed for completeness; it is not the basis of the decision
+below.
+
+### Decision rule
+
+For the first rider-closing lifecycle transition, this disposition selects
+**engineering landing risk** as the primary criterion.
+
+Two independent grounds support this, both evidence-based:
+
+1. **Mechanism maturity (Finding F-7).** PF-B2's mechanism was locked and
+   verified against HEAD before this session began. PF-B1's mechanism was
+   authored de novo in this session with no repository-backed execution
+   evidence.
+
+2. **Risk-stacking avoidance (Finding F-8).** PR-2C.1 already carries novel
+   risk as the first PR to exercise the Form 1/Form 2 anchor-test lifecycle
+   transition (D-PR2C-8). Landing an unverified mechanism in the same PR
+   would compound two independent sources of uncertainty. Selecting the
+   verified mechanism confines PR-2C.1's risk surface to transition
+   mechanics alone.
+
+This disposition therefore selects:
+```
+PR-2C.1 → PF-B2
+PR-2C.2 → PF-B1
+```
+
+The authority-rule validation (D-PR2C-2's separation-of-duties model
+against real mutable external state) is intentionally deferred by one
+rider transition, not removed. This deferral is a byproduct of grounds 1
+and 2 above; no P0-severity argument is invoked.
+
+### Residual note
+
+Grounds 1 and 2 materially narrow the range of reasonable ordering choices
+but do not uniquely determine one. Selecting the verified mechanism first
+reflects a sequencing principle (prefer isolating independent engineering
+risks across successive PRs) rather than a mathematical consequence of the
+repository evidence alone. This preference is disclosed explicitly rather
+than being presented as an inevitable conclusion from the evidence.
+
+### Extraction note (non-blocking, for future governance session)
+
+Findings F-7 and F-8 above are scoped to PR-2C.1 ordering but their
+underlying principles are not PR-2C-specific:
+
+  F-7 → mechanism maturity must be evaluated independently of apparent
+        algorithmic simplicity
+  F-8 → do not stack independent novel engineering dimensions into the
+        same governance transition when equivalent sequencing is
+        available
+
+A future governance session MAY consider extracting these findings if a
+subsequent PR encounters an equivalent ordering problem. Examples could
+include PR-3, PF-L, or other Track C governance work, but no specific
+future PR is designated by this note.
+
+This extraction is NOT required for D-PR2C-7 to remain LOCKED and does not
+block this disposition's append. It also does not modify
+`docs/governance/durable_principles.md`; F-7 and F-8 remain single-case
+findings until repeated independent occurrences justify promotion into a
+durable governance principle.
+
+### Supersession
+
+This disposition supersedes IN-3 (both the canonical-order and
+alternative-order ladders it proposed) as the ordering basis for PR-2C.1.
+IN-3 remains in the ledger as a historical, explicitly non-normative
+Implementation Note; it must not be read as current governance guidance
+for ordering after this disposition locks.
+
+### Governance metadata
+- **Status:** LOCKED
+- **Cites:** D-PR2C-6 (PF-B1 mechanism), D-PR2C-3 (PF-B2 mechanism)
+- **Does not cite:** IN-3 (superseded, see above)
+- **Order implication:** PR-2C.1 = PF-B2, PR-2C.2 = PF-B1
+- **Entry repository anchor:** dc6c32b873b4797fa311d50d3c27afd20a10e208
+- **Ledger MD5 at session entry:** 8e2dd4db68581953854986b727aa661d
+- **Record class:** ORIGINAL LOCKED DISPOSITION
+
+---
+
+## D-PR2C-8 — Anchor-Test Lifecycle Transition Contract
+
+### Status
+LOCKED
+
+### Scope boundary
+This disposition governs only the anchor-test transition triggered by the
+first rider-closing check (per D-PR2C-7: PF-B2) becoming real. It does not
+reopen mechanism content (D-PR2C-3, D-PR2C-6) or ordering (D-PR2C-7).
+
+### Form 1 — default-registry shell tests
+
+Governed tests (`tests/features/win_rate_21d/test_safety_gate.py`):
+```
+test_gate_raises_by_default
+test_build_full_raises_preflight_shell_error_by_default
+test_build_full_gate_error_is_still_notimplementederror
+```
+
+**Verified against HEAD (`pre_flight.py:387-397`):**
+`verify_rider_closing_checks_are_real` aggregates across all members of
+`RIDER_CLOSING_CHECKS` and raises `PreFlightShellError` only if
+`shell_names` is non-empty. With PF-B2 becoming real, `RIDER_CLOSING_CHECKS`
+still contains two remaining shells (PF-B1, PF-B6).
+
+**Verified against HEAD (`test_safety_gate.py:176-181`, docstring on
+`test_gate_raises_by_default`):** the test's own stated acceptance
+criterion is triggered only "when all shells have become real."
+
+**Contract:** Form 1 tests require NO restructuring when PF-B2 becomes
+real. They remain valid, unmodified, exercising the two-remaining-shells
+state. Any change to these three tests at PF-B2's transition is a
+governance violation of this disposition and must be reverted or
+separately justified.
+
+### Form 2 — shell-parametrized vacuous-pass guard
+
+Governed test (`tests/features/win_rate_21d/test_pre_flight_shell.py:78-84`):
+```
+test_pf_b_shells_do_not_pass_vacuously
+```
+parametrized over `[pf_b1_scope_check, pf_b2_canonical_source_check,
+pf_b6_duckdb_writeability_check]`.
+
+**Contract:**
+- Remove `pf_b2_canonical_source_check` from the parametrization list.
+- Retain `pf_b1_scope_check` and `pf_b6_duckdb_writeability_check`.
+- Preserve `with pytest.raises(NotImplementedError):` verbatim for the
+  remaining two.
+- Do NOT delete or weaken the test function itself; do NOT collapse it
+  into a non-parametrized form.
+
+**Distinction from Form 1** (stated separately per the original kickoff's
+explicit requirement): Form 1 tests exercise the aggregate default-registry
+state and require no edit at PF-B2's transition. Form 2 exercises each
+shell individually via parametrization and requires exactly one
+parametrization-list removal per shell that transitions. These are
+structurally different migrations triggered by the same event; neither
+substitutes for the other.
+
+### GC-6 — producer runtime-gate preservation
+
+Governed test (`tests/features/win_rate_21d/test_safety_gate.py:700-758`):
+```
+test_build_full_runtime_gate_blocks_body_on_failed_result
+```
+
+**Verified against HEAD:** this test already monkeypatches
+`RIDER_CLOSING_CHECKS` with three stub callables (`_passing`/`_failing`
+factories) independent of any PF-B check's real/shell status. It requires
+NO modification when PF-B2 becomes real.
+
+**Prohibition** (restated from kickoff GC-6, made binding under this
+disposition): at every point across the PF-B2, PF-B1, and PF-B6
+transitions, at least one producer-level test MUST continue to exercise
+the full chain:
+```
+first gate (verify_*) passes
+→ second gate (run_*) receives passed=False
+→ PreFlightExecutionError
+→ body_enter_hook NOT called
+→ compute NOT called
+→ writer NOT called
+```
+A migration that leaves all producer-level tests stopping at `verify_*`
+shell detection — such that deleting `run_rider_closing_checks()` from
+`build_full()` would be invisible to CI — is a prohibited state under this
+disposition, regardless of which PF-B check triggered the migration that
+produced it.
+
+### Non-reopening clause
+
+This disposition does not evaluate, reference, or depend on:
+- PF-B1 or PF-B2 mechanism content (owned by D-PR2C-6, D-PR2C-3
+  respectively);
+- implementation ordering rationale (owned by D-PR2C-7);
+- TOCTOU or double-invocation semantics (owned by D-PR2C-6 §Q2, D-PR2C-3).
+
+If a future PR-2C.2/.3 transition (PF-B1 or PF-B6 becoming real) requires
+restating Forms 1/2/GC-6 for that specific check, the restatement follows
+the same structural template as above without amending this disposition —
+this disposition's contract is check-agnostic by construction (it never
+named a specific check's internals, only registry-state arithmetic),
+provided the registry lifecycle (RIDER_CLOSING_CHECKS membership, the
+two-gate verify_*/run_* model) remains unchanged. A future refactor of the
+registry model itself would require a new disposition rather than falling
+under this one by extension.
+
+### Governance metadata
+- **Status:** LOCKED
+- **Scope:** anchor-test lifecycle transition contract (Form 1, Form 2,
+  GC-6)
+- **Applies to:** the transition triggered by PF-B2 becoming real (per
+  D-PR2C-7 ordering)
+- **Cites:** D-PR2C-3 (verified evidence), D-PR2C-7 (ordering), original
+  kickoff document (Question 4, GC-6)
+- **Does not reopen:** PF-B1/PF-B2 mechanism, implementation ordering
+  rationale, TOCTOU analysis
+- **Entry repository anchor:** dc6c32b873b4797fa311d50d3c27afd20a10e208
+- **Ledger MD5 at session entry:** 8e2dd4db68581953854986b727aa661d
+- **Record class:** ORIGINAL LOCKED DISPOSITION
