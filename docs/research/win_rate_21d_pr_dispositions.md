@@ -1,7 +1,7 @@
 # PR-Level Disposition Ledger — `win_rate_21d`
 
 **Document ID:** `win_rate_21d_pr_dispositions`
-**Version:** v0.1.3
+**Version:** v0.1.4
 **Status:** ACTIVE
 **Owner:** Veronica
 **Repository:** Helios (`~/projects/helios`)
@@ -943,6 +943,7 @@ subject to IN-3.
 | v0.1.1  | 2026-07-12 | Appends D-PR2C-4 (PR-2C.0 Ruff baseline treatment) as an ORIGINAL LOCKED DISPOSITION at repository anchor `41e8e1e`. Governs PR-2C.0 static-analysis acceptance criteria and the deferred runtime-failure exception name; amends no implementation disposition and is not a Gate A1 lock condition. |
 | v0.1.2  | 2026-07-12 | Appends D-PR2C-5 (completion of the PR-2C.0 signature-migration blast radius) as an ORIGINAL LOCKED DISPOSITION at repository anchor `182d26f`. Corrects a factual omission in D-PR2C-2's test-migration enumeration, observed during implementation validation; amends no design disposition. |
 | v0.1.3  | 2026-07-13 | Appends D-PR2C-6, D-PR2C-7, D-PR2C-8 as ORIGINAL LOCKED DISPOSITION entries at repository anchor `6989d17`. Commit-anchor fields for all three entries backfilled in the same governance session. |
+| v0.1.4  | 2026-07-16 | Appends D-PR2C-9 (completion of the D-PR2C-8 anchor-test transition blast radius), D-PR2C-10 (PF-B2 normative addressee, Layer-1/Layer-2 predicate semantics, and guarantee boundary), and D-PR2C-11 (PR-2C.1 static-analysis acceptance) as ORIGINAL LOCKED DISPOSITION entries at repository anchor `e5c3ccb`. Commit-anchor fields backfilled in the same governance session per the two-commit convention. |
 
 *End of ledger initial content. Future entries append below.*
 
@@ -1603,3 +1604,772 @@ under this one by extension.
 - **Commit SHA:** `6989d170ca34fe534211174ee2bfc51005691fc3`
 - **Ledger version at lock:** v0.1.3
 - **Record class:** ORIGINAL LOCKED DISPOSITION
+
+---
+
+## D-PR2C-9 — Completion of the D-PR2C-8 Anchor-Test Transition Blast Radius
+
+### Question
+
+D-PR2C-8 enumerated three anchor-test forms affected when PF-B2 becomes
+real: Form 1 (default-registry shell tests), Form 2 (shell-parametrized
+vacuous-pass guard), and GC-6 (producer runtime-gate preservation).
+Repository inspection performed during the PR-2C.1 kickoff identified
+transition-sensitive tests, and one necessary lint consequence, that
+D-PR2C-8's enumeration does not cover. This disposition completes the
+blast radius.
+
+This entry is analogous in record character to D-PR2C-5: it corrects a
+factual omission in a prior disposition's test-migration enumeration,
+observed during implementation validation. It amends no design or
+mechanism disposition.
+
+### Evidence (observed at HEAD `e5c3ccb`)
+
+1. **`test_gate_error_names_all_shells`**
+   (`tests/features/win_rate_21d/test_safety_gate.py:186`). The test
+   iterates `for check in RIDER_CLOSING_CHECKS` (the default,
+   un-monkeypatched registry) and asserts `check.__name__ in msg` for
+   every member. When PF-B2 becomes real,
+   `verify_rider_closing_checks_are_real` populates `shell_names` with
+   only `pf_b1_scope_check` and `pf_b6_duckdb_writeability_check`; the
+   `pytest.raises(PreFlightShellError)` context still holds (two shells
+   remain), but the loop iteration for `pf_b2_canonical_source_check`
+   fails with `AssertionError`. This is a default-registry,
+   shell-status-dependent test — structurally Form 1 — omitted from
+   D-PR2C-8's Form 1 enumeration.
+
+2. **`test_run_rider_closing_checks_propagates_shell_error`**
+   (`tests/features/win_rate_21d/test_safety_gate.py:631`). The test
+   monkeypatches `RIDER_CLOSING_CHECKS` to
+   `(_passing("PF-B1"), pf_b2_canonical_source_check, _passing("PF-B6"))`
+   and asserts the executor propagates `PreFlightShellError`. When PF-B2
+   becomes real, the injected `pf_b2_canonical_source_check` returns
+   `passed=True` instead of raising; the registry passes and the executor
+   returns normally, so the test fails with DID NOT RAISE. The test's
+   own docstring states its subject is executor propagation semantics
+   ("a shell reaching the executor is a bypassed-registry bug"); its use
+   of `pf_b2_canonical_source_check` as the injected shell is incidental
+   to that subject.
+
+3. **Form 2 lint consequence** (`test_pre_flight_shell.py:26`).
+   `pf_b2_canonical_source_check` occurs in that file exactly twice: the
+   import at line 26 and the Form 2 parametrization entry at line 82
+   (confirmed by direct-symbol grep). D-PR2C-8 Form 2 mandates removing
+   the symbol from the parametrization list. After that removal the
+   import at line 26 is unused, producing an `F401` finding
+   (`ruff` `select` includes `F`; `per-file-ignores` provides no `F`
+   exemption for `tests/`). D-PR2C-8 states "Remove … from the
+   parametrization list" and does not mention the import.
+
+4. **Module docstring** (`test_safety_gate.py:1-27`). The module
+   docstring's "Test lifecycle notes" describe the all-shells-real
+   terminal state and instruct restructuring `test_gate_raises_by_default`
+   "when all shells have become real." After the PF-B2 transition (two
+   shells remaining) this note is literally still true but positionally
+   misleading to a reader at PR-2C.1.
+
+5. **Autouse-fixture confinement.** `tests/features/conftest.py` defines
+   exactly one autouse fixture, `isolate_calendar_db_lookup`, which
+   monkeypatches only `market.trading_calendar._is_in_twse_holidays_db`.
+   It does not touch `RIDER_CLOSING_CHECKS` or the `pre_flight` module.
+   The transition blast radius is therefore confined to items 1–4 above;
+   no test outside `test_safety_gate.py` / `test_pre_flight_shell.py` is
+   affected by the PF-B2 transition.
+
+### Decision
+
+**D9-A1 — Transition-sensitive test class omitted from D-PR2C-8.**
+`test_gate_error_names_all_shells` belongs to a test class D-PR2C-8 did
+not enumerate: default-registry aggregate-diagnostic tests whose
+assertion set depends on which checks are currently shell. It SHALL be
+restructured to perform **exact classification over the current
+rider-registry members**: assert that each currently-expected shell name
+appears in the diagnostic message, and each currently-expected real name
+does not. The expected-shell set is stated explicitly in the test, not
+derived from live shell state.
+
+Contractual form:
+
+```python
+def test_gate_error_classifies_current_registry_members_exactly() -> None:
+    """Diagnostic includes shells and excludes real checks in the registry.
+
+    Transition-sensitive anchor (D-PR2C-9 D9-A1). Update ``expected_shells``
+    at each rider-closing transition. At the terminal transition (all real)
+    the gate no longer raises; replace this test with that assertion.
+    """
+    expected_shells = (
+        pf_b1_scope_check,
+        pf_b6_duckdb_writeability_check,
+    )
+    registry = set(RIDER_CLOSING_CHECKS)
+    assert set(expected_shells).issubset(registry)
+
+    expected_real = tuple(
+        check for check in RIDER_CLOSING_CHECKS if check not in expected_shells
+    )
+
+    with pytest.raises(PreFlightShellError) as excinfo:
+        verify_rider_closing_checks_are_real(_preflight_context())
+    message = str(excinfo.value)
+
+    # Safe while registered check names are pairwise non-overlapping
+    # (verified for the current three names). Substring membership is used
+    # deliberately; revisit this assumption if any future check name
+    # becomes a substring of another.
+    for check in expected_shells:
+        assert check.__name__ in message, f"omitted shell: {check.__name__}"
+    for check in expected_real:
+        assert check.__name__ not in message, f"padded non-shell: {check.__name__}"
+```
+
+Scope of the guarantee: this asserts exact classification over
+**registry members**. It does NOT assert that the message contains no
+name outside the registry, and it does NOT assert full message-token set
+equality. `verify_rider_closing_checks_are_real` populates its diagnostic
+solely from `RIDER_CLOSING_CHECKS` members (verified at `e5c3ccb`), so the
+uncovered surface is inert; it is recorded here rather than over-claimed.
+
+**D9-A2 — Terminal-form conversion.**
+`test_run_rider_closing_checks_propagates_shell_error` SHALL be rebound
+to a **local shell stub**, decoupling it from which production check is
+currently shell:
+
+```python
+def _shell(context: PreFlightContext) -> PreFlightResult:
+    raise PreFlightShellError("test-local shell stub")
+
+# monkeypatch: (_passing("PF-B1"), _shell, _passing("PF-B6"))
+```
+
+This is **terminal form**: unlike D9-A1, it requires no further edit at
+subsequent rider transitions, because it no longer depends on production
+shell state. This mirrors the already-correct local-stub pattern in
+`test_run_rider_closing_checks_does_not_swallow_bare_not_implemented`
+(`test_safety_gate.py:653`).
+
+**Lifecycle distinction (binding).** D9-A1 and D9-A2 have different
+lifecycles and MUST NOT be described identically: D9-A1's test is a
+transition-sensitive anchor requiring an `expected_shells` edit at every
+rider transition and a terminal conversion when all checks are real;
+D9-A2's test reaches terminal form at PR-2C.1 and is edited no further.
+
+**D9-A3 — Form 2 import consequence.**
+The Form 2 parametrization-list removal mandated by D-PR2C-8 SHALL be
+accompanied by removal of the now-unused `pf_b2_canonical_source_check`
+import at `test_pre_flight_shell.py:26`, to satisfy the no-new-finding
+baseline (D-PR2C-11). This is a necessary consequence of the Form 2 edit
+under the `select = [... "F" ...]` configuration, not an independent
+cleanup. `pf_b1_scope_check`, `pf_b3_min_cross_section_check`,
+`pf_b4_window_constants_check`, and `pf_b6_duckdb_writeability_check`
+imports are retained (still referenced).
+
+**D9-A4 — Module docstring authorization.**
+The `test_safety_gate.py` module docstring's lifecycle note MAY be
+updated to reflect the post-PF-B2 (two-remaining-shells) state. A module
+docstring is not a test function; updating it does not touch any of the
+three Form 1 test functions and therefore does not violate D-PR2C-8's
+Form 1 no-restructuring contract.
+
+**D9-A5 — GC-5 status of record.**
+`GC-5` is not defined anywhere under `docs/` (confirmed by
+`rg -n '\bGC-5\b' docs/`). The gap in the kickoff GC-series numbering
+(GC-1, GC-2, GC-3, GC-4, GC-6, GC-7) is vestigial. This is recorded so
+that future sessions do not attempt to reconstruct a non-existent GC-5.
+
+### Non-reopening clause
+
+This disposition does not evaluate or modify PF-B2 mechanism content
+(D-PR2C-3), PF-B1 mechanism content (D-PR2C-6), ordering rationale
+(D-PR2C-7), or the D-PR2C-8 Form 1 / Form 2 / GC-6 contracts themselves.
+It supplements D-PR2C-8's transition enumeration with items D-PR2C-8 did
+not list; it does not restate or weaken any D-PR2C-8 contract. The three
+Form 1 tests named by D-PR2C-8 remain unmodified, exercising the
+two-remaining-shells state, exactly as D-PR2C-8 predicts.
+
+### Governance metadata
+
+- **Status:** LOCKED
+- **Commit SHA:** `<TBD — backfilled from lock commit>`
+- **Entry repository anchor:** `e5c3ccb029253475ef5b6f7f3c41c40539eb0889`
+- **Previous D-PR entry:** D-PR2C-8
+- **Ledger version at lock:** v0.1.4
+- **Previous ledger tail md5:** `bc375f36467574308651947e9d1463ea` (H0 — full-file MD5 of ledger immediately before this entry; confirm unchanged at append time)
+- **New ledger tail md5 after append:** `<TBD — backfilled after the lock commit from the full-file MD5 (H1) recorded immediately after this entry was appended; NOT the post-backfill file MD5>`
+- **Normative references:** D-PR2C-8 (anchor-test transition contract, supplemented not amended)
+- **Record class:** ORIGINAL LOCKED DISPOSITION
+- **Evidence basis:** Original disposition; no reconstruction basis applicable.
+
+---
+
+## D-PR2C-10 — PF-B2 Normative Addressee, Predicate Semantics, and Guarantee Boundary
+
+### Question
+
+D-PR2C-3 locked the PF-B2 canonical-source-verification mechanism (AST
+dual-layer, fail-closed). Implementing it under PR-2C.1 surfaces
+engineering decisions D-PR2C-3 explicitly delegated to the implementer
+(its "Implementation scope boundary" and IN-1/IN-2), plus two textual
+issues in the locked record that must be resolved before implementation
+to keep the governance record internally consistent. This disposition
+records the PF-B2 normative addressee, the Layer-1 and Layer-2 predicate
+semantics, the analyzer's supported-pattern surface, and PF-B2's
+guarantee boundary. It clarifies D-PR2C-3's addressee and prose; it does
+not alter D-PR2C-3's obligation content or mechanism.
+
+### §1 — Normative addressee correction
+
+D-PR2C-3's "Implementation scope boundary" assigns its normative `SHALL`
+obligations (support the HEAD `compute.py` local-assignment patterns; no
+general data-flow engine required; fail closed on unresolvable chains) to
+the label "PR-2C.2." D-PR2C-7 reassigned the PF-B2 implementation task to
+PR-2C.1 (order implication: PR-2C.1 = PF-B2, PR-2C.2 = PF-B1) but its
+Supersession clause superseded only IN-3, a non-normative note.
+
+This disposition records that D-PR2C-3's PF-B2 `SHALL` obligations attach
+to the **PF-B2 implementation task**, not to the PR label "PR-2C.2."
+Under D-PR2C-7's order implication they are discharged by **PR-2C.1**.
+This clarifies the addressee only; the obligation content is unchanged.
+
+### §2 — Layer-1 predicate: exact string-constant equality
+
+The Layer-1 forbidden-literal check SHALL use **exact equality** on
+complete string-constant values, not substring containment:
+
+```python
+isinstance(node, ast.Constant)
+and isinstance(node.value, str)
+and node.value == "daily_price_adj"
+```
+
+This is a soundness requirement, not a style preference. The canonical
+view name contains the forbidden token as a substring:
+
+```
+"daily_price_adj" in "listed_market_daily_price_adj"  # True
+```
+
+A substring predicate would classify the canonical identifier itself as a
+P0 lineage violation — a false positive that directly conflicts with
+Layer 2's requirement that `CANONICAL_PIT_VIEW_NAME` participate in query
+construction. Exact equality on the complete constant value is the
+correct predicate. D-PR2C-3's formal criterion
+(`ast.Constant(value="daily_price_adj")`, node-value equality) is
+authoritative over any prose that could be read as containment.
+
+### §3 — Escape-hatch prose clarification
+
+D-PR2C-3's escape-hatch prose ("The production module MUST NOT contain
+the forbidden literal") SHALL be read as: the governed source MUST NOT
+contain an `ast.Constant` string node **whose complete value is exactly**
+`"daily_price_adj"`. It SHALL NOT be read as bare textual containment.
+Test-only modules MAY contain `"daily_price_adj"` as a complete
+string-constant value where required to construct controlled fixtures.
+
+Durable lesson (single-case, not promoted to a global finding): a string
+constant containing the forbidden token as part of a longer value is not
+equivalent to a string constant whose complete value is the forbidden
+literal. Reviews and diagnostics SHALL preserve this distinction. This
+exact-equality-versus-containment confusion recurred more than once
+during the PR-2C.1 kickoff; it is recorded here for the same reason
+D-PR2C-6's terminology-collision discipline is recorded.
+
+### §4 — Dual-layer complementarity (correctness rationale)
+
+The two layers have complementary, non-overlapping responsibilities.
+Consider a hard-coded canonical view name (no import binding):
+
+```python
+query = "SELECT ... FROM listed_market_daily_price_adj"
+```
+
+- Layer 1 (exact equality): PASS — the complete constant value is not
+  `"daily_price_adj"`.
+- Layer 2: FAIL — `CANONICAL_PIT_VIEW_NAME`'s identifier lineage does not
+  reach the governed sink.
+
+Layer 1 is not responsible for prohibiting all hard-coding; Layer 2 is
+responsible for canonical-identifier binding. The layers' responsibility
+boundaries are distinct and jointly cover the hard-coding case that
+neither covers alone.
+
+### §5 — Layer-2 supported-pattern whitelist
+
+PF-B2's Layer-2 analyzer SHALL support exactly the following data-flow
+patterns for its initial PR-2C.1 landing. Any construction outside this
+set is unresolvable and fails closed (§6).
+
+**P-1 — Canonical binding provenance (load-bearing).**
+`CANONICAL_PIT_VIEW_NAME` MUST be bound at module scope by exactly one
+`ImportFrom`, and MUST have no other binding or rebinding in any scope of
+the module, including: `Assign`, `AnnAssign`, `AugAssign`, function or
+lambda parameter, `for` target, `with ... as`, `except ... as`,
+comprehension target, `NamedExpr`, `global`, `nonlocal`, or `del`.
+
+P-1 is a load-bearing rule, not defense-in-depth. Without it, a
+function-local shadowing rebinding
+(`CANONICAL_PIT_VIEW_NAME = _something_else`) passes Layer 1 (no forbidden
+literal) and passes Name-directed tracing (a `Name` of that id does reach
+the sink), while the actual lineage is broken. P-1 is the only rule that
+closes this hole.
+
+**P-2 — Single-hop local assignment.**
+Within one non-nested `FunctionDef`, an
+`Assign(targets=[Name(id=V, Store)], value=E)` where `E`'s subtree
+contains `Name(id="CANONICAL_PIT_VIEW_NAME", ctx=Load())` and `V` is
+assigned exactly once in that function's local scope. Multiple targets,
+unpacking, attribute targets, subscript targets, and augmented assignment
+are not accepted.
+
+**P-3 — Governed sink.**
+Within the same `FunctionDef`, a `Call(func=Attribute(attr="execute"))`
+whose positional arguments or keyword values contain
+`Name(id=V, ctx=Load())`.
+
+### §6 — Explicitly unsupported set (fail-closed)
+
+The following are unresolvable in the PR-2C.1 landing and SHALL fail
+closed (Layer-2 `passed=False`): multi-hop aliasing; conditional or
+repeated assignment; cross-function construction; nested-function or
+comprehension scope; container mediation (list/dict/tuple); starred
+forwarding; attribute or subscript assignment targets; `AugAssign`;
+`NamedExpr`; `getattr(receiver, "execute")`; indirect callable aliasing;
+interprocedural tracing.
+
+Fail-closed here means a completed negative validation judgment
+(`PreFlightResult(check_id="PF-B2", passed=False, severity=ERROR)`), not
+an infrastructure exception. This is D-PR2C-3's "chain cannot be
+established" case. Per D-PR2C-3's own Result-semantics text, "unresolvable
+analysis" in its Infrastructure-failure bullet refers to analysis that
+cannot begin at all (§11), not to analysis that completes and finds no
+valid binding.
+
+### §7 — Future pattern-widening rule
+
+Widening the Layer-2 supported-pattern set is the only direction that can
+convert a previously-failing form to PASS, and is therefore the only
+direction that can enlarge the false-negative surface. Any future
+widening SHALL, in the same PR that introduces it:
+
+1. update this disposition's supported-pattern specification, or lock an
+   explicit superseding disposition;
+2. add a positive test: the new valid form → PASS;
+3. add a symmetric negative soundness test: a syntactically similar form
+   whose canonical provenance is broken → FAIL;
+4. keep the real-module integration regression (§12) passing;
+5. NOT rely on a new PASS fixture alone as evidence of correctness.
+
+Both sides are required: the negative soundness test is the most
+important, but a positive test alone does not demonstrate the new pattern
+is actually supported. Narrowing the supported set requires no additional
+governance ceremony but SHALL update the specification and keep the
+real-module regression passing; if current `compute.py` ceases to be
+supported, the PR MUST fail rather than be worked around by editing tests.
+
+Rationale for choosing this rule over "widening requires a new
+disposition": a disposition cannot demonstrate analyzer soundness; a
+symmetric negative test can. The obligation is placed on proving the
+absence of a false negative, which is where the actual risk lies. This
+supersedes IN-2's "the choice is left to future implementers" for the
+widening case only.
+
+### §8 — IN-1 burden resolution
+
+D-PR2C-3 IN-1 lists disambiguating the two `.format(...)` call sites in
+`compute.py` as an implementation burden. Under the Name-directed
+provenance tracing chosen here (trace from `CANONICAL_PIT_VIEW_NAME` to
+the sink, rather than enumerating `.format()` calls), the disambiguation
+is free: `_ATTACH_STATEMENT_TEMPLATE.format(path_literal=...)` does not
+carry the governed `Name` and is naturally outside the traced path. No
+call-site special-casing is required. IN-1's stated burden does not arise
+under this architecture.
+
+### §9 — Guarantee boundaries
+
+PF-B2 verifies source-code lineage identity of the form:
+
+```
+specified imported identifier
+  → supported local data flow
+  → syntactically identified execute sink
+```
+
+It does NOT establish any of the following. These are recorded so PF-B2's
+guarantee is not over-read:
+
+- **GB-1 — Syntactic, not semantic.** PF-B2 proves identifier-level
+  syntactic lineage, not value-level or semantic lineage. It cannot detect
+  string concatenation, f-string composition, or `str.join`
+  constructions of the forbidden token (`ast.parse` does not constant-fold;
+  such constructions are `BinOp`/`JoinedStr`/`Call` nodes whose operands
+  are not the forbidden literal). Layer 1 defends against a direct typo,
+  not against a determined bypass. The complete guarantee is the
+  conjunction: PF-B2 (this check) AND the `constants.py` governance lock
+  on `CANONICAL_PIT_VIEW_NAME`'s value (asserted elsewhere). Neither alone
+  is sufficient.
+- **GB-2 — Sink predicate is not type-aware.** PF-B2 recognizes an
+  `Attribute(attr="execute")` call on any receiver. It does not establish
+  that the receiver is a DuckDB connection, nor infer the receiver's type
+  or provenance. Verifying that `conn` (bound by
+  `with duckdb.connect(...) as conn`) is a DuckDB connection would require
+  type inference, which D-PR2C-3 explicitly declines.
+- **GB-3 — DI-injected callable out of scope.** PF-B2's inspection target
+  is the module `features.win_rate_21d.compute` (§11). It does not
+  establish that `build_full()` executes the canonical production compute
+  callable when `_BuildDependencies` or another dependency-injection seam
+  substitutes a different callable. Under the production default path the
+  analyzed module and the executed callable coincide; PF-B2's addressee is
+  the specified source module, not arbitrary runtime callable provenance.
+- **GB-4 — Catalog object out of scope** (restated from D-PR2C-3 Scope
+  boundary). PF-B2 does not prove the runtime catalog object is a view,
+  that the view is PIT-correct, that execution resolves to the expected
+  physical plan, or that upstream contents are uncontaminated. (The
+  `win_rate_21d` conftest fixture materializes the canonical name as a
+  base TABLE, not a view — direct confirmation that this boundary is real,
+  not hypothetical.)
+- **GB-5 — Deployment source-readability assumption.** PF-B2 requires the
+  `compute` module's Python source to be readable at check-invocation time.
+  Under a no-source deployment (zipapp, frozen, bytecode-only) source
+  resolution fails and PF-B2 raises an operational exception (§11). Helios
+  runs from a git checkout; this is not a current exposure but is an
+  undocumented precondition of D-PR2C-3, recorded here.
+
+### §10 — Forbidden-literal ownership and analyzer addressee asymmetry
+
+The forbidden literal `"daily_price_adj"` MUST reside on a
+pre-flight-owned governance surface (per D-PR2C-3's escape-hatch policy),
+not in the governed `compute.py`. It SHALL be owned by the analyzer's
+private module (the analyzer is part of the pre-flight subsystem), not by
+`constants.py` (which would place it on `compute.py`'s direct import
+surface and conflate production canonical identity with
+governance-forbidden identity).
+
+Addressee asymmetry (recorded to prevent confusion): the analyzer module
+itself contains `ast.Constant(value="daily_price_adj")` as its owned
+governance constant. This is not a self-violation, because PF-B2's
+governed inspection target is the module `features.win_rate_21d.compute`
+only. The analyzer module is part of the pre-flight subsystem and is not
+itself a PF-B2 governed target. This is a natural consequence of the
+addressee boundary, not an exception.
+
+### §11 — Source-path resolution architecture (implementation decision)
+
+The production resolution path SHALL use `importlib.util.find_spec(...)`
+`.origin` (an "equivalent module-metadata lookup" permitted by D-PR2C-3),
+resolving the module to a source path without importing/executing it,
+then reading and `ast.parse`-ing the source text. Choosing `find_spec`
+over `inspect.getsourcefile(import_module(...))` avoids introducing
+`compute.py`'s import-time dependency graph into `pre_flight` and lets a
+syntax error surface cleanly at `ast.parse` rather than at import. This is
+an implementation decision within D-PR2C-3's delegation (Q1), recorded for
+traceability; it is not itself a mechanism amendment.
+
+The private analyzer boundary SHALL accept source text and an explicit
+source identity (`analyze_source(source: str, *, source_identity: str)`),
+per D-PR2C-3's test-only dependency-injection allowance, so synthetic
+fixtures need not monkeypatch import machinery or mutate production
+`compute.py`. The production wrapper performs `module name → spec → path →
+source text → analyzer`.
+
+Operational-failure branches (Q3 case 2) — `find_spec` returns `None`,
+`origin is None`, non-`.py` origin, source path missing, source
+unreadable, decode failure, `ast.parse` syntax failure — SHALL propagate a
+non-`PreFlightShellError` operational exception. They SHALL NOT be mapped
+to `PreFlightResult(passed=False)`. Only a completed negative binding
+judgment (§6) maps to `passed=False`.
+
+### §12 — Real-module integration regression (blocking acceptance)
+
+PR-2C.1 SHALL include an integration regression that invokes the real
+`pf_b2_canonical_source_check(context)` against the real
+`features.win_rate_21d.compute` source and asserts a passing result
+(`check_id="PF-B2"`, `passed is True`, `severity is INFO`), covering
+`find_spec` resolution, source read, `ast.parse`, Layer 1, Layer 2, and
+`PreFlightResult` mapping. A separate analyzer-level test SHALL assert the
+analyzer accepts the current production source via the private boundary.
+
+This test SHALL NOT be claimed to provide runtime protection; it provides
+repository test-suite protection. Rationale: until the last rider-closing
+shell (PF-B6, PR-2C.3) becomes real,
+`verify_rider_closing_checks_are_real` raises before
+`run_rider_closing_checks` executes, so PF-B2's `passed=False` is never
+enforced at build time. The test suite is therefore PR-2C.1's only
+effective enforcement surface for PF-B2's lineage guarantee.
+
+### §13 — Build-time exposure-delta correction (D-PR2C-7)
+
+D-PR2C-7's "Consequence severity" states that selecting PF-B1 first would
+extend the pre-existing P0 exposure window by one PR cycle while selecting
+PF-B2 first would not. This conflates two protection surfaces. The
+build-time runtime gate does not activate for PF-B2 until the last
+rider-closing shell becomes real (§12); the build-time exposure delta
+between the two orderings is therefore zero. The surface that does differ
+by one PR is test-suite-time protection. D-PR2C-7 explicitly declared this
+delta "disclosed for completeness; not the basis of the decision" and
+invoked "no P0-severity argument," so this factual correction does not
+reopen the D-PR2C-7 ordering decision.
+
+### §14 — AST node model
+
+The analyzer SHALL implement string-literal detection using `ast.Constant`
+and SHALL NOT depend on deprecated legacy AST node aliases (`ast.Str`,
+`ast.Num`, `ast.NameConstant`). This governs the node model directly and
+does not rest on any version-specific claim about when an alias was
+removed. The analyzer targets the repository's observed Python runtime;
+its determinism is relative to that runtime's grammar, a recorded
+assumption.
+
+### §15 — `compute.py` docstring mitigation (IN-2 mitigation, adopted)
+
+PR-2C.1 SHALL add a module-docstring note to `compute.py` recording that
+the governed query path must bind the imported `CANONICAL_PIT_VIEW_NAME`
+identifier into the executed SQL, that neither a raw backing-table
+identifier nor a hard-coded canonical view name may replace that binding,
+and that query-construction refactors must remain within the PF-B2
+supported patterns (§5). Suggested text:
+
+```python
+"""Compute the feature from the canonical PIT source.
+
+The executed SQL must receive its source identifier through the imported
+``CANONICAL_PIT_VIEW_NAME`` constant. Do not replace that binding with a
+raw backing-table identifier or a hard-coded canonical view name.
+Refactors to query construction must remain within the data-flow patterns
+supported by PF-B2.
+"""
+```
+
+Classification: this is an implementation-adjacent maintainability
+safeguard, **not** a Layer-1/Layer-2 correctness mechanism and not an
+analyzer-verifiable invariant. It SHALL NOT be described as sufficient to
+prevent a future refactor violation.
+
+The note SHALL NOT write the complete raw forbidden literal into
+`compute.py`. This restriction rests on three grounds — none of which is
+"the docstring would trip Layer 1" (a docstring is a single `ast.Constant`
+whose complete value is the whole docstring, not the forbidden literal, so
+under §2's exact-equality predicate it does not trip Layer 1):
+
+1. D-PR2C-3's escape-hatch policy keeps explanatory references to the
+   forbidden source off the governed production surface.
+2. Grep hygiene / defense in depth:
+   `rg -n '\bdaily_price_adj\b' features/win_rate_21d/compute.py` should
+   return empty, so coarser review and lint tooling does not produce false
+   positives and future maintainers do not learn the literal is acceptable
+   in `compute.py`.
+3. Zero cost: the note expresses the design requirement fully without the
+   literal.
+
+Mentioning the canonical constant name and the raw-backing-table concept
+is permitted; writing the complete raw forbidden literal is not.
+
+### Non-reopening clause
+
+This disposition does not reopen the PF-B2 dual-layer mechanism
+(D-PR2C-3), PF-B1 mechanism (D-PR2C-6), ordering rationale (D-PR2C-7), or
+the anchor-test transition contract (D-PR2C-8). §1 clarifies an addressee;
+§2/§3 clarify a predicate and prose against D-PR2C-3's own formal
+criterion; §13 corrects a factual disclosure that D-PR2C-7 already
+declared non-dispositive. None alter a locked decision outcome.
+
+### Governance metadata
+
+- **Status:** LOCKED
+- **Commit SHA:** `<TBD — backfilled from lock commit>`
+- **Entry repository anchor:** `e5c3ccb029253475ef5b6f7f3c41c40539eb0889`
+- **Previous D-PR entry:** D-PR2C-9
+- **Ledger version at lock:** v0.1.4
+- **Previous ledger tail md5:** `a1fdbe6e2918b2e21e268474ffa75626`
+- **New ledger tail md5 after append:** `<TBD — backfilled after the lock commit from the full-file MD5 (H2) recorded immediately after this entry was appended; NOT the post-backfill file MD5>`
+- **Normative references:** D-PR2C-3 (PF-B2 mechanism; addressee and prose clarified, content unchanged), D-PR2C-7 (order implication; §13 factual correction), D-PR2C-8 (§12 references the transition context)
+- **Record class:** ORIGINAL LOCKED DISPOSITION
+- **Evidence basis:** Original disposition; no reconstruction basis applicable.
+
+---
+
+## D-PR2C-11 — PR-2C.1 Static-Analysis Acceptance
+
+### Question
+
+PR-2C.1 has no locked static-analysis acceptance criterion. The
+`features/win_rate_21d/` package scope is not clean at entry, so an
+absolute-cleanliness criterion would force PR-2C.1 to absorb pre-existing
+static-analysis debt it did not create — the same non-jointly-satisfiable
+condition D-PR2C-4 resolved for PR-2C.0. This disposition defines
+PR-2C.1's static-analysis acceptance.
+
+**Precedent note (non-binding).** This disposition follows D-PR2C-4 as a
+precedent in structure and reasoning (its D4-1 no-new-violation, D4-2
+touched-block-compliance, and D4-3 preserved-red rationale). D-PR2C-4
+governs PR-2C.0 — every one of its `SHALL` clauses names "PR-2C.0" — and
+does NOT bind PR-2C.1. D-PR2C-4 is therefore deliberately absent from this
+entry's `Normative references` field; treating a precedent as a normative
+dependency would misstate the governance relationship.
+
+### Evidence (LOCK-time rerun, observed at HEAD `e5c3ccb`)
+
+`git rev-parse HEAD` = `e5c3ccb029253475ef5b6f7f3c41c40539eb0889` at rerun
+time (no drift from entry). Ruff config
+(`pyproject.toml`): `select = ["E","F","I","N","UP","B","SIM","RUF"]`,
+`target-version = "py312"`, `line-length = 100`; `per-file-ignores` only
+`"*.ipynb" = ["E402"]` (no `tests/` exemption for `F`).
+
+`uv run ruff check features/win_rate_21d/ tests/features/win_rate_21d/`
+— 16 findings. As `(relative_path, rule_code, diagnostic_subject)`
+tuples (entry-time line numbers recorded as observational evidence only):
+
+| # | File | Rule | Subject |
+|---|------|------|---------|
+| 1 | `features/win_rate_21d/environment.py` | `RUF022` | `__all__` not sorted |
+| 2 | `features/win_rate_21d/pre_flight.py` | `UP042` | `PreFlightSeverity(str, Enum)` |
+| 3 | `features/win_rate_21d/producer.py` | `RUF022` | `__all__` not sorted |
+| 4 | `tests/features/win_rate_21d/test_build_artifact.py` | `RUF043` | `pytest.raises(TypeError, match="pyarrow.Table")` |
+| 5 | `tests/features/win_rate_21d/test_compute_sql_boundary.py` | `I001` | module import block |
+| 6 | `tests/features/win_rate_21d/test_compute_sql_boundary.py` | `RUF100` | unused `noqa: SLF001` at `_SQL_MEDIAN_QUERY_TEMPLATE` access |
+| 7 | `tests/features/win_rate_21d/test_compute_sql_boundary.py` | `RUF100` | unused `noqa: SLF001` at `_ATTACH_STATEMENT_TEMPLATE` access |
+| 8 | `tests/features/win_rate_21d/test_environment.py` | `I001` | module import block |
+| 9 | `tests/features/win_rate_21d/test_environment.py` | `B017` | `pytest.raises(Exception)` in `test_environment_report_is_frozen` |
+| 10 | `tests/features/win_rate_21d/test_no_forbidden_names.py` | `SIM102` | nested `if` in `ast.walk` loop |
+| 11 | `tests/features/win_rate_21d/test_producer_body.py` | `I001` | module import block |
+| 12 | `tests/features/win_rate_21d/test_producer_body.py` | `N813` | `BuildScope as _canonical_build_scope` |
+| 13 | `tests/features/win_rate_21d/test_producer_body.py` | `N813` | `ProducerContext as _canonical_producer_context` |
+| 14 | `tests/features/win_rate_21d/test_producer_surface.py` | `I001` | module import block |
+| 15 | `tests/features/win_rate_21d/test_safety_gate.py` | `SIM300` | `ALL_PRE_FLIGHT_CHECKS` membership assertion (`test_all_pre_flight_checks_contains_five_pf_b_checks`) |
+| 16 | `tests/features/win_rate_21d/test_safety_gate.py` | `SIM300` | `RIDER_CLOSING_CHECKS` content assertion (`test_rider_closing_checks_content`) |
+
+`uv run ruff format --check features/win_rate_21d/ tests/features/win_rate_21d/`
+— 18 files would be reformatted, 8 already formatted.
+
+`uv run mypy features/win_rate_21d/` — Success, no issues, 10 source files.
+
+`uv run mypy tests/features/win_rate_21d/` — 6 errors in 5 files. As
+`(relative_file, error_code, diagnostic_subject)` tuples:
+
+| # | File | Code | Subject |
+|---|------|------|---------|
+| M1 | `tests/features/win_rate_21d/test_constants.py` | `comparison-overlap` | `ParamSpec` vs typing special form identity check |
+| M2 | `tests/features/win_rate_21d/test_duckdb_writer.py` | `index` | `tuple[Any, ...] \| None` not indexable |
+| M3 | `tests/features/win_rate_21d/test_safety_gate.py` | `comparison-overlap` | `Callable[[int], PreFlightResult]` (PF-B3) vs `Callable[[PreFlightContext], PreFlightResult]` |
+| M4 | `tests/features/win_rate_21d/test_safety_gate.py` | `comparison-overlap` | `Callable[[int, int], PreFlightResult]` (PF-B4) vs `Callable[[PreFlightContext], PreFlightResult]` |
+| M5 | `tests/features/win_rate_21d/test_producer_writer_wiring.py` | `index` | `tuple[Any, ...] \| None` not indexable |
+| M6 | `tests/features/win_rate_21d/test_producer_body.py` | `func-returns-value` | `_noop_body_enter_hook` used as value |
+
+### Decision
+
+**D11-1 — Baseline is a tuple set; line numbers are observational.**
+The static-analysis baseline is locked as the sets of
+`(relative_path, rule_or_error_code, diagnostic_subject)` tuples recorded
+above. Entry-time line numbers are observational evidence only and are NOT
+part of the acceptance predicate: PR-2C.1's own legitimate edits (module
+docstring changes, import removals) cause line drift, so a line-anchored
+baseline would be violated by compliant edits. Verification is by
+line-normalised concise-output diff before and after
+(`ruff check ... --output-format concise`, stripping line/column and any
+unstable absolute path prefix; retaining relative path, rule code, and
+message subject). This follows D-PR2C-4's "line-normalised diff" precedent.
+
+**D11-2 — Existing changed files: no new finding, no format run.**
+On files that already exist and are changed by PR-2C.1, no `ruff check`
+tuple absent from the D11-1 baseline may appear, and no new
+`ruff format --check` drift may be introduced. PR-2C.1 SHALL NOT run
+`ruff format` package-wide or repo-wide, and SHALL NOT reformat existing
+files: the PF-B2 semantic diff must remain reviewable rather than be
+buried in unrelated reformatting of already-`format`-dirty files (e.g.
+`pre_flight.py`).
+
+**D11-3 — New files: clean.**
+Every Python file newly created by PR-2C.1 (the private analyzer module
+and its test file(s)) SHALL pass `ruff check` clean, `ruff format --check`
+clean, and — for production modules — `uv run mypy` clean (strict mode is
+active via `pyproject.toml` `[tool.mypy] strict = true`). (If a new
+file's own format check fails, that new file SHALL be formatted; D11-2's
+"no format run" prohibits package/repo-wide formatting of existing files,
+not formatting of a new file to reach its own clean state.)
+
+**D11-4 — Production package mypy maintained clean.**
+`uv run mypy features/win_rate_21d/` (strict mode active via
+`pyproject.toml` `[tool.mypy] strict = true`) is clean at entry (10 files)
+and SHALL remain clean, including the new analyzer module and any edit to
+`pre_flight.py` / `compute.py`. A currently-clean surface becoming dirty
+is a stronger regression than pre-existing debt; the AST analyzer's known
+`--strict` friction (`ast.Constant.value` is `Any`; `warn_return_any` on
+direct returns) SHALL be handled in-code, not deferred.
+
+**D11-5 — Tests mypy: no new tuple; named pre-existing exception.**
+The `tests/features/win_rate_21d/` mypy baseline is the six-tuple set
+{M1…M6}. PR-2C.1 SHALL add no new tuple. `test_pre_flight_shell.py` is
+mypy-clean at entry and SHALL remain clean after the Form 2 edits. The two
+`test_safety_gate.py` `comparison-overlap` tuples (M3: PF-B3 element type;
+M4: PF-B4 element type) are named pre-existing baseline exceptions: they
+arise structurally from the `AnyPreFlightCallable`/`PreFlightCallable`
+alias coexistence and are out of scope for PR-2C.1. They SHALL NOT be
+newly introduced, moved to different subjects, or eliminated by PR-2C.1.
+Equivalence is by tuple identity (file, code, subject), not by error
+count: an old tuple disappearing while a new one appears is NOT
+acceptance-equivalent.
+
+**D11-6 — Preserved-red baseline debt (D-PR2C-4 D4-3 rationale).**
+The following carry substantive reasons to remain and SHALL NOT be
+modified or silenced by PR-2C.1: `UP042` on `PreFlightSeverity` (fixing it
+alters enum serialization behaviour — the `PreFlightSeverity` docstring
+depends on string values serializing cleanly); `RUF022` on `producer.py`
+`__all__` (alters declared public-surface ordering); both `SIM300` on
+`test_safety_gate.py` (fire on the exact ordered registry-membership
+assertions D-PR2C-2 requires preserved verbatim and D-PR2C-1 cites as
+structural evidence). These SHALL NOT be silenced with `# noqa`:
+suppression is an ungoverned surface that would render the debt invisible
+in future lint output. They remain visibly red.
+
+**D11-7 — Out-of-scope stylistic debt (retained, non-substantive).**
+The remaining baseline findings are pre-existing stylistic debt that
+PR-2C.1 neither touches nor fixes (retained to avoid expanding scope,
+without D4-3-style substantive rationale): `RUF022` on `environment.py`;
+`B017` on `test_environment.py`; both `N813` on `test_producer_body.py`;
+`RUF043` on `test_build_artifact.py`; both `RUF100` on
+`test_compute_sql_boundary.py`; `SIM102` on `test_no_forbidden_names.py`;
+and the four `I001` import-block findings (`test_compute_sql_boundary.py`,
+`test_environment.py`, `test_producer_body.py`, `test_producer_surface.py`)
+— none of which are files PR-2C.1 changes. If PR-2C.1 does change one of
+these files for an unrelated reason, the D-PR2C-4 D4-2 precedent (fix a
+finding only in a block the PR necessarily rewrites) applies by analogy.
+
+**D11-8 — No CI; acceptance is manual discipline.**
+The repository has no CI (`.github/workflows` absent). Ruff, mypy, and
+pytest are gates only when an operator runs them; PR-2C.1's entire
+static-analysis and test acceptance is enforced by operator discipline,
+not automation. D-PR2C-8's GC-6 phrasing "invisible to CI" SHALL be read
+as "invisible to the test suite." The absence of an automation gate for a
+nine-disposition governance regime is a separate governance surface; it is
+recorded here as a fact and is explicitly out of scope for PR-2C.1.
+
+### Acceptance matrix (summary of D11-1..D11-7)
+
+| Scope | Acceptance |
+|-------|-----------|
+| Existing changed Python files | No new ruff tuple vs. D11-1 baseline; no new format drift; no `ruff format` run; pre-existing tuples retained |
+| New Python files | `ruff check` clean; `ruff format --check` clean; production module `uv run mypy` clean (strict via config) |
+| Production package | `uv run mypy features/win_rate_21d/` remains clean (strict via config; incl. new analyzer module) |
+| Tests | No new mypy tuple vs. {M1…M6}; touched test files individually mypy-clean except the named M3/M4 exceptions; `test_pre_flight_shell.py` stays clean |
+| Repo-wide | Observational only; not a PR blocker |
+
+### Non-reopening clause
+
+This disposition governs PR-2C.1 static-analysis acceptance only. It does
+not amend D-PR2C-4 (which governs PR-2C.0), any mechanism disposition, or
+the anchor-test transition contract. Baseline numbers are the LOCK-time
+rerun at `e5c3ccb`; they SHALL be re-verified unchanged immediately before
+the lock commit.
+
+### Governance metadata
+
+- **Status:** LOCKED
+- **Commit SHA:** `<TBD — backfilled from lock commit>`
+- **Entry repository anchor:** `e5c3ccb029253475ef5b6f7f3c41c40539eb0889`
+- **Previous D-PR entry:** D-PR2C-10
+- **Ledger version at lock:** v0.1.4
+- **Previous ledger tail md5:** `05d8b3bda8efaab63d81d49db51e3a26`
+- **New ledger tail md5 after append:** `<TBD — backfilled after the lock commit from the full-file MD5 (H3) recorded immediately after this entry was appended; NOT the post-backfill file MD5>`
+- **Normative references:** (none) — depends on no prior D-PR entry normatively. D-PR2C-4 is a non-binding precedent only (governs PR-2C.0, does not bind PR-2C.1); deliberately not listed to avoid implying a normative dependency (see the precedent note in §Question).
+- **Record class:** ORIGINAL LOCKED DISPOSITION
+- **Evidence basis:** Original disposition; no reconstruction basis applicable.
