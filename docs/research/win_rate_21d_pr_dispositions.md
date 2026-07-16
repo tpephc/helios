@@ -1791,12 +1791,12 @@ two-remaining-shells state, exactly as D-PR2C-8 predicts.
 ### Governance metadata
 
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD — backfilled from lock commit>`
+- **Commit SHA:** `3547ca01eda41fa08089100d6690eb29c93f35d8`
 - **Entry repository anchor:** `e5c3ccb029253475ef5b6f7f3c41c40539eb0889`
 - **Previous D-PR entry:** D-PR2C-8
 - **Ledger version at lock:** v0.1.4
 - **Previous ledger tail md5:** `bc375f36467574308651947e9d1463ea` (H0 — full-file MD5 of ledger immediately before this entry; confirm unchanged at append time)
-- **New ledger tail md5 after append:** `<TBD — backfilled after the lock commit from the full-file MD5 (H1) recorded immediately after this entry was appended; NOT the post-backfill file MD5>`
+- **New ledger tail md5 after append:** `a1fdbe6e2918b2e21e268474ffa75626`
 - **Normative references:** D-PR2C-8 (anchor-test transition contract, supplemented not amended)
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; no reconstruction basis applicable.
@@ -2176,12 +2176,12 @@ declared non-dispositive. None alter a locked decision outcome.
 ### Governance metadata
 
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD — backfilled from lock commit>`
+- **Commit SHA:** `3547ca01eda41fa08089100d6690eb29c93f35d8`
 - **Entry repository anchor:** `e5c3ccb029253475ef5b6f7f3c41c40539eb0889`
 - **Previous D-PR entry:** D-PR2C-9
 - **Ledger version at lock:** v0.1.4
 - **Previous ledger tail md5:** `a1fdbe6e2918b2e21e268474ffa75626`
-- **New ledger tail md5 after append:** `<TBD — backfilled after the lock commit from the full-file MD5 (H2) recorded immediately after this entry was appended; NOT the post-backfill file MD5>`
+- **New ledger tail md5 after append:** `05d8b3bda8efaab63d81d49db51e3a26`
 - **Normative references:** D-PR2C-3 (PF-B2 mechanism; addressee and prose clarified, content unchanged), D-PR2C-7 (order implication; §13 factual correction), D-PR2C-8 (§12 references the transition context)
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; no reconstruction basis applicable.
@@ -2364,12 +2364,12 @@ the lock commit.
 ### Governance metadata
 
 - **Status:** LOCKED
-- **Commit SHA:** `<TBD — backfilled from lock commit>`
+- **Commit SHA:** `3547ca01eda41fa08089100d6690eb29c93f35d8`
 - **Entry repository anchor:** `e5c3ccb029253475ef5b6f7f3c41c40539eb0889`
 - **Previous D-PR entry:** D-PR2C-10
 - **Ledger version at lock:** v0.1.4
 - **Previous ledger tail md5:** `05d8b3bda8efaab63d81d49db51e3a26`
-- **New ledger tail md5 after append:** `<TBD — backfilled after the lock commit from the full-file MD5 (H3) recorded immediately after this entry was appended; NOT the post-backfill file MD5>`
+- **New ledger tail md5 after append:** `84fc8b435b87ec4173106c8837271185`
 - **Normative references:** (none) — depends on no prior D-PR entry normatively. D-PR2C-4 is a non-binding precedent only (governs PR-2C.0, does not bind PR-2C.1); deliberately not listed to avoid implying a normative dependency (see the precedent note in §Question).
 - **Record class:** ORIGINAL LOCKED DISPOSITION
 - **Evidence basis:** Original disposition; no reconstruction basis applicable.
