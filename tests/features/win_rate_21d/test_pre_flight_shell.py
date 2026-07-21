@@ -23,7 +23,6 @@ from features.win_rate_21d.pre_flight import (
     PreFlightResult,
     PreFlightSeverity,
     pf_b1_scope_check,
-    pf_b2_canonical_source_check,
     pf_b3_min_cross_section_check,
     pf_b4_window_constants_check,
     pf_b6_duckdb_writeability_check,
@@ -79,7 +78,6 @@ def test_pre_flight_severity_enum_values() -> None:
     "check",
     [
         pf_b1_scope_check,
-        pf_b2_canonical_source_check,
         pf_b6_duckdb_writeability_check,
     ],
 )

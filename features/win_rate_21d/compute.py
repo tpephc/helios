@@ -1,5 +1,12 @@
 # features/win_rate_21d/compute.py
-"""Compute stage for win_rate_21d producer."""
+"""Compute stage for win_rate_21d producer.
+
+The executed SQL must receive its source identifier through the
+imported ``CANONICAL_PIT_VIEW_NAME`` constant.  Do not replace that
+binding with a raw backing-table identifier or a hard-coded canonical
+view name.  Refactors to query construction must remain within the
+data-flow patterns supported by PF-B2.
+"""
 
 from __future__ import annotations
 

@@ -165,20 +165,71 @@ def pf_b2_canonical_source_check(
     canonical PIT view.  Direct reads of the raw price table are
     FORBIDDEN and constitute a P0 lineage violation per spec §4.4.
 
-    Verification is structural (AST-level or DuckDB EXPLAIN
-    introspection), not string-level.  See spec §8.4 and Section 7 H17
-    of the readiness document.
+    Mechanism: AST dual-layer structural verification (D-PR2C-3).
+    Layer 1 prohibits the forbidden raw-table literal; Layer 2 verifies
+    the canonical identifier reaches a governed execution sink through
+    a supported local data-flow chain (D-PR2C-10 §5 P-1/P-2/P-3).
 
-    PR-1 status: shell.  Real implementation requires the producer body
-    to inspect.
+    Source resolution: ``importlib.util.find_spec`` at invocation time
+    (D-PR2C-10 §11).  The governed module is
+    ``features.win_rate_21d.compute``.
 
-    PR-2C.0 status: still shell.  The ``context`` parameter is accepted
-    per the D-PR2C-1 invocation model but is deliberately NOT inspected
-    yet.  Inspecting it without implementing the check would risk a
-    vacuous pass, which ``test_pre_flight_shell.py`` forbids.
+    Infrastructure failures (source not found, parse error) propagate
+    as non-``PreFlightShellError`` exceptions (D-PR2C-3).
+
+    Args:
+        context: Immutable runtime carrier (D-PR2C-1).  Not inspected
+            by this check; PF-B2's target is the governed module, not
+            runtime state.
     """
-    raise PreFlightShellError(
-        "PF-B2 pending producer body implementation"
+    _ = context  # accepted per D-PR2C-1; not inspected by PF-B2
+
+    from importlib.util import find_spec
+    from pathlib import Path
+
+    from features.win_rate_21d._pf_b2_analyzer import (
+        GOVERNED_MODULE,
+        AnalysisVerdict,
+        analyze_source,
+    )
+
+    spec = find_spec(GOVERNED_MODULE)
+    if spec is None:
+        raise ModuleNotFoundError(
+            f"unable to resolve governed module: {GOVERNED_MODULE}"
+        )
+    if spec.origin is None:
+        raise FileNotFoundError(
+            f"governed module has no source origin: {GOVERNED_MODULE}"
+        )
+
+    source_path = Path(spec.origin)
+    if source_path.suffix != ".py":
+        raise FileNotFoundError(
+            f"governed module does not resolve to Python source: "
+            f"{source_path}"
+        )
+
+    source_text = source_path.read_text(encoding="utf-8")
+    result = analyze_source(
+        source_text,
+        source_identity=source_path.name,
+    )
+
+    if result.verdict is AnalysisVerdict.PASS:
+        return PreFlightResult(
+            check_id="PF-B2",
+            passed=True,
+            severity=PreFlightSeverity.INFO,
+            message="canonical PIT source structurally verified",
+        )
+
+    detail = "; ".join(result.diagnostics) or "no diagnostic detail"
+    return PreFlightResult(
+        check_id="PF-B2",
+        passed=False,
+        severity=PreFlightSeverity.ERROR,
+        message=detail,
     )
 
 

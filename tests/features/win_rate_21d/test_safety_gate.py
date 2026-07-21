@@ -18,8 +18,8 @@ Test lifecycle notes:
     - PR-1's ``test_build_full_is_shell`` continues to PASS through
       PR-2A because ``PreFlightShellError`` is a subtype of
       ``NotImplementedError``.
-    - When PR-2C replaces PF-B1 / PF-B2 / PF-B6 shells with real
-      implementations, ``test_gate_raises_by_default`` in this file
+    - PF-B2 is now real (PR-2C.1).  PF-B1 and PF-B6 remain shells.
+      When the last shell becomes real, ``test_gate_raises_by_default``
       will fail: the gate will pass and ``build_full`` will proceed
       to the deferred ``NotImplementedError`` for the producer body.
       That failure is the correct signal that the rider is closer to
@@ -183,16 +183,36 @@ def test_gate_raises_by_default() -> None:
         verify_rider_closing_checks_are_real(_preflight_context())
 
 
-def test_gate_error_names_all_shells() -> None:
-    """Q-PR2A-D1 aggregate diagnostic: message names every shell found."""
+def test_gate_error_classifies_current_registry_members_exactly() -> None:
+    """Diagnostic includes shells and excludes real checks in the registry.
+
+    Transition-sensitive anchor (D-PR2C-9 D9-A1).  Update
+    ``expected_shells`` at each rider-closing transition.  At the
+    terminal transition (all real) the gate no longer raises; replace
+    this test with that assertion.
+    """
+    expected_shells = (
+        pf_b1_scope_check,
+        pf_b6_duckdb_writeability_check,
+    )
+    registry = set(RIDER_CLOSING_CHECKS)
+    assert set(expected_shells).issubset(registry)
+
+    expected_real = tuple(
+        check for check in RIDER_CLOSING_CHECKS if check not in expected_shells
+    )
+
     with pytest.raises(PreFlightShellError) as excinfo:
         verify_rider_closing_checks_are_real(_preflight_context())
-    msg = str(excinfo.value)
-    for check in RIDER_CLOSING_CHECKS:
-        assert check.__name__ in msg, (
-            f"expected {check.__name__!r} in gate error message; "
-            f"got {msg!r}"
-        )
+    message = str(excinfo.value)
+
+    # Safe while registered check names are pairwise non-overlapping
+    # (verified for the current three names).  Revisit if any future
+    # check name becomes a substring of another.
+    for shell in expected_shells:
+        assert shell.__name__ in message, f"omitted shell: {shell.__name__}"
+    for real in expected_real:
+        assert real.__name__ not in message, f"padded non-shell: {real.__name__}"
 
 
 def test_gate_passes_when_all_rider_closing_are_real(
@@ -635,15 +655,19 @@ def test_run_rider_closing_checks_propagates_shell_error(
 
     It must surface as PreFlightShellError, not be absorbed into
     PreFlightExecutionError.
+
+    Terminal form (D-PR2C-9 D9-A2): uses a local shell stub, not a
+    production check.  No further edit required at subsequent rider
+    transitions.
     """
+
+    def _shell(ctx: PreFlightContext) -> PreFlightResult:
+        raise PreFlightShellError("test-local shell stub")
+
     monkeypatch.setattr(
         pf,
         "RIDER_CLOSING_CHECKS",
-        (
-            _passing("PF-B1"),
-            pf_b2_canonical_source_check,
-            _passing("PF-B6"),
-        ),
+        (_passing("PF-B1"), _shell, _passing("PF-B6")),
     )
     with pytest.raises(PreFlightShellError) as excinfo:
         run_rider_closing_checks(_preflight_context())
