@@ -14,7 +14,7 @@
 | Repository | git@github.com:tpephc/helios.git |
 | Canonical Hash (SHA-256) | 7eeb8da448deb1d734ebbff7a70a496b5eec00bd419f582227fa96ff565a4b25 |
 | Hash Convention | 以文件完整內容計算，惟文件內 Canonical Hash 欄位之 64 位十六進位值於計算前置換為 64 個 '0' |
-| Lock Commit SHA | PENDING — 待回填 |
+| Lock Commit SHA | `703c416f520ec5f90dec6e2606e7e7e30c9b953a` |
 | Locked At | 2026-07-23 |
 
 ## Dispositions
@@ -42,8 +42,8 @@
 [x] Acceptance matrix complete（§9）
 [x] Open Decisions closed or explicitly deferred（§10 Ledger）
 [x] Canonical hash generated（見上）
-[ ] Lock commit recorded（待回填）
-[ ] Working tree clean（commit 時驗證）
+[x] Lock commit recorded（`703c416f520ec5f90dec6e2606e7e7e30c9b953a`）
+[x] Working tree clean（lock commit 後已驗證）
 [x] SPEC_LOCKED approved by Lock Authority
 ```
 
