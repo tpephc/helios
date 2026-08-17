@@ -9,7 +9,7 @@
 **Record class:** COMPACT GOVERNANCE DECISION RECORD
 **Repository evidence anchor:** `47dfab4` (historical audit anchor; re-observe current HEAD before lock)
 **Created:** 2026-08-17
-**Lock reference:** `PENDING — backfill observed PR-MS0 lock commit SHA only after governance-only lock commit`
+**Lock reference:** `45f8fea39f15778dc097f699ad8333256dcd7a3f`
 
 ---
 
