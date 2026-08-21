@@ -3,6 +3,7 @@ Canonical Path: docs/research/pr_ms1_0_security_market_state_domain_contract.md
 
 Version: v0.2.5
 Status: LOCKED — PR-MS1.1 AUTHORISED
+Lock Reference: 2490cde86274262f1a6335eb4e984806a29cb5e7
 Scope: Domain contract only; no classifier implementation, persistence, strategy adoption, `daily_run` integration, or production execution change.
 Upstream Semantic Boundary: `docs/research/pr_ms0_repository_semantic_audit_decision_record.md` (`45f8fea39f15778dc097f699ad8333256dcd7a3f`)
 Integration Source: `docs/research/pr_ms1_0_security_market_state_domain_contract_governance_addendum.md` v0.3.1 (`56db5b1`)
