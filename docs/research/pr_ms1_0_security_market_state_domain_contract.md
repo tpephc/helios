@@ -1,11 +1,12 @@
 # PR-MS1.0 — Security Market State Domain Contract
 Canonical Path: docs/research/pr_ms1_0_security_market_state_domain_contract.md
 
-Version: v0.1.1
-Status: DRAFT — CANONICAL CONTRACT CANDIDATE
+Version: v0.2.5
+Status: LOCKED — PR-MS1.1 AUTHORISED
 Scope: Domain contract only; no classifier implementation, persistence, strategy adoption, `daily_run` integration, or production execution change.
 Upstream Semantic Boundary: `docs/research/pr_ms0_repository_semantic_audit_decision_record.md` (`45f8fea39f15778dc097f699ad8333256dcd7a3f`)
 Integration Source: `docs/research/pr_ms1_0_security_market_state_domain_contract_governance_addendum.md` v0.3.1 (`56db5b1`)
+Disposition Inputs: Q-MS1-01/02 v0.1.2; Q-MS1-03/06 v0.1.1; Q-MS1-04 v0.1.4; Q-MS1-02/06 exceptional-bar v0.1.1; Q-MS1-07 v0.1.1; Q-MS1-08 v0.1.1.
 
 ## 0. Authority, Evidence, and Status
 
@@ -15,7 +16,7 @@ Evidence labels:
 
 - **VERIFIED REPOSITORY FINDING** — supported by source evidence observed at the stated repository baseline.
 - **FORMAL DERIVATION** — follows from stated verified mechanics and a stated mathematical contract.
-- **PROPOSED DECISION** — normative text pending PR-MS1.0 closure and lock.
+- **LOCKED DECISION** — normative text pending PR-MS1.0 closure and lock.
 - **DEFERRED** — intentionally excluded from this phase.
 - **REPOSITORY GAP** — an observed capability absence that restricts an otherwise desirable obligation.
 - **INTEGRATOR ADDITION** — a non-ledger normative addition made during canonical integration; it is not closed until its stated follow-up disposition occurs.
@@ -50,7 +51,7 @@ The following PR-MS0 constraints are binding.
 
 ## 3. Q-MS1-00 — Snapshot Model
 
-**PROPOSED DECISION — CLOSED:** V1 is a pure snapshot classifier.
+**LOCKED DECISION:** V1 is a pure snapshot classifier.
 
 For a valid canonical input and fixed classifier configuration, output depends only on the values in that input. It SHALL NOT accept or retrieve `prior_state`, transition history, persistent classifier state, hidden process state, account state, portfolio state, or strategy state.
 
@@ -60,94 +61,103 @@ classify(input_dto) -> ClassificationResult
 
 Transition, hysteresis, debounce, persistence, and origin/cold-start semantics are DEFERRED to a separately governed downstream layer. Q-MS1-05 is thereby closed for V1.
 
-## 4. Domain Types and Ownership
+## 4. Domain Types, Numeric Policy, and Ownership
 
-The following is an illustrative contract sketch, not implementation.
+The following is a normative contract sketch; it remains implementation-neutral.
 
-```python
-from enum import Enum
-
-
-class MarketState(Enum):
-    # Q-MS1-01 owns finite members and positive rules.
-    pass
-
-
-class ClassificationStatus(Enum):
-    OK = "OK"
-    INDETERMINATE = "INDETERMINATE"
-    INSUFFICIENT_HISTORY = "INSUFFICIENT_HISTORY"
-
-
-class Availability(Enum):
-    AVAILABLE = "AVAILABLE"
-    OPERATIONAL_FAILURE = "OPERATIONAL_FAILURE"
+```text
+MarketState: CONFIRMED_RECLAIM | FAILED_RECLAIM
+ClassificationStatus: OK | INDETERMINATE | INSUFFICIENT_HISTORY
+Availability: AVAILABLE | OPERATIONAL_FAILURE
+ClassifierReasonCode: NO_RULE_MATCH | REQUIRED_HISTORY_NOT_MET
+HistoryDiagnosticCode: NATURAL_HISTORY_SHORTFALL | DATA_GAP | DIAGNOSIS_UNAVAILABLE | ZERO_VOLUME_BAR_EXCLUDED
+OperationalDiagnosticCode: AS_OF_BAR_MISSING | AS_OF_BAR_INVALID | AS_OF_BAR_ZERO_VOLUME | REFERENCE_BASIS_UNAVAILABLE | UNCLASSIFIED_ASSEMBLY_FAILURE
+LimitStatusCoverage: OFFICIAL_STATUS_UNAVAILABLE
 ```
 
-All three are non-string enums. Export serialization occurs explicitly in the assembly/export layer using `.value`. `OPERATIONAL_FAILURE` is exclusively an `Availability` member, never a classifier status.
+Every listed domain is a distinct non-string `Enum`; export serialization occurs explicitly through `.value`. The three reason/diagnostic domains have disjoint serialized value spaces. `ClassificationStatus` is wholly classifier-owned. `Availability`, `HistoryDiagnosticCode`, and `OperationalDiagnosticCode` are assembly/composed-pipeline-owned. `OPERATIONAL_FAILURE` SHALL NOT occur in `ClassificationStatus`, `ClassifierReasonCode`, or `ClassificationResult`.
 
-`ClassificationResult` is classifier-owned and is determinable from a valid DTO plus fixed `classifier_version` and `rule_set_hash`:
+**LOCKED DECISION:** Canonical in-memory adjusted OHLC values, classifier-computed SMA/ATR/Donchian primitives, and V1 comparison operands use IEEE-754 binary64 (`float64`). Required price values are finite and strictly positive. NaN, infinity, and non-positive required price values are malformed DTO conditions.
+
+Classifier comparisons use exact binary64 relational operators; no tolerance changes a production result. Only property-test generation applies the following declared exclusion:
+
+```text
+epsilon_relative = 1e-10
+eligible(x, y) <=> abs(x - y) / max(abs(x), abs(y)) > epsilon_relative
+```
+
+`1e-10` is an engineering guard band, not a market, alpha, or calibration parameter. It is approximately `4.5 × 10^5` binary64 machine epsilons and prevents unit-scale rounding noise from becoming an invariance fixture; it does not alter exact-boundary rule semantics.
+
+`ClassificationResult` is classifier-owned:
 
 ```text
 status: ClassificationStatus
 state: MarketState | None
-matched_rule_id: str | None
+matched_rule_id: RuleId | None
 reason_code: ClassifierReasonCode | None
-classifier_version: str
-rule_set_hash: str
+classifier_version: ClassifierVersion
+rule_set_hash: RuleSetHash
 as_of: TradingSession
 ```
 
-Invariants:
+For a structurally valid DTO plus fixed classifier configuration, every result field is determinable solely from those inputs. It contains no security identifier, assembly diagnostic, panel identity, adjustment provenance, or wall-clock timestamp.
 
-```text
-status == OK      <=> state is a MarketState member
-status != OK      <=> state is None
-matched_rule_id is not None <=> status == OK
-reason_code is None <=> status == OK
-```
+| Status | `state` | `matched_rule_id` | `reason_code` |
+| --- | --- | --- | --- |
+| `OK` | exactly one `MarketState` member | non-null | null |
+| `INDETERMINATE` | null | null | `NO_RULE_MATCH` |
+| `INSUFFICIENT_HISTORY` | null | null | `REQUIRED_HISTORY_NOT_MET` |
 
-The candidate `ClassifierReasonCode` mapping is mandatory unless superseded by an explicit Q-MS1-03 disposition:
+`OK` requires all admitted rules to have been evaluated and any positive multi-match to have been resolved by declared precedence. `INDETERMINATE` requires all admitted rules to have been evaluated with no positive match. `INSUFFICIENT_HISTORY` occurs before rule evaluation.
 
-| `ClassificationStatus` | `ClassifierReasonCode` |
-| --- | --- |
-| `OK` | `None` |
-| `INDETERMINATE` | `NO_RULE_MATCH` |
-| `INSUFFICIENT_HISTORY` | `REQUIRED_HISTORY_NOT_MET` |
-
-Malformed DTOs raise a typed contract/validation error. They do not become `INDETERMINATE` or `INSUFFICIENT_HISTORY`.
+A malformed DTO raises `MarketStateContractViolation`. It SHALL NOT produce a result, a status value, `Availability.OPERATIONAL_FAILURE`, or a per-item error envelope.
 
 `MarketStateExportRecord` is assembly/composed-pipeline-owned:
 
 ```text
 availability: Availability
 classification: ClassificationResult | None
-security_id: str
-panel_snapshot_id: str
-adjustment_provenance: str
-assembly_schema_version: str
+security_id: SecurityId
+panel_snapshot_id: PanelSnapshotId | None
+adjustment_provenance: AdjustmentProvenance | None
+assembly_schema_version: AssemblySchemaVersion
 history_diagnostics: HistoryDiagnosticCode | None
 operational_diagnostics: OperationalDiagnosticCode | None
-decision_available_at: Timestamp
+decision_available_at: Timestamp | None
+limit_status_coverage: LimitStatusCoverage
 ```
 
-Its invariants are:
+It SHALL NOT duplicate classifier fields at top level. Its invariants are:
 
 ```text
 classification is not None <=> availability == AVAILABLE
 availability == OPERATIONAL_FAILURE => operational_diagnostics is not None
 availability == AVAILABLE           => operational_diagnostics is None
+availability == OPERATIONAL_FAILURE => history_diagnostics is None
+classification.status == INSUFFICIENT_HISTORY => history_diagnostics is not None
+classification.status != INSUFFICIENT_HISTORY => history_diagnostics is None
+availability == AVAILABLE => panel_snapshot_id, adjustment_provenance, decision_available_at are non-null
+availability == OPERATIONAL_FAILURE => panel_snapshot_id SHALL NOT identify a partial, rejected, or invalid candidate panel
+limit_status_coverage is non-null
 ```
 
-`AVAILABLE` means assembly succeeded and produced a classification. It does not mean `state` is present. A consumer requiring a MarketState must additionally require `classification.status == OK`.
+For `Availability.OPERATIONAL_FAILURE`, `panel_snapshot_id`, `adjustment_provenance`, and `decision_available_at` MAY be null only when the preceding failure makes that fact unknowable. A non-null value under failure SHALL describe work fully and independently established before the failure point; it SHALL NOT imply that a rejected candidate panel was classified or replayable.
 
-`ClassifierReasonCode`, `HistoryDiagnosticCode`, and `OperationalDiagnosticCode` are separate enum types and have disjoint value spaces. History diagnostics include `NATURAL_HISTORY_SHORTFALL`, `DATA_GAP`, and `DIAGNOSIS_UNAVAILABLE`; the latter is mandatory when assembly cannot distinguish the first two. Operational diagnostics never reuse the history-diagnostic field.
+**LOCKED DECISION — supersession:** This section supersedes v0.1.1 §3.2's allowance for `OK` to carry an optional provenance-only history diagnostic. `HistoryDiagnosticCode` exclusively explains insufficient eligible history; panel and adjustment provenance use their dedicated fields. When assembly cannot distinguish natural shortfall from a data gap, it SHALL emit `DIAGNOSIS_UNAVAILABLE`, never null.
+
+**LOCKED DECISION — controlled supersession of Q-MS1-03/06 v0.1.1:** `ZERO_VOLUME_BAR_EXCLUDED` is an assembly-owned `HistoryDiagnosticCode`, required when an observed zero-volume bar is intentionally excluded and thereby leaves the terminal DTO insufficient. It is neither a MarketState nor a classifier-owned reason/status.
+
+**LOCKED DECISION — supersession on canonical integration:** `OperationalDiagnosticCode` is assembly/composed-pipeline-owned. Exactly one code is required for every `Availability.OPERATIONAL_FAILURE`: use `AS_OF_BAR_MISSING`, `AS_OF_BAR_INVALID`, or `AS_OF_BAR_ZERO_VOLUME` for the corresponding `as_of` condition; `REFERENCE_BASIS_UNAVAILABLE` only when no calendar/lifecycle basis exists to construct any terminal eligible-session DTO; otherwise `UNCLASSIFIED_ASSEMBLY_FAILURE`. The last code explicitly communicates non-specific attribution and SHALL NOT be represented as a root cause. This supersedes the single-member `ASSEMBLY_FAILURE` vocabulary.
+
+`REFERENCE_BASIS_UNAVAILABLE` and `DIAGNOSIS_UNAVAILABLE` occupy disjoint pipeline stages. The former prevents DTO construction and classifier invocation. The latter applies only after a valid DTO is classified as `INSUFFICIENT_HISTORY`, when the finer-grained basis needed to distinguish natural shortfall from data gap is unavailable.
+
+`AVAILABLE` means assembly produced a `ClassificationResult`; it does not mean a MarketState is present. A consumer requiring a state must additionally require `classification.status == OK`.
 
 ## 5. Temporal Input Contract
 
 ### 5.1 `as_of` and availability
 
-**PROPOSED DECISION — Q-MS1-06a:** `as_of=t` is close-inclusive: the complete official bar for trading session `t` is in the canonical window.
+**LOCKED DECISION — Q-MS1-06a:** `as_of=t` is close-inclusive: the complete official bar for trading session `t` is in the canonical window.
 
 ```text
 window(t, N) = N canonical eligible trading-session observations,
@@ -159,39 +169,105 @@ Strategy consumption timing is DEFERRED. A later contract cannot silently reinte
 
 ### 5.2 History sufficiency
 
-V1 SHALL declare one scalar:
+The canonical classifier DTO is:
 
 ```text
-required_history_sessions = max(window(R) for R in admitted_rules)
+SecurityMarketStateInput
+  security_id: SecurityId
+  as_of: TradingSession
+  bars: ordered non-empty sequence[AdjustedOhlcBar]
+
+AdjustedOhlcBar
+  session: TradingSession
+  adj_open, adj_high, adj_low, adj_close: finite positive float64
 ```
 
-If a valid DTO has fewer canonical eligible sessions, the classifier returns `INSUFFICIENT_HISTORY` and evaluates no rule. Per-rule partial evaluation is rejected for V1 because it would make `INDETERMINATE` semantically unreliable.
+Bars are strictly session-ascending; `bars[-1].session == as_of`; and every bar satisfies:
+
+```text
+adj_low <= min(adj_open, adj_close) <= max(adj_open, adj_close) <= adj_high
+```
+
+The classifier configuration is immutable and includes `classifier_version`, `rule_set_hash`, admitted ordered rules, and the Section 4 numeric policy. The DTO contains no configuration, precomputed feature, volume, panel snapshot, adjustment provenance, or assembly diagnostic.
+
+For a rule using `SMA_L` over a K-session template:
+
+```text
+required_history_sessions(R) = L + K - 1
+required_history_sessions = max(required_history_sessions(R) for R in admitted_rules)
+rule_bars(R) = bars[-required_history_sessions(R):]
+```
+
+Each rule computes indicators only from its trailing `rule_bars(R)`; a longer classifier-level panel SHALL NOT alter a shorter rule window. The classifier, not assembly, compares input length with the scalar. A non-empty structural-valid DTO shorter than the scalar returns `INSUFFICIENT_HISTORY`; no rule is evaluated. It is not malformed, and assembly SHALL NOT pre-filter/reject it by classifier rule-window knowledge.
+
+Assembly constructs the maximal terminal sequence of consecutive eligible sessions ending at `as_of`; it SHALL NOT silently skip an expected session, forward-fill OHLC, or reach across a barrier to borrow older bars. Assembly MAY use the scalar solely as a bounded fetch-depth hint. It SHALL NOT use that scalar to decide whether to construct/send the DTO, preempt classifier invocation, or choose a classifier status.
+
+The formula counts canonical eligible trading sessions, not calendar days. It becomes an operational history requirement only after Section 7 closes the eligible-session treatment.
 
 ### 5.3 Reference-data boundary
 
-Q-MS1-02 SHALL close both declarations:
+**LOCKED DECISION — Q-MS1-08:**
 
 ```text
-CLASSIFIER_REFERENCE_INPUTS_ADMITTED = YES | NO
-ASSEMBLY_REFERENCE_SOURCES = {calendar, security_lifecycle, ...}
+CLASSIFIER_REFERENCE_INPUTS_ADMITTED = NO
+ASSEMBLY_REFERENCE_SOURCES = {calendar, security_lifecycle}
 ```
 
-The first governs classifier DTO fields. The second governs assembly-only sources for history diagnostics and provenance. Every admitted reference field or source requires governed effective-date semantics; undated latest-state lookup is forbidden. A calendar/security-lifecycle basis is required to distinguish a natural shortfall from a data gap.
+The classifier consumes only the DTO described above. Assembly uses its governed reference sources solely for terminal-sequence construction and history diagnostics/provenance with effective-date semantics. This preserves classifier purity while allowing `NATURAL_HISTORY_SHORTFALL`, `DATA_GAP`, and `DIAGNOSIS_UNAVAILABLE` to be produced at the composed boundary. Any additional source, including an official limit-status feed, requires a superseding Q-MS1-02/Q-MS1-08 disposition.
+
+Every assembly reference source requires governed effective-date semantics; undated latest-state lookup is forbidden.
 
 ## 6. Rule, Input, and Transform Constraints
 
 V1 is per-security. Cross-sectional ranks, universe percentiles, current-constituent membership, candidate membership, peer aggregates, and any value dependent on another security are forbidden.
 
-Every admitted rule declares its input domain, transform/invariance group, equality policy, and threshold deadband policy. This metadata contributes to `rule_set_hash`.
+### 6.1 Admitted V1 rule templates
 
-If a batch API is exposed, it accepts only valid DTOs. Under that all-valid precondition:
+The finite V1 `MarketState` vocabulary contains exactly `CONFIRMED_RECLAIM` and `FAILED_RECLAIM`; no residual state is permitted. For `L ∈ {20, 50}` and `K=3`:
 
 ```text
-batch_classify([dto_1, ..., dto_n])
-    == [classify(dto_1), ..., classify(dto_n)]
+CONFIRMED_RECLAIM(L, 3):
+  adj_close[i] > SMA_L[i] for every i in [t-2, t]
+
+FAILED_RECLAIM(L):
+  adj_close[t-2] <  SMA_L[t-2]
+  adj_close[t-1] >= SMA_L[t-1]
+  adj_close[t]   <  SMA_L[t]
 ```
 
-Order is preserved and batch neighbours cannot affect an item's result. A malformed DTO raises a typed contract violation and fails the entire batch call; partial-success and per-item-exception return types are forbidden. Before a universe-scale caller invokes the batch API, assembly validates/filters DTOs and exports excluded-item diagnostics. That assembly containment obligation does not alter classifier fail-fast semantics.
+`CONFIRMED_RECLAIM` is observable only at close of `t`; it SHALL NOT be backfilled to an earlier crossing. Any `adj_close[i] <= SMA_L[i]` makes its stated window-AND false; no streaming counter or partial credit exists. `FAILED_RECLAIM` is an exactly three-session event and SHALL NOT be assigned to `t-1` or use an unbounded prior-history predicate.
+
+No MA lookback other than 20 or 50 is admitted in V1. The domain follows verified existing SMA20/SMA50 reclaim/persistence primitives; any new lookback requires a superseding disposition with rule ID, precedence, history, and acceptance coverage.
+
+The four rule IDs are ordered for deterministic selection:
+
+```text
+failed_reclaim_ma50
+failed_reclaim_ma20
+confirmed_reclaim_ma50_k3
+confirmed_reclaim_ma20_k3
+```
+
+Every admitted rule is evaluated after the scalar sufficiency check. The highest-priority positive rule is the sole `matched_rule_id`. Same-lookback confirmed/failed matches are mutually exclusive because their `t` conditions require both `adj_close[t] > SMA_L[t]` and `adj_close[t] < SMA_L[t]`; cross-lookback overlaps are resolved by the declared total order. `INDETERMINATE` denotes zero positive matches and SHALL NOT absorb a multi-match.
+
+The reclaim rules are `PRICE_SCALE`: finite positive rescaling of all adjusted OHLC values rescales SMA identically and preserves their inequalities. ATR, Donchian, volume, and joint price-volume primitives are not admitted V1 rules. Any future Donchian rule must use an explicitly prior boundary; same-bar `adj_close[t] > donchian_high[t]` is self-referential because `donchian_high[t] >= adj_high[t] >= adj_close[t]`.
+
+Every admitted rule declares its input domain, transform/invariance group, equality policy, and threshold deadband policy. This metadata contributes to `rule_set_hash`.
+
+If a batch API is exposed, it is:
+
+```text
+classify(dto) -> ClassificationResult
+batch_classify(dtos) -> list[ClassificationResult]
+```
+
+The empty batch returns an empty list. A non-empty batch SHALL structurally validate every DTO before sufficiency or rule evaluation. Any malformed DTO raises `MarketStateContractViolation` for the whole call; partial-success and per-item-exception return types are forbidden. For an all-valid batch, order is preserved and:
+
+```text
+batch_classify([dto_1, ..., dto_n]) == [classify(dto_1), ..., classify(dto_n)]
+```
+
+Batch neighbours cannot affect an item's result. Assembly may validate/filter malformed source material before a universe-scale call, but this containment does not alter classifier fail-fast semantics or transfer history-sufficiency authority to assembly.
 
 Supported groups are `PRICE_SCALE`, `VOLUME_SHARE_UNIT`, `PRICE_VOLUME_JOINT`, and an explicitly governed `NO_ADMITTED_INVARIANCE` exception. The exception is not self-authorising: it requires a closure-gate disposition, rationale, and test-boundary treatment.
 
@@ -201,7 +277,7 @@ For each `PRICE_SCALE` rule and finite `c > 0` in the governed domain:
 R(c * P, non_price_inputs) == R(P, non_price_inputs)
 ```
 
-Absolute-price thresholds are forbidden. Generated property-test samples must be constructively excluded from each declared threshold deadband. Q-MS1-04 owns the deadband-generation algorithm and strict/non-strict threshold policy; it is not closed by this draft.
+Absolute-price thresholds are forbidden. Generated property-test samples must be constructively excluded from each declared threshold deadband under Section 4's relative-deadband policy. Exact equality fixtures remain mandatory.
 
 For a share-unit rescaling factor `k > 0`:
 
@@ -212,11 +288,36 @@ volume' = volume * k
 
 Every admitted volume or joint rule must declare and pass its appropriate transform. A price-only transform cannot be applied to a joint rule.
 
-## 7. Taiwan-Market Bar Validity
+### 6.2 Q-MS1-07 Physical Form
 
-Before range, breakout, extrema, or volume rules are admitted, Q-MS1-02/Q-MS1-06 shall disposition price-limit locked bars, suspension/resumption, zero-volume/no-trade sessions, missing bars, and new-listing history.
+**LOCKED DECISION:** If PR-MS1.1 implementation is authorised after contract lock, the V1 physical form SHALL be one concrete module:
 
-Each condition receives exactly one treatment: included; included with governed flag and rule handling; excluded by canonical-panel rule; or unavailable with machine-readable reason. Silent row dropping, forward filling, or ordinary-zero conversion is forbidden unless separately justified and tested.
+```text
+features/market_state.py
+```
+
+It contains the pure classifier implementation surface—immutable configuration, DTO/result types, `MarketStateContractViolation`, deterministic indicator calculation, structural validation, scalar/batch classification, and rule evaluation/precedence—and defines the cohesive Market State domain vocabulary: `MarketState`, `ClassificationStatus`, `ClassifierReasonCode`, `Availability`, `HistoryDiagnosticCode`, `OperationalDiagnosticCode`, and `LimitStatusCoverage`.
+
+Definition location does not alter producing/assignment ownership. The classifier produces `MarketState`, `ClassificationStatus`, and `ClassifierReasonCode`; assembly/composed pipeline assigns `Availability` and diagnostic values. Assembly may import the vocabulary module, but the pure classifier SHALL NOT import assembly/export code or perform I/O. `MarketStateContractViolation` is defined and raised at the classifier boundary.
+
+V1 SHALL NOT create a `features/market_state/` package, rule plugin system, speculative submodule, or separate shared-types module. A future package split requires repository evidence of at least two internally cohesive responsibilities with distinct public/test boundaries, a demonstrated single-module cohesion failure, and a superseding ADR/disposition. File length, hypothetical future rules, or generic extensibility are insufficient triggers.
+
+## 7. Taiwan-Market Exceptional-Bar Validity
+
+An expected session is a governed Taiwan trading session inside the security's governed listed interval. This section applies to every admitted price-comparison, range, breakout, extrema, or volume rule, including SMA reclaim rules.
+
+| Condition at an expected session | Canonical-panel treatment | Consequence |
+| --- | --- | --- |
+| Before governed `listed_from` | not expected; never padded | `NATURAL_HISTORY_SHORTFALL` when terminal DTO is insufficient |
+| Missing bar, invalid OHLC, or invalid OHLC ordering | terminal-sequence barrier; never repair or skip | `DATA_GAP` if a terminal DTO exists but is insufficient; operational failure if this is `as_of` |
+| Zero-volume bar with valid OHLC | ineligible terminal-sequence barrier | `ZERO_VOLUME_BAR_EXCLUDED` if terminal DTO is insufficient; operational failure if this is `as_of` |
+| Zero-range bar with positive volume and valid OHLC | included | no limit-lock inference or special classifier branch |
+| Suspension/halt while listed | missing-bar treatment | no unsupported suspension-versus-source-gap inference |
+| Resumption | valid bars begin a new terminal sequence | earlier barriers are never bridged |
+
+No verified source identifies official price-limit-locked sessions. Zero range SHALL NOT serve as a proxy. Every `MarketStateExportRecord` SHALL carry `LimitStatusCoverage.OFFICIAL_STATUS_UNAVAILABLE`. It is a coverage/capability declaration, not a claim about an individual session's limit status, classifier input, MarketState, history diagnostic, operational diagnostic, or OHLC-derived inference. On an `OPERATIONAL_FAILURE` record, it asserts only that no panel-level official-limit-status resolution path exists; it does not assert that a panel was assembled. A future official effective-dated source requires a superseding disposition with PIT semantics, mapping, and acceptance fixtures.
+
+If no eligible bar exists at `as_of`, assembly cannot produce a DTO ending at `as_of`; it SHALL emit `Availability.OPERATIONAL_FAILURE`, the corresponding typed operational diagnostic, no `ClassificationResult`, and shall not invoke the classifier. If calendar/lifecycle basis needed to construct any terminal eligible-session sequence is unavailable, assembly SHALL emit `REFERENCE_BASIS_UNAVAILABLE`, no DTO, and no classifier invocation. `DIAGNOSIS_UNAVAILABLE` instead applies only after classifier `INSUFFICIENT_HISTORY`, when the finer-grained shortfall-versus-gap basis cannot be established.
 
 ## 8. PIT Contract
 
@@ -236,7 +337,7 @@ If no classifier reference input is admitted, classifier-level Variant B is N/A 
 
 **FORMAL DERIVATION:** For a newly known action with `ex_date > t`, a fixed `as_of=t` adjusted-price window is uniformly rescaled by one positive factor. A `PRICE_SCALE` rule satisfying MS-P3 therefore preserves classification and `matched_rule_id`.
 
-**PROPOSED DECISION:** Variant C is a composed-pipeline acceptance obligation. A real assembly-path fixture introducing an action with `ex_date > t` shall leave status, state, and `matched_rule_id` unchanged.
+**LOCKED DECISION:** Variant C is a composed-pipeline acceptance obligation. A real assembly-path fixture introducing an action with `ex_date > t` shall leave status, state, and `matched_rule_id` unchanged.
 
 Adjusted-price/raw-volume mixed primitives, including price-times-volume, dollar volume, turnover proxies, and VWAP-like proxies, are excluded unless an adjustment-consistent joint transform is established and passes the required PIT obligations.
 
@@ -246,32 +347,38 @@ Adjusted-price/raw-volume mixed primitives, including price-times-volume, dollar
 
 Until immutable adjustment-factor-set revision provenance exists, late-arriving or corrected actions with `ex_date <= as_of` are excluded from PR-MS1.1 composed-pipeline acceptance. Existing `ingested_at`, `last_event_date_used`, and `n_events_applied` SHALL NOT be represented as sufficient C-2 provenance. Such an action invalidates replay/audit claims for affected prior adjusted-panel classifications and requires separately governed remediation before C-2 acceptance is enabled.
 
+This C-2 gap applies to the complete derived chain: affected adjusted OHLC panel → classifier-computed SMA/ATR/prior Donchian → rule evaluation and `ClassificationResult` → export/replay/audit claim.
+
 Variant C-2 is therefore DEFERRED, not a passing PR-MS1.1 acceptance test. A remediation must preserve factor-set revisions through an append-only history/audit model or an equivalent immutable snapshot identity.
 
 ## 9. Versioning, Provenance, and Exports
 
-Every classification/export carries `classifier_version` and `rule_set_hash`. The hash covers rule definitions, precedence, threshold values, numerical/equality policy, transform group, deadband policy, and vocabulary identity.
+Every classification/export carries `classifier_version` and `rule_set_hash`. The hash covers rule definitions and IDs, precedence, parameter values, vocabulary identity, transform group, equality policy, binary64 numeric policy, relative-deadband formula/value, source fields/adjustment basis, each admitted indicator's algorithm/lookback/window semantics, and missing/non-finite policy.
 
 Declarative canonical rule data is the default hash source. A rule proven to require imperative expression may use a governed AST-normalized representation only if Q-MS1-01/Q-MS1-08 records the escape hatch, canonical digest procedure, and a formatting/comment-insensitivity fixture.
 
 **INTEGRATOR ADDITION — pending separate ledger disposition:** vocabulary changes require a major classifier-version bump; predicate or threshold changes require at least a minor bump.
 
-The export record must retain immutable panel identity, adjustment provenance, assembly schema version, history diagnostics, availability, classifier result, and decision-availability time. Wall-clock run time alone is insufficient provenance.
+`PanelSnapshotId` SHALL be a stable content identity of the exact terminal adjusted-OHLC sequence submitted to the classifier. Its canonical input contains security/as-of/session identities, adjusted OHLC binary64 bit patterns, eligible-session/reference basis identities, adjustment-provenance identity, and assembly schema version. Its digest algorithm, field ordering, byte encoding, and digest version are declared; any semantic canonical-input change produces a different ID. Wall-clock time alone is insufficient.
+
+`AdjustmentProvenance` SHALL identify adjustment method/version, the applied corporate-action factor-set content identity, and the relevant source/basis identity. It identifies applied values, not merely ingestion time. Under the current overwrite architecture it SHALL NOT be represented as immutable adjustment-factor revision provenance; C-2 remains deferred.
+
+The export record retains panel identity, adjustment provenance, assembly schema version, history diagnostics, availability, classifier result, decision-availability time, and limit-status coverage. Assembly/reference provenance preserves the governed calendar coverage/version and effective-date lifecycle basis used for terminal-sequence construction; it may be a documented component of the snapshot/provenance identity rather than duplicated top-level columns.
 
 ## 10. Decision Matrix
 
 | ID | Required closure output | Current state |
 | --- | --- | --- |
 | Q-MS1-00 | Snapshot/stateful model | CLOSED: pure snapshot |
-| Q-MS1-01 | Finite vocabulary and positive rules | OPEN |
-| Q-MS1-02 | Canonical inputs, reference admission, volume admission, bar treatment | OPEN |
-| Q-MS1-03 | Final result/diagnostic representation | OPEN; this draft supplies candidate constraints, including reason-code mapping |
-| Q-MS1-04 | Rule precedence, equality/deadband algorithm | OPEN |
+| Q-MS1-01 | Finite vocabulary and positive rules | CLOSED: integrated v0.1.2 |
+| Q-MS1-02 | Canonical inputs, reference admission, volume admission, bar treatment | CLOSED: integrated v0.1.2, exceptional-bar v0.1.1, and Q-MS1-08 reference declarations |
+| Q-MS1-03 | Final result/diagnostic representation | CLOSED: integrated v0.1.1 |
+| Q-MS1-04 | Rule precedence, equality/deadband algorithm | CLOSED: integrated v0.1.4 |
 | Q-MS1-05 | Transition semantics | CLOSED by Q-MS1-00 |
-| Q-MS1-06 | DTO/API and batch surface | OPEN only for remaining DTO/API detail; all-valid, fail-fast batch semantics are already locked |
-| Q-MS1-06a | Close-inclusive `as_of` | PROPOSED |
-| Q-MS1-07 | Single module or package based on ADR-006 evidence | OPEN |
-| Q-MS1-08 | Export/provenance schema | OPEN |
+| Q-MS1-06 | DTO/API and batch surface | CLOSED: integrated v0.1.1 |
+| Q-MS1-06a | Close-inclusive `as_of` | CLOSED |
+| Q-MS1-07 | Single module or package based on ADR-006 evidence | CLOSED: `features/market_state.py` |
+| Q-MS1-08 | Export/provenance schema | CLOSED: integrated v0.1.1 |
 
 ## 11. Closure Gate
 
@@ -293,10 +400,13 @@ PR-MS1.0 cannot lock until every applicable item is closed or explicitly deferre
 14. Any volume/joint primitive has an adjustment-consistent transform or is excluded.
 15. Taiwan-market exceptional bars and history diagnostics have explicit treatment.
 16. Per-security/cross-sectional exclusion and all-valid batch semantics are explicit; assembly pre-validation/filtering is specified before universe-scale batch use.
-17. Version/hash derivation and export provenance are explicit.
-18. Q-MS1-07 cites current ADR-006 evidence.
+17. Version/hash derivation, canonical panel identity, adjustment provenance, reference provenance, and limit-status coverage are explicit.
+18. Q-MS1-07 cites current ADR-006 evidence and establishes the one-module form, vocabulary ownership separation, and evidence-based future split trigger.
 19. Acceptance tests are assigned to classifier, assembly, or composed-pipeline boundaries without vacuous tests.
 20. Repository baseline, evidence anchors, canonical path, internal references, and staged diff are re-verified immediately before lock.
+21. Numeric representation, `epsilon_relative`, rule IDs/parameters, total precedence, and exact-boundary fixtures are explicit and covered by `rule_set_hash`.
+22. `history_diagnostics` is non-null only for `INSUFFICIENT_HISTORY`; `DIAGNOSIS_UNAVAILABLE` replaces silent ambiguity.
+23. Exceptional bars use the terminal-sequence policy; zero-volume exclusion, no-bridge behavior, limit-status coverage, and the distinct history/operational diagnostic stages are tested.
 
 ## 12. PR-MS1.1 Acceptance-Test Contract
 
@@ -307,10 +417,12 @@ Classifier boundary:
 - insufficient history → `INSUFFICIENT_HISTORY` and no rule evaluation;
 - malformed DTO → typed exception;
 - declared precedence and exact threshold fixtures;
+- exact equality, immediately-below, and immediately-above fixtures for every rule comparison;
 - deterministic same DTO plus fixed configuration;
 - declared transform-group property tests and deadband-safe generation;
 - scalar/batch equivalence for all-valid DTO batches.
 - malformed DTO in a batch → typed exception and whole-call failure; no partial-success result.
+- all-rule evaluation before precedence selection, including a lower-priority positive match fixture.
 
 Assembly boundary:
 
@@ -320,6 +432,12 @@ Assembly boundary:
 - exceptional-bar representation;
 - typed operational failure without invoking the classifier;
 - DTO validation/filtering and excluded-item diagnostics before universe-scale batch invocation.
+- terminal-sequence barriers for missing/invalid/zero-volume bars; positive-volume zero-range inclusion; no bridge on resumption.
+- a missing or invalid bar at `as_of` → operational failure, typed operational diagnostic, no `ClassificationResult`, and no classifier invocation.
+- a zero-volume bar exactly at `as_of` → operational failure, typed operational diagnostic, no `ClassificationResult`, and no classifier invocation; this SHALL be a fixture distinct from the missing/invalid-bar-at-`as_of` fixture.
+- a terminal-sequence construction basis failure → `REFERENCE_BASIS_UNAVAILABLE`, no DTO, no classifier invocation, and no guessed history diagnostic.
+- a successful DTO plus classifier `INSUFFICIENT_HISTORY` where shortfall-versus-gap basis is unavailable → `DIAGNOSIS_UNAVAILABLE`, not `REFERENCE_BASIS_UNAVAILABLE`.
+- an operational-failure record cannot use a partial, rejected, or invalid panel as `panel_snapshot_id`.
 
 Composed-pipeline boundary:
 
@@ -327,17 +445,18 @@ Composed-pipeline boundary:
 - PIT Variant B where applicable;
 - verified Variant C future-action restatement invariance;
 - availability/classification/operational-diagnostic envelope invariants;
-- export provenance identifying exact classifier configuration and input panel.
+- reproducible canonical panel identity and adjustment/reference provenance identifying exact classifier configuration and input panel;
+- non-null `OFFICIAL_STATUS_UNAVAILABLE` coverage marker on every record, including operational failures, with zero range never inferring an official limit lock.
 
 Variant C-2 is DEFERRED and is excluded from this PR-MS1.1 acceptance contract until its remediation prerequisite is closed.
 
 ## 13. Deferred Items
 
-- final V1 MarketState vocabulary and rule thresholds;
 - state transition persistence, hysteresis, debounce, and state-store design;
 - broad-regime or cross-sectional models;
 - production persistence, scheduler integration, strategy adoption, and execution/risk logic;
 - C-2 immutable factor-revision provenance remediation;
+- official price-limit-status source/admission beyond `OFFICIAL_STATUS_UNAVAILABLE`;
 - `ClassifierStatus` split as a separate diff-first governance item.
 
 ## 14. Evidence Record
@@ -350,22 +469,21 @@ Repository source evidence observed during the PR-MS1.0 entry work:
 - `scripts/build_adjusted_prices.py: main` rebuild orchestration;
 - `scripts/ingest_splits.py` split factor ingestion.
 
-The observed evidence supports Variant C mechanics and raw-volume exclusion. It also establishes the C-2 revision-provenance gap. Before lock, re-observe file/symbol anchors at the actual candidate HEAD and record them in the lock record.
+The observed evidence supports Variant C mechanics and raw-volume exclusion. It also establishes the C-2 revision-provenance gap. Candidate-HEAD re-observation is a source-level repository audit; it does not establish production validation or C-2 replayability.
 
-## 15. Integration and Lock Procedure
+## 15. Integration, Lock, and Session Handoff
 
-1. Review this draft against PR-MS0 and addendum v0.3.1; do not alter those upstream artifacts.
+1. Review the candidate contract against PR-MS0 and addendum v0.3.1; do not alter those upstream artifacts.
 2. Resolve Q-MS1-01 through Q-MS1-08 as applicable and record explicit defer decisions.
 3. Re-verify repository evidence at the candidate HEAD.
 4. Run a cross-reference, duplicate-clause, and closure-gate numbering audit.
 5. Review the focused staged diff and confirm no code or production-surface change is included.
 6. Apply the repository's established canonical lock/hash/backfill ceremony only after semantic closure.
 
-## 16. Session Handoff
 
 ### Session Summary
 
-PR-MS1.0 canonical contract did not previously exist in the repository. This draft establishes its candidate baseline from locked PR-MS0 constraints, reviewed addendum decisions, and verified adjustment-source evidence.
+PR-MS1.0 is LOCKED as the canonical contract for PR-MS1.1, bounded by PR-MS0, the six reviewed dispositions, and candidate-HEAD repository evidence.
 
 ### Decision Record
 
@@ -376,7 +494,7 @@ PR-MS1.0 canonical contract did not previously exist in the repository. This dra
 
 ### Open Questions
 
-Q-MS1-01, Q-MS1-02, Q-MS1-03, Q-MS1-04, Q-MS1-06, Q-MS1-07, and Q-MS1-08 remain to be closed. Q-MS1-05 is closed by snapshot semantics.
+No unresolved PR-MS1.0 contract decision remains. Variant C-2 immutable adjustment-factor revision provenance remains explicitly DEFERRED.
 
 ### Evidence
 
@@ -384,4 +502,4 @@ The evidence record in Section 14 is source-level repository evidence, not a pro
 
 ### Next Actions
 
-Review this canonical draft, then place it in the repository under its Canonical Path as a separate documentation commit. Do not lock until all applicable closure-gate items are resolved.
+PR-MS1.1 may implement only this locked contract. Variant C-2 remediation, official limit-status-source admission, and `ClassifierStatus` redesign require separate diff-first governance.
