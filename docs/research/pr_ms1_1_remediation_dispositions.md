@@ -2,12 +2,12 @@
 
 Canonical Path: `docs/research/pr_ms1_1_remediation_dispositions.md`
 
-Version: v0.2.0
-Status: LOCKED — PR-MS1.1 REMEDIATION AUTHORISED
-Lock Reference: f04bfca7fe4057c312e8b4d3b6e7f0940bd79453
+Version: v0.2.1
+Status: DRAFT — AMENDMENT PENDING ADVERSARIAL REVIEW
+Previous Lock Reference: f04bfca7fe4057c312e8b4d3b6e7f0940bd79453
 Upstream Boundary: `docs/research/pr_ms1_0_security_market_state_domain_contract.md` v0.2.5 (`2490cde86274262f1a6335eb4e984806a29cb5e7`), backfilled at `3f060ab8c4e6df7d44fc345319b560249ad8796a`
-Review Source: PR-MS1.1 branch-level adversarial review at `2da9d9c701fa271e00af8324129af4bce69cbb7b`
-Implementation Branch Under Freeze: `feature/pr-ms1-1-market-state-classifier` @ `2da9d9c` — `CHANGES_REQUIRED`, merge not permitted
+Review Source: PR-MS1.1 branch-level adversarial review originally at `2da9d9c701fa271e00af8324129af4bce69cbb7b`; post-governance rebase content-equivalent HEAD `7b6b125925e955589de9f356ba33012bd2d71c18`
+Implementation Branch Under Freeze: `feature/pr-ms1-1-market-state-classifier` @ `7b6b125925e955589de9f356ba33012bd2d71c18` — `CHANGES_REQUIRED`, merge not permitted
 Authoring Boundary: evidence, options, and consequences were authored by the reviewer; the domain owner supplied the six decisions in §§2–7. Those decisions completed adversarial review and are locked by this document. Implementation authority is limited to the remediation scope explicitly recorded herein.
 
 ---
@@ -44,7 +44,7 @@ Six questions surfaced during branch review that the locked PR-MS1.0 contract do
 - It does **not** restate the review report. Findings whose remediation authority already exists are listed in §8 by ID only.
 - It does **not** expand PR-MS1.1 scope. C-2 remediation, persistence, scheduler, strategy adoption, and batch orchestration remain out of scope and out of this document.
 
-### 1.3 Verified entry state
+### 1.3 Verified entry state (as measured at `2da9d9c` / `3f060ab`)
 
 ```text
 Reviewed HEAD:            2da9d9c701fa271e00af8324129af4bce69cbb7b
@@ -55,6 +55,14 @@ Branch scope:             4 files, 1349 insertions, 0 deletions
 Governance unchanged:     GOVERNANCE_UNCHANGED_EXIT=0
 Ruff / mypy:              PASS (re-run during review)
 Targeted / full pytest:   40 passed / 545 passed, 1 skipped (re-run during review)
+```
+
+Post-rebase anchors (not a re-attribution of the measurements above):
+
+```text
+Post-governance canonical base: 38153070d9e1031e0cd2859b90fff4151d61bed9
+Post-rebase feature HEAD:       7b6b125925e955589de9f356ba33012bd2d71c18
+Rebase byte identity:           VERIFIED for the four reviewed implementation/test files
 ```
 
 Byte anchors for the four reviewed files are recorded in the review report §9.2 and are not repeated here.
@@ -114,10 +122,10 @@ Does the locked five-code `OperationalDiagnosticCode` vocabulary require expansi
 **Option A — No vocabulary change; reassign to existing codes.**
 F-03 path returns `AS_OF_BAR_MISSING` (lifecycle availability does not bear on whether the `as_of` bar exists). F-16 path retains `AS_OF_BAR_MISSING`. F-31 remains a silent degradation with no diagnostic representation.
 
-**Option B — Add one code for undetermined `as_of` eligibility.**
-A sixth member (name to be decided; e.g. `AS_OF_ELIGIBILITY_UNDETERMINED`) covers both F-03 and F-16, since both are cases where session eligibility at `as_of` cannot be affirmatively established. F-31 remains unaddressed at the diagnostic layer and is instead handled by narrowing the calendar's exception policy.
+**Option B — Add one code for `as_of` eligibility not established.**
+A sixth member, `AS_OF_ELIGIBILITY_NOT_ESTABLISHED`, covers F-03, F-16, and the governed lifecycle case in which `as_of` precedes `listed_from`. These are cases where eligibility at `as_of` is not established for composed-pipeline classification: evidence may be insufficient, or governed calendar/lifecycle evidence may affirmatively reject eligibility. F-31 remains unaddressed at the diagnostic layer and is instead handled by narrowing the calendar's exception policy.
 
-**Option C — Add two codes: undetermined eligibility, and degraded reference basis.**
+**Option C — Add two codes: eligibility not established, and degraded reference basis.**
 As Option B, plus a member representing "an authoritative reference layer failed and a lower-priority layer answered in its place". Requires `market/trading_calendar.py` to surface degradation to callers, which is outside the four-file remediation scope and would need a separate PR.
 
 **Option D — No vocabulary change; make the authoritative layer fail loudly.**
@@ -139,27 +147,31 @@ As Option B, plus a member representing "an authoritative reference layer failed
 
 **LOCKED DECISION — OPTION B.**
 
-The operational diagnostic vocabulary SHALL be expanded by one member representing failure to establish `as_of` session eligibility.
+The operational diagnostic vocabulary SHALL be expanded by one member representing failure to establish governed `as_of` eligibility.
 
-The new member SHALL own both:
+The new member SHALL be spelled `AS_OF_ELIGIBILITY_NOT_ESTABLISHED` and SHALL own all three:
 
-1. an `as_of` observation whose lifecycle/calendar evidence is insufficient to establish whether that date is an eligible session; and
-2. an `as_of` date for which a source row exists but the governed calendar states that the date is not an eligible session.
+1. an `as_of` observation whose lifecycle/calendar evidence is insufficient to establish whether that date is an eligible session;
+2. an `as_of` date for which a source row exists but the governed calendar states that the date is not an eligible session; and
+3. an `as_of` date that precedes the governed lifecycle `listed_from`, providing affirmative lifecycle evidence that the security was not yet eligible at `as_of`.
 
-It SHALL NOT mean that the bar is missing. `AS_OF_BAR_MISSING` remains reserved for an eligible `as_of` session for which the governed price observation is absent. `REFERENCE_BASIS_UNAVAILABLE` remains reserved for failure severe enough that no terminal eligible-session DTO can be constructed.
+The third condition is an operational-stage boundary condition: no classifier DTO SHALL be constructed and the classifier SHALL NOT be invoked. It SHALL NOT be reported as `NATURAL_HISTORY_SHORTFALL`. `NATURAL_HISTORY_SHORTFALL` remains a history-diagnostic-stage result when `as_of` itself is validly listed and the backward terminal walk crosses the governed `listed_from` boundary before sufficient history is collected.
+
+`AS_OF_ELIGIBILITY_NOT_ESTABLISHED` SHALL NOT mean that the bar is missing. `AS_OF_BAR_MISSING` remains reserved for an eligible `as_of` session for which the governed price observation is absent. `REFERENCE_BASIS_UNAVAILABLE` remains reserved for failure severe enough that no terminal eligible-session DTO can be constructed.
 
 F-31 calendar-authority degradation is NOT solved by this member. The silent fallback in `market/trading_calendar.py` SHALL be governed and remediated in a separate PR outside PR-MS1.1's four-file scope.
 
-The final enum spelling is intentionally left to governance integration, but its name SHALL express eligibility uncertainty rather than missing-data semantics.
-
 ### 2.7 Closure criteria
 
-1. F-03 and F-16 are owned by one new operational diagnostic expressing `as_of` eligibility uncertainty.
-2. `AS_OF_BAR_MISSING` remains semantically exact: eligible session, observation absent.
-3. `REFERENCE_BASIS_UNAVAILABLE` and `DIAGNOSIS_UNAVAILABLE` remain in disjoint pipeline stages as locked by contract §4.
-4. The vocabulary supersession from five to six members is recorded explicitly, and all six members are shown reachable by regression evidence.
-5. The production reachability profile of all six members is stated explicitly, including the G-6 interaction: for securities without governed lifecycle coverage, `AS_OF_BAR_MISSING` may be unreachable because an absent `as_of` row is owned by the new eligibility-undetermined diagnostic. Fixture reachability SHALL NOT be presented as universal production reachability.
-6. F-31 remains an explicit separate-PR obligation; PR-MS1.1 SHALL NOT claim to have fixed authoritative calendar degradation.
+1. F-03, F-16, and `as_of < listed_from` are owned by `AS_OF_ELIGIBILITY_NOT_ESTABLISHED`.
+2. `as_of < listed_from` terminates at the operational stage with no DTO and no classifier invocation; crossing `listed_from` during a validly listed `as_of` history walk remains eligible for `NATURAL_HISTORY_SHORTFALL`.
+3. `AS_OF_BAR_MISSING` remains semantically exact: eligible session, observation absent.
+4. `REFERENCE_BASIS_UNAVAILABLE` and `DIAGNOSIS_UNAVAILABLE` remain in disjoint pipeline stages as locked by contract §4.
+5. The vocabulary supersession from five to six members is recorded explicitly, and all six members are shown reachable by regression evidence.
+6. The production reachability profile of all six members is stated explicitly. `AS_OF_BAR_MISSING` is production-reachable only when governed lifecycle eligibility is AVAILABLE, governed calendar eligibility accepts `as_of`, and the governed `as_of` price observation is absent. Lifecycle UNAVAILABLE and NOT_LISTED_AT_AS_OF paths are both owned by `AS_OF_ELIGIBILITY_NOT_ESTABLISHED`. Fixture reachability SHALL NOT be presented as universal production reachability.
+7. F-31 remains an explicit separate-PR obligation; PR-MS1.1 SHALL NOT claim to have fixed authoritative calendar degradation.
+
+**CURRENT OBSERVABILITY NOTE (v0.2.1).** Under the current `listed_market_daily_price_adj` view, if governed TWSE/TPEx lifecycle rows exist but every `listed_from > as_of`, then the governed adjusted-price view yields no `date <= as_of` row. Consequently `UNAVAILABLE` and `NOT_LISTED_AT_AS_OF` currently converge to the same exported operational result (`AS_OF_ELIGIBILITY_NOT_ESTABLISHED`, no DTO, no classifier invocation, no `panel_snapshot_id`). The internal distinction is retained because it preserves the evidence semantics required by G-6, prevents future-effective rows from being mistaken for row absence, and becomes observationally relevant if lifecycle coverage or governed view semantics change. Regression evidence SHALL test the state-resolution distinction directly rather than require distinct current export records.
 
 ### 2.8 Implementation handoff
 
@@ -529,6 +541,8 @@ Record a locked decision that an absent row means "listed no later than the earl
 
 Absence of a `security_lifecycle` row SHALL NOT be treated as affirmative evidence of listing eligibility.
 
+**v0.2.1 G-1 cross-reference.** This absence rule is distinct from affirmative governed evidence that `as_of < listed_from`. The former is lifecycle `UNAVAILABLE`; the latter is `NOT_LISTED_AT_AS_OF`. Both currently route to `AS_OF_ELIGIBILITY_NOT_ESTABLISHED` at the operational `as_of` boundary, but only the latter carries affirmative evidence of non-listing. When `as_of` itself is validly listed and the backward history walk crosses `listed_from`, the condition remains history-stage `NATURAL_HISTORY_SHORTFALL` semantics rather than an operational G-1 failure.
+
 For PR-MS1.1, when no governed lifecycle row exists and lifecycle evidence is required to attribute terminal-history insufficiency, the history diagnostic SHALL be `DIAGNOSIS_UNAVAILABLE` rather than `DATA_GAP` or `NATURAL_HISTORY_SHORTFALL` inferred from a proxy.
 
 The repository assumption that an absent lifecycle row means "fully listed throughout the panel" is insufficient evidence for Market State history-diagnostic attribution and is superseded for this specific composed-pipeline diagnostic purpose. PR-MS1.1 SHALL NOT infer listing date from the earliest available price observation.
@@ -585,13 +599,13 @@ Recorded as deferred or operational in review report §9.7, not as remediation i
 
 ### Session Summary
 
-A branch-level adversarial review of `feature/pr-ms1-1-market-state-classifier` at `2da9d9c` returned `CHANGES_REQUIRED`. Entry verification, canonical anchor resolution, and full-file inspection all completed; Ruff, mypy, and both pytest runs were re-executed during the review. Six governance questions were opened because locked PR-MS1.0 text did not fully determine the required remediation semantics. The reviewer supplied evidence/options/consequences; the domain owner supplied all six decisions. Final no-semantic-delta review completed successfully. The six decisions and their implementation boundaries are now locked in v0.2.0.
+A branch-level adversarial review of `feature/pr-ms1-1-market-state-classifier` at `2da9d9c` returned `CHANGES_REQUIRED`. After the remediation dispositions were locked and landed, the feature branch was rebased onto governance base `3815307`, producing content-equivalent feature HEAD `7b6b125`. The four reviewed implementation/test files retained their reviewed byte content across that rebase. This v0.2.1 amendment updates the commit-level review anchors and narrows G-1 routing by explicitly assigning `as_of < listed_from` to the operational-stage `AS_OF_ELIGIBILITY_NOT_ESTABLISHED` diagnostic while preserving `NATURAL_HISTORY_SHORTFALL` for a validly listed `as_of` whose backward history walk crosses `listed_from`.
 
 ### Decision Record
 
 - No locked PR-MS1.0 or PR-MS0 decision is reopened except where this document explicitly records a scoped supersession needed to close a discovered gap.
 - PR-MS1.1 remediation implementation is authorised only within the locked handoff boundaries recorded in §§2–7. No scope expansion is authorised.
-- G-1: Option B — add one `as_of` eligibility-undetermined operational diagnostic; F-31 remains a separate calendar-authority PR.
+- G-1: Option B — add `AS_OF_ELIGIBILITY_NOT_ESTABLISHED`; it owns insufficient eligibility evidence, governed-calendar rejection, and `as_of < listed_from`. The last case terminates before DTO construction; F-31 remains a separate calendar-authority PR.
 - G-2: Option D — applied adjustment provenance is replay-equivalent identity over governed materialised `cum_factor` values.
 - G-3: Option A — negative volume is ratified as invalid observation data in the existing invalid-bar treatment class.
 - G-4: superseded by G-2/D — remove direct `corporate_actions` assembly dependency; reference-source set remains unchanged.
@@ -603,13 +617,12 @@ A branch-level adversarial review of `feature/pr-ms1-1-market-state-classifier` 
 
 ### Open Questions
 
-1. Final enum spelling for the new G-1 operational diagnostic; semantics are locked by the G-1 decision, but naming must align with the existing vocabulary without implying a missing bar.
-2. Scope/name/priority of the separate F-31 calendar-authority degradation PR.
-3. Scope/name/priority of the full-universe `security_lifecycle` remediation programme opened by G-6.
+1. Scope/name/priority of the separate F-31 calendar-authority degradation PR.
+2. Scope/name/priority of the full-universe `security_lifecycle` remediation programme opened by G-6.
 
 ### Evidence
 
-All findings cited here are `VERIFIED_FINDING` class from the review report unless labelled otherwise. The `adjustment_state` schema/writer capability limits added after the initial review have now been independently re-verified and are recorded as `VERIFIED REPOSITORY FINDING`. The same re-verification confirmed the absence of an explicit function-level transaction in `write_adjusted_to_db`; this is recorded only as an out-of-scope adjustment-pipeline robustness risk. Source-level repository evidence was observed against feature baseline `2da9d9c` and governance base `3f060ab`; this is not production validation, historical replay verification, or a performance measurement. No latency, incidence, or coverage figure appears in this document, because none was measured during the review.
+All findings cited here are `VERIFIED_FINDING` class from the review report unless labelled otherwise. The `adjustment_state` schema/writer capability limits added after the initial review have now been independently re-verified and are recorded as `VERIFIED REPOSITORY FINDING`. The same re-verification confirmed the absence of an explicit function-level transaction in `write_adjusted_to_db`; this is recorded only as an out-of-scope adjustment-pipeline robustness risk. Source-level repository evidence was originally observed against feature baseline `2da9d9c` and governance base `3f060ab`; after governance landing and rebase, the corresponding commit-level anchors are feature HEAD `7b6b125` and governance base `3815307`, with the four reviewed implementation/test files byte-identical across the rebase. This is not production validation, historical replay verification, or a performance measurement. No latency, incidence, or coverage figure appears in this document, because none was measured during the review.
 
 ### Next Actions
 
