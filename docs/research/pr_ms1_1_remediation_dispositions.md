@@ -1,13 +1,13 @@
-# PR-MS1.1 — Remediation Dispositions Draft
+# PR-MS1.1 — Remediation Dispositions
 
 Canonical Path: `docs/research/pr_ms1_1_remediation_dispositions.md`
 
-Version: v0.1.3
-Status: DRAFT — PENDING REVIEW
+Version: v0.2.0
+Status: LOCKED — PR-MS1.1 REMEDIATION AUTHORISED
 Upstream Boundary: `docs/research/pr_ms1_0_security_market_state_domain_contract.md` v0.2.5 (`2490cde86274262f1a6335eb4e984806a29cb5e7`), backfilled at `3f060ab8c4e6df7d44fc345319b560249ad8796a`
 Review Source: PR-MS1.1 branch-level adversarial review at `2da9d9c701fa271e00af8324129af4bce69cbb7b`
 Implementation Branch Under Freeze: `feature/pr-ms1-1-market-state-classifier` @ `2da9d9c` — `CHANGES_REQUIRED`, merge not permitted
-Authoring Boundary: evidence, options, and consequences were authored by the reviewer; the domain owner has now supplied the six decisions in §§2–7. This document remains a draft pending adversarial review and lock.
+Authoring Boundary: evidence, options, and consequences were authored by the reviewer; the domain owner supplied the six decisions in §§2–7. Those decisions completed adversarial review and are locked by this document. Implementation authority is limited to the remediation scope explicitly recorded herein.
 
 ---
 
@@ -17,14 +17,13 @@ Labels follow canonical contract §0 and are used here with identical meaning.
 
 - **VERIFIED REPOSITORY FINDING** — supported by source evidence observed at the stated repository baseline.
 - **FORMAL DERIVATION** — follows from stated verified mechanics and a stated mathematical contract.
-- **LOCKED DECISION** — normative text already locked upstream; quoted here, never re-decided.
+- **LOCKED DECISION** — normative text locked either upstream or by this document; it is binding within its stated scope and is not re-decided here.
 - **DEFERRED** — intentionally excluded from this phase.
 - **REPOSITORY GAP** — an observed capability absence that restricts an otherwise desirable obligation.
 - **INTEGRATOR ADDITION** — a non-ledger normative addition; not closed until its stated follow-up disposition occurs.
 
-Two labels are added for this document only:
+One label is added for this document only:
 
-- **OWNER DECISION REQUIRED** — a semantic question that locked contract text does not answer. Reviewer supplies evidence and options; the domain owner supplies the decision.
 - **REVIEWER-SUPPLIED CONSEQUENCE** — the acceptance-test effect that follows from a given option. Derived from contract §12 and PR-MS0 §12, not an independent decision.
 
 No statement in this document is a claim about strategy profitability, alpha, fill quality, or production readiness.
@@ -40,7 +39,7 @@ Six questions surfaced during branch review that the locked PR-MS1.0 contract do
 ### 1.2 What this document is not
 
 - It does **not** modify, reinterpret, or reopen any locked PR-MS1.0 or PR-MS0 decision, **except where this document explicitly records a narrowly scoped supersession required to close a discovered repository/contract gap**. Where locked text already answers a question, that text governs and the question does not appear here.
-- It does **not** authorise any implementation change. Implementation resumes only after this document is approved and locked, per the sequencing in §9.
+- It authorises only the PR-MS1.1 remediation changes explicitly bounded by this document. It does not authorise scope expansion beyond those remediation handoffs, nor any production integration, persistence, scheduler, strategy-adoption, or C-2 remediation work.
 - It does **not** restate the review report. Findings whose remediation authority already exists are listed in §8 by ID only.
 - It does **not** expand PR-MS1.1 scope. C-2 remediation, persistence, scheduler, strategy adoption, and batch orchestration remain out of scope and out of this document.
 
@@ -135,9 +134,9 @@ As Option B, plus a member representing "an authoritative reference layer failed
 - Option C: additionally requires a fixture in which an authoritative layer fails, a lower layer answers, and the record carries the degradation code.
 - Option D: additionally requires a fixture in which the holiday DB is unavailable and the record carries `REFERENCE_BASIS_UNAVAILABLE` through the real calendar module rather than a monkeypatch — this is the only option under which the existing reference-failure test becomes non-vacuous.
 
-### 2.6 PROPOSED DECISION
+### 2.6 LOCKED DECISION
 
-**OWNER DECISION — OPTION B.**
+**LOCKED DECISION — OPTION B.**
 
 The operational diagnostic vocabulary SHALL be expanded by one member representing failure to establish `as_of` session eligibility.
 
@@ -224,9 +223,9 @@ Derive the applied factor-set identity from the ordered `(session/date, binary64
 - Option D: requires a fixture showing that changing `corporate_actions` without rebuilding the governed adjusted panel does not change the applied-provenance identity; rebuilding to different materialised `cum_factor` values must change it. The hash input must preserve session/date association and exact binary64 factor values.
 - Under every option, contract §12's Variant C obligation ("a real assembly-path fixture introducing an action with `ex_date > t`") remains and must use a real DuckDB path, not a mock. Review finding F-08 records that `_adjustment_provenance` is currently monkeypatched in every assembly test, so this obligation is presently undischarged regardless of which option is chosen.
 
-### 3.6 PROPOSED DECISION
+### 3.6 LOCKED DECISION
 
-**OWNER DECISION — OPTION D.**
+**LOCKED DECISION — OPTION D.**
 
 For PR-MS1.1, `AdjustmentProvenance.factor_set_hash` SHALL identify the materialised applied adjustment state under **replay-equivalence semantics**.
 
@@ -303,9 +302,9 @@ A negative volume anywhere in the fetched window is treated as a data-integrity 
 - Option B: requires a fixture distinguishing a negative-volume barrier from an OHLC-invalid barrier at both `as_of` and mid-panel positions, and a reachability check for the new diagnostic.
 - Option C: requires a fixture asserting operational failure for a mid-panel negative-volume bar — a behaviour change from the current implementation, which treats it as a barrier and can still produce an `AVAILABLE` record.
 
-### 4.6 PROPOSED DECISION
+### 4.6 LOCKED DECISION
 
-**OWNER DECISION — OPTION A.**
+**LOCKED DECISION — OPTION A.**
 
 Negative volume is invalid source data. A negative-volume observation SHALL be an ineligible terminal-sequence barrier in the same canonical treatment class as an otherwise invalid bar.
 
@@ -376,9 +375,9 @@ Obtain the applied adjustment identity from the governed materialised adjusted-p
 - Option B: no new Variant B obligation, but the provenance-source category must state its own temporal-validity rule, and a fixture must show that a future-effective action does not alter the provenance identity for `as_of=t`.
 - Option C: the admission obligation moves to whichever source replaces it; its own effective-date semantics must then be declared under G-2.
 
-### 5.6 PROPOSED DECISION
+### 5.6 LOCKED DECISION
 
-**OWNER DECISION — SUPERSEDED BY G-2 OPTION D.**
+**LOCKED DECISION — SUPERSEDED BY G-2 OPTION D.**
 
 Because G-2 removes PR-MS1.1 assembly's direct dependency on `corporate_actions` for adjustment provenance, `corporate_actions` is not admitted as an assembly reference source.
 
@@ -445,9 +444,9 @@ Separate the `as_of`-scoped reference basis identity, which feeds the snapshot, 
 - Option C: requires fixtures for both halves of the split and an explicit statement of which fields belong to which half.
 - Under all options, F-09's four mutation fixtures (adjusted OHLC, calendar basis, lifecycle identity, factor set) and one reproducibility assertion remain owed, since none is currently present.
 
-### 6.6 PROPOSED DECISION
+### 6.6 LOCKED DECISION
 
-**OWNER DECISION — OPTION A.**
+**LOCKED DECISION — OPTION A.**
 
 PIT Variant B SHALL protect `panel_snapshot_id` against reference mutations whose effective time is strictly after `as_of=t`.
 
@@ -523,9 +522,9 @@ Record a locked decision that an absent row means "listed no later than the earl
 - Option C: requires two fixtures — a barrier before the earliest available observation yielding `NATURAL_HISTORY_SHORTFALL`, and a barrier at a session with older data present yielding `DATA_GAP` — plus the F-02 fixture (a non-session row inside the window must not yield `DATA_GAP`), since all three exercise the same boundary.
 - Under every option, contract §12's requirement of governed history diagnostics and `DIAGNOSIS_UNAVAILABLE` remains, and the existing test at `tests/features/test_market_state_assembly.py:158-168` continues to cover the lifecycle-unavailable path.
 
-### 7.6 PROPOSED DECISION
+### 7.6 LOCKED DECISION
 
-**OWNER DECISION — OPTION A, WITH OPTION B AS A SEPARATE GOVERNED REMEDIATION PROGRAMME.**
+**LOCKED DECISION — OPTION A, WITH OPTION B AS A SEPARATE GOVERNED REMEDIATION PROGRAMME.**
 
 Absence of a `security_lifecycle` row SHALL NOT be treated as affirmative evidence of listing eligibility.
 
@@ -585,12 +584,12 @@ Recorded as deferred or operational in review report §9.7, not as remediation i
 
 ### Session Summary
 
-A branch-level adversarial review of `feature/pr-ms1-1-market-state-classifier` at `2da9d9c` returned `CHANGES_REQUIRED`. Entry verification, canonical anchor resolution, and full-file inspection all completed; Ruff, mypy, and both pytest runs were re-executed during the review. Six governance questions were opened because locked PR-MS1.0 text did not fully determine the required remediation semantics. The reviewer supplied evidence/options/consequences; the domain owner has now supplied all six decisions. This v0.1.3 draft incorporates reviewer-verified repository evidence and remains pending final no-semantic-delta confirmation before lock; it is not implementation-authorising.
+A branch-level adversarial review of `feature/pr-ms1-1-market-state-classifier` at `2da9d9c` returned `CHANGES_REQUIRED`. Entry verification, canonical anchor resolution, and full-file inspection all completed; Ruff, mypy, and both pytest runs were re-executed during the review. Six governance questions were opened because locked PR-MS1.0 text did not fully determine the required remediation semantics. The reviewer supplied evidence/options/consequences; the domain owner supplied all six decisions. Final no-semantic-delta review completed successfully. The six decisions and their implementation boundaries are now locked in v0.2.0.
 
 ### Decision Record
 
-- No locked PR-MS1.0 or PR-MS0 decision is reopened except where this draft explicitly records a scoped supersession needed to close a discovered gap.
-- No implementation change is authorised until reviewer approval and governance lock.
+- No locked PR-MS1.0 or PR-MS0 decision is reopened except where this document explicitly records a scoped supersession needed to close a discovered gap.
+- PR-MS1.1 remediation implementation is authorised only within the locked handoff boundaries recorded in §§2–7. No scope expansion is authorised.
 - G-1: Option B — add one `as_of` eligibility-undetermined operational diagnostic; F-31 remains a separate calendar-authority PR.
 - G-2: Option D — applied adjustment provenance is replay-equivalent identity over governed materialised `cum_factor` values.
 - G-3: Option A — negative volume is ratified as invalid observation data in the existing invalid-bar treatment class.
@@ -603,11 +602,9 @@ A branch-level adversarial review of `feature/pr-ms1-1-market-state-classifier` 
 
 ### Open Questions
 
-1. Final enum spelling for the new G-1 operational diagnostic; semantics are locked by the proposed decision, but naming must align with the existing vocabulary without implying a missing bar.
+1. Final enum spelling for the new G-1 operational diagnostic; semantics are locked by the G-1 decision, but naming must align with the existing vocabulary without implying a missing bar.
 2. Scope/name/priority of the separate F-31 calendar-authority degradation PR.
 3. Scope/name/priority of the full-universe `security_lifecycle` remediation programme opened by G-6.
-4. Final lock review shall confirm that v0.1.3 introduces no semantic delta to G-1 .. G-6 while upgrading `adjustment_state` evidence strength and recording the adjustment-pipeline atomicity risk.
-5. The G-1 × G-6 production reachability profile has been reviewer-approved; re-review should preserve that distinction and must not collapse fixture reachability into universal production reachability.
 
 ### Evidence
 
@@ -616,17 +613,17 @@ All findings cited here are `VERIFIED_FINDING` class from the review report unle
 ### Next Actions
 
 ```text
-1.  retain this document at DRAFT — PENDING REVIEW
-2.  reviewer performs final no-semantic-delta confirmation of v0.1.3
-3.  commit the governance draft on governance/pr-ms1-1-remediation-dispositions
-4.  complete governance lock and backfill to main
-5.  rebase feature/pr-ms1-1-market-state-classifier onto the new origin/main
-6.  re-establish entry evidence (merge-base gate will otherwise fail)
+1.  backfill this lock commit SHA as Lock Reference
+2.  land the locked governance chain on main
+3.  refresh origin/main and verify governance ancestry
+4.  rebase feature/pr-ms1-1-market-state-classifier onto the new origin/main
+5.  record the new post-rebase feature HEAD and new base
+6.  re-establish entry evidence
 7.  Commit 1 — assembly correctness and provenance
 8.  Commit 2 — classifier identity
 9.  Commit 3 — acceptance contract
 10. full verification (ruff, mypy, targeted pytest, full pytest, diff --check)
-11. re-review at the new HEAD
+11. branch-level adversarial re-review at the new HEAD
 12. register OPEN-1 = F-31 calendar-authority degradation as separate governed work
 13. register OPEN-2 = full-universe security_lifecycle remediation programme
 ```
