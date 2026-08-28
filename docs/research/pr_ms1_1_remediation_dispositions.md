@@ -4,6 +4,7 @@ Canonical Path: `docs/research/pr_ms1_1_remediation_dispositions.md`
 
 Version: v0.2.0
 Status: LOCKED — PR-MS1.1 REMEDIATION AUTHORISED
+Lock Reference: f04bfca7fe4057c312e8b4d3b6e7f0940bd79453
 Upstream Boundary: `docs/research/pr_ms1_0_security_market_state_domain_contract.md` v0.2.5 (`2490cde86274262f1a6335eb4e984806a29cb5e7`), backfilled at `3f060ab8c4e6df7d44fc345319b560249ad8796a`
 Review Source: PR-MS1.1 branch-level adversarial review at `2da9d9c701fa271e00af8324129af4bce69cbb7b`
 Implementation Branch Under Freeze: `feature/pr-ms1-1-market-state-classifier` @ `2da9d9c` — `CHANGES_REQUIRED`, merge not permitted
